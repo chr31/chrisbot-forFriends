@@ -33,6 +33,9 @@ services:
     environment:
       MYSQL_HOST: ${MYSQL_HOST:-mysql}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
+      ROUTINES_BASE_DIR: ${ROUTINES_BASE_DIR:-/app/runtime/routines}
+    volumes:
+      - chrisbot-routines-data:${ROUTINES_BASE_DIR:-/app/runtime/routines}
     restart: unless-stopped
 
   chrisbot-fe:
@@ -65,3 +68,4 @@ services:
 
 volumes:
   chrisbot-mysql-data:
+  chrisbot-routines-data:

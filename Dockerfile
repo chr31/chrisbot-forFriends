@@ -48,6 +48,7 @@ COPY --from=builder /app/package*.json ./
 # Bundle app source
 COPY . .
 
+RUN mkdir -p /app/runtime/routines
 RUN chown -R node:node /app
 
 ENV NODE_ENV=production

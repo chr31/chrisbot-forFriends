@@ -95,6 +95,11 @@ type LegacyRoutine = {
   name: string;
   title: string;
   description: string;
+  entrypoint?: string | null;
+  runtime?: string | null;
+  template_id?: string | null;
+  sync_status?: 'ready' | 'missing' | 'error' | null;
+  version?: number | null;
   cron_expression?: string | null;
   is_active: boolean;
   is_running: boolean;
@@ -105,6 +110,61 @@ type LegacyRoutine = {
   last_error?: string | null;
   last_triggered_by?: string | null;
 };
+
+type RoutineTemplate = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+type RoutineDraftRow = {
+  localId: string;
+  title: string;
+  description: string;
+  cron_expression: string;
+  is_active: boolean;
+  template_id: string;
+};
+
+type RoutineFormState = {
+  title: string;
+  description: string;
+  cron_expression: string;
+  is_active: boolean;
+};
+
+function buildRoutineSlug(value: string) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 128);
+}
+
+function createRoutineDraft(templateId = 'basic-node'): RoutineDraftRow {
+  return {
+    localId: `routine-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title: '',
+    description: '',
+    cron_expression: '',
+    is_active: false,
+    template_id: templateId,
+  };
+}
+
+function buildRoutineInfo(routine: LegacyRoutine) {
+  return [
+    `Stato: ${routine.is_running ? 'running' : routine.last_status || 'idle'}`,
+    `Run: ${routine.last_run_id ?? 'n/d'}`,
+    `Sync: ${routine.sync_status || 'n/d'}`,
+    `Avvio: ${routine.last_started_at ? new Date(routine.last_started_at).toLocaleString('it-IT') : 'n/d'}`,
+    `Fine: ${routine.last_finished_at ? new Date(routine.last_finished_at).toLocaleString('it-IT') : 'n/d'}`,
+    `Trigger: ${routine.last_triggered_by || 'n/d'}`,
+  ];
+}
 
 type TaskFormState = {
   title: string;
@@ -278,6 +338,7 @@ export default function TaskPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [legacyRoutines, setLegacyRoutines] = useState<LegacyRoutine[]>([]);
+  const [routineTemplates, setRoutineTemplates] = useState<RoutineTemplate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -300,7 +361,14 @@ export default function TaskPage() {
   const [runningTaskId, setRunningTaskId] = useState<number | null>(null);
   const [runningLegacyRoutineName, setRunningLegacyRoutineName] = useState<string | null>(null);
   const [savingLegacyRoutineName, setSavingLegacyRoutineName] = useState<string | null>(null);
-  const [legacyRoutineForm, setLegacyRoutineForm] = useState<Record<string, { cron_expression: string; is_active: boolean }>>({});
+  const [legacyRoutineForm, setLegacyRoutineForm] = useState<Record<string, RoutineFormState>>({});
+  const [routineSearch, setRoutineSearch] = useState('');
+  const [draftRoutineRows, setDraftRoutineRows] = useState<RoutineDraftRow[]>([]);
+  const [routineSources, setRoutineSources] = useState<Record<string, string>>({});
+  const [editingRoutineName, setEditingRoutineName] = useState<string | null>(null);
+  const [loadingRoutineSourceName, setLoadingRoutineSourceName] = useState<string | null>(null);
+  const [savingRoutineSourceName, setSavingRoutineSourceName] = useState<string | null>(null);
+  const [deletingRoutineName, setDeletingRoutineName] = useState<string | null>(null);
   const [planningView, setPlanningView] = useState<PlanningView>('tasks');
   const [currentPage, setCurrentPage] = useState(1);
   const [cronPrompt, setCronPrompt] = useState('');
@@ -419,12 +487,26 @@ export default function TaskPage() {
       const next = { ...current };
       for (const routine of routines) {
         next[routine.name] = {
+          title: String(routine.title || ''),
+          description: String(routine.description || ''),
           cron_expression: String(routine.cron_expression || ''),
           is_active: Boolean(routine.is_active),
         };
       }
       return next;
     });
+  }, [authFetch]);
+
+  const fetchRoutineTemplates = useCallback(async () => {
+    const response = await authFetch('/api/tasks/legacy-routines/templates');
+    if (response.status === 403) {
+      setRoutineTemplates([]);
+      return;
+    }
+    if (!response.ok) throw new Error('Impossibile caricare i template routine.');
+    const data = await response.json();
+    const templates = Array.isArray(data) ? data : [];
+    setRoutineTemplates(templates);
   }, [authFetch]);
 
   const loadPage = useCallback(async () => {
@@ -444,13 +526,14 @@ export default function TaskPage() {
         fetchRuntimeStatus(),
         fetchAiOptions(),
         fetchLegacyRoutines(),
+        fetchRoutineTemplates(),
       ]);
     } catch (err: any) {
       setError(err?.message || 'Errore inatteso.');
     } finally {
       setIsLoading(false);
     }
-  }, [fetchAgents, fetchAiOptions, fetchAuthUser, fetchLegacyRoutines, fetchRuntimeStatus, fetchTasks]);
+  }, [fetchAgents, fetchAiOptions, fetchAuthUser, fetchLegacyRoutines, fetchRoutineTemplates, fetchRuntimeStatus, fetchTasks]);
 
   useEffect(() => {
     loadPage();
@@ -486,6 +569,18 @@ export default function TaskPage() {
       return matchesSearch && matchesCategory && matchesNotifications && matchesExecutor;
     });
   }, [categoryFilter, executorFilter, notificationFilter, search, tasks]);
+
+  const filteredRoutines = useMemo(() => {
+    const normalized = routineSearch.trim().toLowerCase();
+    return legacyRoutines.filter((routine) => {
+      if (!normalized) return true;
+      return (
+        String(routine.title || '').toLowerCase().includes(normalized)
+        || String(routine.description || '').toLowerCase().includes(normalized)
+        || String(routine.cron_expression || '').toLowerCase().includes(normalized)
+      );
+    });
+  }, [legacyRoutines, routineSearch]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -877,28 +972,212 @@ export default function TaskPage() {
     }
   };
 
-  const handleSaveLegacyRoutine = async (routineName: string) => {
+  const saveLegacyRoutineMetadata = async (routineName: string) => {
     const draft = legacyRoutineForm[routineName];
-    if (!draft) return;
+    if (!draft) {
+      return null;
+    }
+
+    const response = await authFetch(`/api/tasks/legacy-routines/${routineName}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: draft.title.trim(),
+        description: draft.description.trim() || null,
+        template_id: legacyRoutines.find((entry) => entry.name === routineName)?.template_id || null,
+        cron_expression: draft.cron_expression.trim(),
+        is_active: draft.is_active,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body?.error || 'Routine non aggiornata.');
+    }
+    return body;
+  };
+
+  const handleSaveLegacyRoutine = async (routineName: string) => {
     setSavingLegacyRoutineName(routineName);
     try {
-      const response = await authFetch(`/api/tasks/legacy-routines/${routineName}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cron_expression: draft.cron_expression.trim(),
-          is_active: draft.is_active,
-        }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(body?.error || 'Routine non aggiornata.');
-      }
+      await saveLegacyRoutineMetadata(routineName);
       await fetchLegacyRoutines();
     } catch (err: any) {
       alert(err?.message || `Errore durante il salvataggio della routine ${routineName}.`);
     } finally {
       setSavingLegacyRoutineName(null);
+    }
+  };
+
+  const handleOpenRoutineEditor = async (routineName: string) => {
+    setEditingRoutineName(routineName);
+    if (routineSources[routineName] !== undefined) return;
+    setLoadingRoutineSourceName(routineName);
+    try {
+      const response = await authFetch(`/api/tasks/legacy-routines/${routineName}/source`);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Impossibile caricare il sorgente routine.');
+      }
+      setRoutineSources((current) => ({
+        ...current,
+        [routineName]: String(body?.source || ''),
+      }));
+    } catch (err: any) {
+      alert(err?.message || `Errore durante il caricamento della routine ${routineName}.`);
+      setEditingRoutineName(null);
+    } finally {
+      setLoadingRoutineSourceName(null);
+    }
+  };
+
+  const closeRoutineEditor = () => {
+    setEditingRoutineName(null);
+  };
+
+  const handleSaveRoutineSource = async (routineName: string) => {
+    const source = routineSources[routineName];
+    if (!source?.trim()) {
+      alert('Inserisci il codice della routine.');
+      return;
+    }
+    setSavingRoutineSourceName(routineName);
+    try {
+      await saveLegacyRoutineMetadata(routineName);
+      const response = await authFetch(`/api/tasks/legacy-routines/${routineName}/source`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Salvataggio routine non riuscito.');
+      }
+      await fetchLegacyRoutines();
+      alert(`Routine ${routineName} salvata.`);
+    } catch (err: any) {
+      alert(err?.message || `Errore durante il salvataggio della routine ${routineName}.`);
+    } finally {
+      setSavingRoutineSourceName(null);
+    }
+  };
+
+  const handleRoutineTemplateChange = async (routineName: string, nextTemplateId: string) => {
+    const routine = legacyRoutines.find((entry) => entry.name === routineName);
+    if (!routine) return;
+    const currentTemplateId = String(routine.template_id || '');
+    if (currentTemplateId === String(nextTemplateId || '')) return;
+
+    const confirmed = window.confirm(
+      'Cambiare tipo rigenererà il codice della routine usando il nuovo template e sovrascriverà il contenuto attuale. Vuoi continuare?'
+    );
+    if (!confirmed) return;
+
+    setLoadingRoutineSourceName(routineName);
+    try {
+      const response = await authFetch(`/api/tasks/legacy-routines/${routineName}/reset-template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template_id: nextTemplateId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Cambio tipo routine non riuscito.');
+      }
+      setLegacyRoutines((current) => current.map((entry) => (
+        entry.name === routineName
+          ? { ...entry, template_id: nextTemplateId || null }
+          : entry
+      )));
+      setRoutineSources((current) => ({
+        ...current,
+        [routineName]: String(body?.source || ''),
+      }));
+      await fetchLegacyRoutines();
+    } catch (err: any) {
+      alert(err?.message || 'Errore durante il cambio tipo della routine.');
+    } finally {
+      setLoadingRoutineSourceName(null);
+    }
+  };
+
+  const handleAddRoutineRow = () => {
+    setDraftRoutineRows((current) => [
+      createRoutineDraft(String(routineTemplates[0]?.id || 'basic-node')),
+      ...current,
+    ]);
+  };
+
+  const handleDraftRoutineChange = (localId: string, patch: Partial<RoutineDraftRow>) => {
+    setDraftRoutineRows((current) => current.map((row) => row.localId === localId ? { ...row, ...patch } : row));
+  };
+
+  const handleDeleteDraftRoutine = (localId: string) => {
+    setDraftRoutineRows((current) => current.filter((row) => row.localId !== localId));
+  };
+
+  const handleCreateRoutine = async (draftRow: RoutineDraftRow) => {
+    if (!draftRow.title.trim()) {
+      alert('Inserisci un titolo routine.');
+      return;
+    }
+    const generatedName = buildRoutineSlug(draftRow.title);
+    if (!generatedName) {
+      alert('Il titolo non genera un nome routine valido.');
+      return;
+    }
+    setSavingLegacyRoutineName(draftRow.localId);
+    try {
+      const response = await authFetch('/api/tasks/legacy-routines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: draftRow.title.trim(),
+          description: draftRow.description.trim() || null,
+          template_id: draftRow.template_id || String(routineTemplates[0]?.id || 'basic-node'),
+          cron_expression: draftRow.cron_expression.trim() || null,
+          is_active: draftRow.is_active,
+          name: generatedName,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Creazione routine non riuscita.');
+      }
+      setDraftRoutineRows((current) => current.filter((row) => row.localId !== draftRow.localId));
+      await fetchLegacyRoutines();
+      await handleOpenRoutineEditor(String(body?.name || generatedName));
+    } catch (err: any) {
+      alert(err?.message || 'Errore durante la creazione della routine.');
+    } finally {
+      setSavingLegacyRoutineName(null);
+    }
+  };
+
+  const handleDeleteRoutine = async (routineName: string, routineTitle: string) => {
+    const confirmed = window.confirm(`Vuoi davvero eliminare la routine "${routineTitle}"?`);
+    if (!confirmed) return;
+    setDeletingRoutineName(routineName);
+    try {
+      const response = await authFetch(`/api/tasks/legacy-routines/${routineName}`, {
+        method: 'DELETE',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Eliminazione routine non riuscita.');
+      }
+      setRoutineSources((current) => {
+        const next = { ...current };
+        delete next[routineName];
+        return next;
+      });
+      if (editingRoutineName === routineName) {
+        closeRoutineEditor();
+      }
+      await fetchLegacyRoutines();
+    } catch (err: any) {
+      alert(err?.message || `Errore durante l'eliminazione della routine ${routineTitle}.`);
+    } finally {
+      setDeletingRoutineName(null);
     }
   };
 
@@ -1028,13 +1307,26 @@ export default function TaskPage() {
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => fetchLegacyRoutines().catch(() => setError('Impossibile aggiornare le routine legacy.'))}
-                  className="rounded-xl border border-amber-700/60 px-4 py-2 text-sm text-amber-100 hover:bg-amber-900/20"
-                >
-                  Aggiorna routine
-                </button>
+                <>
+                  <div className="flex w-full sm:w-72 md:w-80 items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2">
+                    <input
+                      value={routineSearch}
+                      onChange={(event) => setRoutineSearch(event.target.value)}
+                      placeholder="Cerca routine..."
+                      className="w-full bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddRoutineRow}
+                    aria-label="Nuova routine"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-sky-600 text-white hover:bg-sky-500"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                      <path d="M10 4a1 1 0 0 1 1 1v4h4a1 1 0 1 1 0 2h-4v4a1 1 0 1 1-2 0v-4H5a1 1 0 1 1 0-2h4V5a1 1 0 0 1 1-1Z" />
+                    </svg>
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -1247,104 +1539,318 @@ export default function TaskPage() {
               </>
             )
           ) : (
-            <div className="mt-6 grid gap-4 lg:grid-cols-2">
-              {legacyRoutines.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-amber-800/50 px-4 py-5 text-sm text-amber-100/80">
-                  Nessuna routine legacy disponibile. Per aggiungerne una, crea il file in `scheduled/tasks/`, registra il nome in `scheduled/routine-handler.js` e inserisci il seed nel backend.
-                </div>
-              ) : legacyRoutines.map((routine) => (
-                <div key={routine.name} className="rounded-2xl border border-amber-800/40 bg-gray-950/50 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <div className="text-lg font-semibold text-white">{routine.title}</div>
-                      <div className="mt-1 text-xs uppercase tracking-[0.2em] text-amber-300">{routine.name}</div>
+            <div className="mt-6">
+              <div className="hidden grid-cols-[88px_minmax(220px,1.25fr)_180px_minmax(260px,1fr)_180px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+                <div>Attivo</div>
+                <div>Nome</div>
+                <div>Cron</div>
+                <div>Info</div>
+                <div className="text-right">Azioni</div>
+              </div>
+
+              <div className="mt-4 space-y-4">
+                {draftRoutineRows.length === 0 && filteredRoutines.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-700 px-4 py-5 text-sm text-gray-400">
+                    Nessuna routine trovata.
+                  </div>
+                ) : null}
+
+                {draftRoutineRows.map((draft) => (
+                  <div key={draft.localId} className="border-b border-sky-800/40 pb-4 last:border-b-0">
+                    <div className="grid gap-3 lg:grid-cols-[88px_minmax(220px,1.25fr)_180px_minmax(260px,1fr)_180px] lg:items-start">
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
+                        <Toggle
+                          checked={draft.is_active}
+                          onChange={() => handleDraftRoutineChange(draft.localId, { is_active: !draft.is_active })}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Nome</div>
+                        <input
+                          value={draft.title}
+                          onChange={(event) => handleDraftRoutineChange(draft.localId, { title: event.target.value })}
+                          placeholder="Nuova routine"
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        />
+                      </div>
+
+                      <label className="text-sm text-gray-200">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Cron</span>
+                        <input
+                          value={draft.cron_expression}
+                          onChange={(event) => handleDraftRoutineChange(draft.localId, { cron_expression: event.target.value })}
+                          placeholder="0 7 * * *"
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-white"
+                        />
+                      </label>
+
+                      <div className="rounded-xl border border-sky-800/40 bg-sky-950/20 px-3 py-2 text-sm text-sky-100">
+                        Routine nuova. Il codice viene creato dal template e poi modificato dal popup editor.
+                      </div>
+
+                      <div className="flex items-start justify-end gap-2">
+                        <IconButton
+                          label="Esegui routine"
+                          onClick={() => {}}
+                          disabled
+                          tone="success"
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="M6 4.5v11l9-5.5-9-5.5Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Modifica codice"
+                          onClick={() => {}}
+                          disabled
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="m13.5 3.5 3 3L8 15H5v-3l8.5-8.5Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Salva routine"
+                          onClick={() => handleCreateRoutine(draft)}
+                          disabled={savingLegacyRoutineName === draft.localId}
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="M4 3.5A1.5 1.5 0 0 1 5.5 2h7.379a1.5 1.5 0 0 1 1.06.44l1.621 1.62A1.5 1.5 0 0 1 16 5.12V16.5A1.5 1.5 0 0 1 14.5 18h-9A1.5 1.5 0 0 1 4 16.5v-13ZM6 4v4h6V4H6Zm0 8v4h8v-4H6Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Elimina riga"
+                          onClick={() => handleDeleteDraftRoutine(draft.localId)}
+                          tone="danger"
+                        >
+                          <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 stroke-current">
+                            <path d="M4.5 6h11" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M8 3.5h4" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M6.5 6v9a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V6" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M8.5 8.5v4.5M11.5 8.5v4.5" strokeWidth="1.6" strokeLinecap="round" />
+                          </svg>
+                        </IconButton>
+                      </div>
                     </div>
-                    <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${
-                      routine.is_running
-                        ? 'border-amber-700/60 bg-amber-600/10 text-amber-100'
-                        : routine.last_status === 'failed'
-                          ? 'border-rose-700/60 bg-rose-600/10 text-rose-100'
-                          : routine.last_status === 'completed'
-                            ? 'border-emerald-700/60 bg-emerald-600/10 text-emerald-100'
-                            : 'border-gray-700 bg-gray-800 text-gray-200'
-                    }`}>
-                      {routine.is_running ? 'running' : routine.last_status || 'idle'}
-                    </span>
                   </div>
+                ))}
 
-                  <p className="mt-3 text-sm text-gray-300">{routine.description}</p>
+                {filteredRoutines.map((routine) => (
+                  <div key={routine.name} className="border-b border-gray-800/80 pb-4 last:border-b-0">
+                    <div className="grid gap-3 lg:grid-cols-[88px_minmax(220px,1.25fr)_180px_minmax(260px,1fr)_180px] lg:items-start">
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
+                        <Toggle
+                          checked={legacyRoutineForm[routine.name]?.is_active ?? routine.is_active}
+                          onChange={() => setLegacyRoutineForm((current) => ({
+                            ...current,
+                            [routine.name]: {
+                              title: current[routine.name]?.title ?? routine.title,
+                              description: current[routine.name]?.description ?? routine.description,
+                              cron_expression: current[routine.name]?.cron_expression ?? String(routine.cron_expression || ''),
+                              is_active: !(current[routine.name]?.is_active ?? routine.is_active),
+                            },
+                          }))}
+                        />
+                      </div>
 
-                  <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-                    <label className="text-sm text-gray-200">
-                      <span className="mb-1 block">Cron</span>
-                      <input
-                        value={legacyRoutineForm[routine.name]?.cron_expression || ''}
-                        onChange={(event) => setLegacyRoutineForm((current) => ({
-                          ...current,
-                          [routine.name]: {
-                            cron_expression: event.target.value,
-                            is_active: current[routine.name]?.is_active ?? routine.is_active,
-                          },
-                        }))}
-                        className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-white"
-                        placeholder="0 7 * * *"
-                      />
-                    </label>
-                    <label className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                      <input
-                        type="checkbox"
-                        checked={legacyRoutineForm[routine.name]?.is_active ?? routine.is_active}
-                        onChange={(event) => setLegacyRoutineForm((current) => ({
-                          ...current,
-                          [routine.name]: {
-                            cron_expression: current[routine.name]?.cron_expression ?? String(routine.cron_expression || ''),
-                            is_active: event.target.checked,
-                          },
-                        }))}
-                        className="h-4 w-4 accent-amber-500"
-                      />
-                      Cron attivo
-                    </label>
-                  </div>
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Nome</div>
+                        <input
+                          value={legacyRoutineForm[routine.name]?.title ?? routine.title}
+                          onChange={(event) => setLegacyRoutineForm((current) => ({
+                            ...current,
+                            [routine.name]: {
+                              title: event.target.value,
+                              description: current[routine.name]?.description ?? routine.description,
+                              cron_expression: current[routine.name]?.cron_expression ?? String(routine.cron_expression || ''),
+                              is_active: current[routine.name]?.is_active ?? routine.is_active,
+                            },
+                          }))}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        />
+                      </div>
 
-                  <div className="mt-4 space-y-1 text-xs text-gray-400">
-                    <div>Cron programmato: {routine.cron_expression || 'n/d'}</div>
-                    <div>Ultimo run: {routine.last_run_id ?? 'n/d'}</div>
-                    <div>Ultimo avvio: {routine.last_started_at ? new Date(routine.last_started_at).toLocaleString('it-IT') : 'n/d'}</div>
-                    <div>Ultima fine: {routine.last_finished_at ? new Date(routine.last_finished_at).toLocaleString('it-IT') : 'n/d'}</div>
-                    <div>Ultimo trigger: {routine.last_triggered_by || 'n/d'}</div>
-                  </div>
+                      <label className="text-sm text-gray-200">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Cron</span>
+                        <input
+                          value={legacyRoutineForm[routine.name]?.cron_expression || ''}
+                          onChange={(event) => setLegacyRoutineForm((current) => ({
+                            ...current,
+                            [routine.name]: {
+                              title: current[routine.name]?.title ?? routine.title,
+                              description: current[routine.name]?.description ?? routine.description,
+                              cron_expression: event.target.value,
+                              is_active: current[routine.name]?.is_active ?? routine.is_active,
+                            },
+                          }))}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-white"
+                          placeholder="0 7 * * *"
+                        />
+                      </label>
 
-                  {routine.last_error ? (
-                    <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
-                      {routine.last_error}
+                      <div className="space-y-2">
+                        <div className="rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-300">
+                          {buildRoutineInfo(routine).map((line) => (
+                            <div key={`${routine.name}-${line}`}>{line}</div>
+                          ))}
+                        </div>
+                        {routine.last_error ? (
+                          <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
+                            {routine.last_error}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex items-start justify-end gap-2">
+                        <IconButton
+                          label={routine.is_running || runningLegacyRoutineName === routine.name ? 'In esecuzione' : 'Esegui routine'}
+                          onClick={() => handleRunLegacyRoutine(routine.name)}
+                          disabled={routine.is_running || runningLegacyRoutineName === routine.name}
+                          tone="success"
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="M6 4.5v11l9-5.5-9-5.5Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Modifica codice"
+                          onClick={() => handleOpenRoutineEditor(routine.name)}
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="m13.5 3.5 3 3L8 15H5v-3l8.5-8.5Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Salva routine"
+                          onClick={() => handleSaveLegacyRoutine(routine.name)}
+                          disabled={savingLegacyRoutineName === routine.name}
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                            <path d="M4 3.5A1.5 1.5 0 0 1 5.5 2h7.379a1.5 1.5 0 0 1 1.06.44l1.621 1.62A1.5 1.5 0 0 1 16 5.12V16.5A1.5 1.5 0 0 1 14.5 18h-9A1.5 1.5 0 0 1 4 16.5v-13ZM6 4v4h6V4H6Zm0 8v4h8v-4H6Z" />
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          label="Elimina routine"
+                          onClick={() => handleDeleteRoutine(routine.name, routine.title)}
+                          disabled={deletingRoutineName === routine.name}
+                          tone="danger"
+                        >
+                          <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 stroke-current">
+                            <path d="M4.5 6h11" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M8 3.5h4" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M6.5 6v9a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V6" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M8.5 8.5v4.5M11.5 8.5v4.5" strokeWidth="1.6" strokeLinecap="round" />
+                          </svg>
+                        </IconButton>
+                      </div>
                     </div>
-                  ) : null}
-
-                  <div className="mt-4 flex flex-wrap justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => handleSaveLegacyRoutine(routine.name)}
-                      disabled={savingLegacyRoutineName === routine.name}
-                      className="rounded-xl border border-gray-700 px-4 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {savingLegacyRoutineName === routine.name ? 'Salvataggio...' : 'Salva cron'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRunLegacyRoutine(routine.name)}
-                      disabled={routine.is_running || runningLegacyRoutineName === routine.name}
-                      className="rounded-xl border border-amber-700/60 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-900/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {routine.is_running || runningLegacyRoutineName === routine.name ? 'In esecuzione...' : 'Esegui routine'}
-                    </button>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </section>
       </div>
+
+      {editingRoutineName ? (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-gray-950/80 p-4"
+          onClick={closeRoutineEditor}
+        >
+          <div
+            className="mx-auto max-w-5xl rounded-3xl border border-gray-800 bg-gray-900 p-5 shadow-xl sm:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300">Routine</p>
+                <h2 className="mt-2 text-2xl font-bold text-white">Modifica codice</h2>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleSaveRoutineSource(editingRoutineName)}
+                  disabled={savingRoutineSourceName === editingRoutineName || loadingRoutineSourceName === editingRoutineName}
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+                >
+                  {savingRoutineSourceName === editingRoutineName ? 'Salvataggio...' : 'Salva routine'}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeRoutineEditor}
+                  className="rounded-xl border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                >
+                  Chiudi
+                </button>
+              </div>
+            </div>
+
+            {loadingRoutineSourceName === editingRoutineName ? (
+              <div className="mt-6 text-sm text-gray-300">Caricamento sorgente...</div>
+            ) : (
+              <>
+                {(() => {
+                  const routine = legacyRoutines.find((entry) => entry.name === editingRoutineName);
+                  if (!routine) return null;
+                  const draft = legacyRoutineForm[editingRoutineName] || {
+                    title: routine.title,
+                    description: routine.description || '',
+                    cron_expression: routine.cron_expression || '',
+                    is_active: routine.is_active,
+                  };
+                  return (
+                    <>
+                      <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
+                        <label className="text-sm text-gray-200">
+                          <span className="mb-1 block">Descrizione</span>
+                          <textarea
+                            value={draft.description}
+                            onChange={(event) => setLegacyRoutineForm((current) => ({
+                              ...current,
+                              [editingRoutineName]: {
+                                title: current[editingRoutineName]?.title ?? routine.title,
+                                description: event.target.value,
+                                cron_expression: current[editingRoutineName]?.cron_expression ?? String(routine.cron_expression || ''),
+                                is_active: current[editingRoutineName]?.is_active ?? routine.is_active,
+                              },
+                            }))}
+                            rows={3}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                          />
+                        </label>
+                        <label className="text-sm text-gray-200">
+                          <span className="mb-1 block">Tipo</span>
+                          <select
+                            value={routine.template_id || ''}
+                            onChange={(event) => handleRoutineTemplateChange(editingRoutineName, event.target.value)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                          >
+                            {routineTemplates.map((template) => (
+                              <option key={template.id} value={template.id}>{template.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <textarea
+                        value={routineSources[editingRoutineName] || ''}
+                        onChange={(event) => setRoutineSources((current) => ({
+                          ...current,
+                          [editingRoutineName]: event.target.value,
+                        }))}
+                        rows={22}
+                        className="mt-6 w-full rounded-2xl border border-gray-700 bg-gray-950 px-3 py-3 font-mono text-sm text-white"
+                        spellCheck={false}
+                      />
+                    </>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {isModalOpen ? (
         <div

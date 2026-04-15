@@ -66,6 +66,32 @@ async function getLegacyRoutineByName(name) {
   return rows?.[0] ? hydrateLegacyRoutine(rows[0]) : null;
 }
 
+async function ensureLegacyRoutine(routine) {
+  const name = String(routine?.name || '').trim();
+  if (!name) {
+    throw new Error('Nome routine mancante.');
+  }
+
+  await pool.query(
+    `INSERT INTO legacy_routines (name, title, description, cron_expression, is_active)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       title = VALUES(title),
+       description = VALUES(description)`,
+    [
+      name,
+      String(routine?.title || name).trim(),
+      routine?.description === undefined || routine?.description === null
+        ? null
+        : (String(routine.description).trim() || null),
+      routine?.cron_expression ? String(routine.cron_expression).trim() : null,
+      routine?.is_active ? 1 : 0,
+    ]
+  );
+
+  return getLegacyRoutineByName(name);
+}
+
 async function updateLegacyRoutine(name, updates) {
   const entries = [];
   const values = [];
@@ -125,10 +151,20 @@ async function updateLegacyRoutine(name, updates) {
   return { changes: result.affectedRows };
 }
 
+async function deleteLegacyRoutine(name) {
+  const [result] = await pool.query(
+    'DELETE FROM legacy_routines WHERE name = ?',
+    [String(name || '').trim()]
+  );
+  return { changes: result.affectedRows };
+}
+
 module.exports = {
   LEGACY_ROUTINE_DEFAULTS,
   initLegacyRoutineTables,
   getAllLegacyRoutines,
   getLegacyRoutineByName,
+  ensureLegacyRoutine,
   updateLegacyRoutine,
+  deleteLegacyRoutine,
 };

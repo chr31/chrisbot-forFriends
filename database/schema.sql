@@ -76,6 +76,26 @@ CREATE TABLE IF NOT EXISTS legacy_routines (
   INDEX idx_legacy_routines_status (last_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS routine_definitions (
+  name VARCHAR(128) NOT NULL PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  description TEXT NULL,
+  entrypoint VARCHAR(512) NOT NULL,
+  runtime VARCHAR(64) NOT NULL DEFAULT 'node20',
+  template_id VARCHAR(128) NULL,
+  checksum VARCHAR(128) NULL,
+  config_json JSON NULL,
+  permissions_json JSON NULL,
+  sync_status VARCHAR(32) NOT NULL DEFAULT 'missing',
+  last_sync_error TEXT NULL,
+  version INT NOT NULL DEFAULT 1,
+  created_by VARCHAR(255) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  INDEX idx_routine_definitions_sync_status (sync_status),
+  INDEX idx_routine_definitions_runtime (runtime)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS agents (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(255) NOT NULL,

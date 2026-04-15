@@ -15,6 +15,7 @@ const { initAppSettingsTable } = require('./database/db_app_settings');
 const { initTelegramTables } = require('./database/db_telegram');
 const { initInboxTables } = require('./database/db_inbox');
 const { initLegacyRoutineTables } = require('./database/db_legacy_routines');
+const { initRoutineDefinitionsTable } = require('./database/db_routine_definitions');
 const { initAgentsTables } = require('./database/db_agents');
 const { initAgentChatsTables } = require('./database/db_agent_chats');
 const { initAgentRunsTable } = require('./database/db_agent_runs');
@@ -51,6 +52,7 @@ async function bootstrap() {
     await initTelegramTables();
     await initInboxTables();
     await initLegacyRoutineTables();
+    await initRoutineDefinitionsTable();
     await initAgentsTables();
     await initAgentChatsTables();
     await initAgentRunsTable();

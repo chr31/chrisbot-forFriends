@@ -5,6 +5,7 @@ const {
   getLegacyRoutineByName,
   updateLegacyRoutine,
 } = require('../database/db_legacy_routines');
+const { listRoutinesWithRuntime, syncRoutineDefinitionsFromDisk } = require('./routineCatalog');
 
 const activeJobs = {};
 let nextRunId = 1;
@@ -15,16 +16,20 @@ function unscheduleLegacyRoutine(name) {
   delete activeJobs[name];
 }
 
+async function deleteLegacyRoutineSchedule(name) {
+  unscheduleLegacyRoutine(name);
+}
+
 async function getLegacyRuntimeSnapshot(name) {
   return getLegacyRoutineByName(name);
 }
 
 async function listLegacyRoutines() {
-  return getAllLegacyRoutines();
+  return listRoutinesWithRuntime();
 }
 
 async function recoverInterruptedLegacyRoutines() {
-  const routines = await getAllLegacyRoutines();
+  const routines = await listRoutinesWithRuntime();
   const interrupted = routines.filter((routine) => routine.is_running);
   if (interrupted.length === 0) return [];
 
@@ -44,6 +49,7 @@ async function recoverInterruptedLegacyRoutines() {
 }
 
 async function runLegacyRoutine(name, actorUsername, options = {}) {
+  await syncRoutineDefinitionsFromDisk();
   const routine = await getLegacyRoutineByName(name);
   if (!routine) {
     const error = new Error('Routine legacy non trovata.');
@@ -75,7 +81,13 @@ async function runLegacyRoutine(name, actorUsername, options = {}) {
   });
 
   Promise.resolve()
-    .then(() => executeRoutine(routine.name))
+    .then(() => executeRoutine(routine.name, {
+      actorUsername: String(actorUsername || '').trim() || 'system',
+      trigger: {
+        type: options.skipIfRunning ? 'schedule' : 'manual',
+        actor: String(actorUsername || '').trim() || 'system',
+      },
+    }))
     .then(async () => {
       await updateLegacyRoutine(routine.name, {
         is_running: 0,
@@ -119,6 +131,7 @@ function scheduleLegacyRoutine(routine) {
 }
 
 async function reconcileLegacyRoutineSchedules() {
+  await syncRoutineDefinitionsFromDisk();
   const routines = await getAllLegacyRoutines();
   const desired = new Set(routines.map((routine) => routine.name));
   for (const routine of routines) {
@@ -132,6 +145,7 @@ async function reconcileLegacyRoutineSchedules() {
 }
 
 async function initializeLegacyRoutineScheduler() {
+  await syncRoutineDefinitionsFromDisk();
   const recovered = await recoverInterruptedLegacyRoutines();
   if (recovered.length > 0) {
     console.warn(`Routine legacy marcate come interrotte dopo restart: ${recovered.join(', ')}`);
@@ -169,4 +183,5 @@ module.exports = {
   updateLegacyRoutineSchedule,
   initializeLegacyRoutineScheduler,
   recoverInterruptedLegacyRoutines,
+  deleteLegacyRoutineSchedule,
 };

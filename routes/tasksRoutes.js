@@ -19,7 +19,21 @@ const { getAgentById } = require('../database/db_agents');
 const { canUserAccessAgent } = require('../services/agentAccess');
 const { insertInboxItem, getInboxItemByKey, updateInboxItem, insertInboxMessage } = require('../database/db_inbox');
 const { requireSuperAdmin } = require('../utils/adminAccess');
-const { listLegacyRoutines, runLegacyRoutine, updateLegacyRoutineSchedule } = require('../services/legacyRoutineRunner');
+const {
+  listLegacyRoutines,
+  runLegacyRoutine,
+  updateLegacyRoutineSchedule,
+  deleteLegacyRoutineSchedule,
+} = require('../services/legacyRoutineRunner');
+const {
+  listRoutineTemplates,
+  createRoutineFromTemplate,
+  readRoutineSource,
+  writeRoutineSource,
+  updateRoutineMetadata,
+  resetRoutineSourceFromTemplate,
+  deleteRoutine,
+} = require('../services/routineCatalog');
 const { ensureTaskChat } = require('../services/taskChat');
 const {
   rescheduleTaskById,
@@ -486,15 +500,102 @@ router.get('/legacy-routines', requireSuperAdmin, async (_req, res) => {
   }
 });
 
+router.get('/legacy-routines/templates', requireSuperAdmin, async (_req, res) => {
+  try {
+    return res.json(await listRoutineTemplates());
+  } catch (error) {
+    console.error('Errore nel recupero template routine:', error);
+    return res.status(500).json({ error: 'Errore del server' });
+  }
+});
+
+router.post('/legacy-routines', requireSuperAdmin, async (req, res) => {
+  try {
+    const created = await createRoutineFromTemplate({
+      name: req.body?.name,
+      title: req.body?.title,
+      description: req.body?.description,
+      template_id: req.body?.template_id,
+    }, req.user?.name || null);
+    if (req.body?.cron_expression !== undefined || req.body?.is_active !== undefined) {
+      await updateLegacyRoutineSchedule(created.name, {
+        cron_expression: req.body?.cron_expression,
+        is_active: req.body?.is_active,
+      });
+    }
+    return res.status(201).json(created);
+  } catch (error) {
+    console.error('Errore creazione routine:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+  }
+});
+
+router.get('/legacy-routines/:name/source', requireSuperAdmin, async (req, res) => {
+  try {
+    const source = await readRoutineSource(req.params.name);
+    return res.json(source);
+  } catch (error) {
+    console.error('Errore recupero sorgente routine:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+  }
+});
+
 router.put('/legacy-routines/:name', requireSuperAdmin, async (req, res) => {
   try {
-    const updated = await updateLegacyRoutineSchedule(req.params.name, {
+    const updatedSchedule = await updateLegacyRoutineSchedule(req.params.name, {
       cron_expression: req.body?.cron_expression,
       is_active: req.body?.is_active,
     });
-    return res.json(updated);
+    if (req.body?.title !== undefined || req.body?.description !== undefined || req.body?.template_id !== undefined) {
+      await updateRoutineMetadata(req.params.name, {
+        title: req.body?.title,
+        description: req.body?.description,
+        template_id: req.body?.template_id,
+      });
+    }
+    return res.json(updatedSchedule);
   } catch (error) {
     console.error('Errore aggiornamento routine legacy:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+  }
+});
+
+router.put('/legacy-routines/:name/source', requireSuperAdmin, async (req, res) => {
+  try {
+    const source = String(req.body?.source || '');
+    if (!source.trim()) {
+      return res.status(400).json({ error: 'Sorgente routine mancante.' });
+    }
+    const payload = await readRoutineSource(req.params.name);
+    const updatedDefinition = await writeRoutineSource(payload.definition, source, req.user?.name || null);
+    return res.json({ ok: true, definition: updatedDefinition });
+  } catch (error) {
+    console.error('Errore salvataggio sorgente routine:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+  }
+});
+
+router.post('/legacy-routines/:name/reset-template', requireSuperAdmin, async (req, res) => {
+  try {
+    const templateId = String(req.body?.template_id || '').trim();
+    if (!templateId) {
+      return res.status(400).json({ error: 'template_id mancante.' });
+    }
+    const payload = await resetRoutineSourceFromTemplate(req.params.name, templateId, req.user?.name || null);
+    return res.json({ ok: true, ...payload });
+  } catch (error) {
+    console.error('Errore reset template routine:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+  }
+});
+
+router.delete('/legacy-routines/:name', requireSuperAdmin, async (req, res) => {
+  try {
+    await deleteLegacyRoutineSchedule(req.params.name);
+    await deleteRoutine(req.params.name);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('Errore eliminazione routine:', error);
     return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
   }
 });

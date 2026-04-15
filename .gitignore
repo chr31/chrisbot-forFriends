@@ -53,3 +53,7 @@ database.sqlite
 .env.all
 .env.runtime
 .env.production
+
+# Routine create dinamicamente dal portale
+runtime/routines/*
+!runtime/routines/.gitkeep
