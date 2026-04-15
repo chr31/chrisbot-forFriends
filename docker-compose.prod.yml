@@ -19,6 +19,9 @@ services:
   chrisbot:
     image: ghcr.io/${OWNER:-owner}/${REPO:-chrisbot}-backend:${TAG:-latest}
     container_name: chrisbot
+    dns:
+      - ${CHRISBOT_DNS_1:-8.8.8.8}
+      - ${CHRISBOT_DNS_2:-8.8.4.4}
     ports:
       - "3000:3000"
     env_file: .env
@@ -30,6 +33,9 @@ services:
   chrisbot-fe:
     image: ghcr.io/${OWNER:-owner}/${REPO:-chrisbot}-frontend:${TAG:-latest}
     container_name: chrisbot-fe
+    dns:
+      - ${CHRISBOT_DNS_1:-8.8.8.8}
+      - ${CHRISBOT_DNS_2:-8.8.4.4}
     ports:
       - "3001:3001"
     env_file: .env

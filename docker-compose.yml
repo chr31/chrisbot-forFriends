@@ -24,6 +24,9 @@ services:
       dockerfile: Dockerfile
     image: chrisbot:latest
     container_name: chrisbot
+    dns:
+      - ${CHRISBOT_DNS_1:-8.8.8.8}
+      - ${CHRISBOT_DNS_2:-8.8.4.4}
     ports:
       - "3000:3000"
     env_file: .env
@@ -40,6 +43,9 @@ services:
         NEXT_PUBLIC_LOCAL_LOGIN_ENABLED: ${NEXT_PUBLIC_LOCAL_LOGIN_ENABLED:-false}
     image: chrisbot-fe:latest
     container_name: chrisbot-fe
+    dns:
+      - ${CHRISBOT_DNS_1:-8.8.8.8}
+      - ${CHRISBOT_DNS_2:-8.8.4.4}
     ports:
       - "3001:3001"
     env_file: .env

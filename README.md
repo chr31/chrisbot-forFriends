@@ -75,6 +75,7 @@ Default gia' gestiti dal codice:
 - `TASK_SCHEDULER_RECONCILE_MS`, `LOG_NOTIF_DELETE`, `TZ`: tuning runtime e diagnostica.
 - `PUBLIC_BACKEND_URL`, `FRONTEND_BASE_URL`: servono solo per precompilare i default della configurazione portale/Azure.
 - `WEB_PUSH_VAPID_SUBJECT`, `WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`: richieste solo se vuoi attivare le Web Push.
+- `CHRISBOT_DNS_1`, `CHRISBOT_DNS_2`: DNS opzionali per i container applicativi. Se non impostati, Docker Compose usa `8.8.8.8` e `8.8.4.4`.
 
 ## Env ancora lette dal progetto
 
@@ -82,6 +83,36 @@ Default gia' gestiti dal codice:
 Note sul `.env.example` root:
 
 - `MYSQL_ROOT_PASSWORD` e `MYSQL_HOST_PORT` restano utili al solo `docker compose`, ma non vengono lette direttamente dal backend Node
+
+## DNS dei container
+
+I servizi `chrisbot` e `chrisbot-fe` possono usare DNS specifici tramite le variabili opzionali del file `.env`:
+
+```env
+CHRISBOT_DNS_1=10.0.123.2
+CHRISBOT_DNS_2=10.0.123.3
+```
+
+Se queste variabili non sono impostate, Docker Compose usa automaticamente i DNS pubblici di fallback:
+
+```text
+8.8.8.8
+8.8.4.4
+```
+
+Per applicare la modifica ai container gia' esistenti:
+
+```bash
+docker compose up -d --force-recreate chrisbot chrisbot-fe
+```
+
+Per verificare i DNS effettivamente usati dal container:
+
+```bash
+docker compose exec chrisbot cat /etc/resolv.conf
+docker compose exec chrisbot getent hosts google.com
+docker compose exec chrisbot getent hosts nomehost.interno
+```
 
 
 ## Aggiungere routine legacy custom
