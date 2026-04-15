@@ -1,0 +1,61 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: chrisbot-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - chrisbot-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  chrisbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chrisbot:latest
+    container_name: chrisbot
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+    restart: unless-stopped
+
+  chrisbot-fe:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_LOCAL_LOGIN_ENABLED: ${NEXT_PUBLIC_LOCAL_LOGIN_ENABLED:-false}
+    image: chrisbot-fe:latest
+    container_name: chrisbot-fe
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      BACKEND_URL: http://chrisbot:3000
+      NEXT_PUBLIC_LOCAL_LOGIN_ENABLED: ${NEXT_PUBLIC_LOCAL_LOGIN_ENABLED:-false}
+    depends_on:
+      - chrisbot
+    restart: unless-stopped
+
+    # Uncomment to add a simple healthcheck if you add a /health route
+    # healthcheck:
+    #   test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 3
+
+volumes:
+  chrisbot-mysql-data:

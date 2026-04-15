@@ -1,0 +1,20 @@
+# Node deps
+node_modules
+npm-debug.log*
+frontend/node_modules
+frontend/.next
+frontend/tsconfig.tsbuildinfo
+
+# Git
+.git
+.gitignore
+
+# Env and local files
+.env
+.DS_Store
+
+# Databases: keep directory, exclude db files
+database/*.db
+
+# Tests/artifacts
+coverage

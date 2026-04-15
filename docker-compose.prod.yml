@@ -1,0 +1,43 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: chrisbot-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - chrisbot-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  chrisbot:
+    image: ghcr.io/${OWNER:-owner}/${REPO:-chrisbot}-backend:${TAG:-latest}
+    container_name: chrisbot
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+    restart: unless-stopped
+
+  chrisbot-fe:
+    image: ghcr.io/${OWNER:-owner}/${REPO:-chrisbot}-frontend:${TAG:-latest}
+    container_name: chrisbot-fe
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      BACKEND_URL: http://chrisbot:3000
+    depends_on:
+      - chrisbot
+    restart: unless-stopped
+
+volumes:
+  chrisbot-mysql-data:

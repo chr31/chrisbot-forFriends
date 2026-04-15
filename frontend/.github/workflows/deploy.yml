@@ -1,0 +1,84 @@
+name: Deploy to self-hosted runner
+
+on:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    environment: production
+    name: Build and run container
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show Docker version
+        run: |
+          docker version
+          docker info
+
+      - name: Prepare env files from GitHub secret
+        run: |
+          # Multi-line env from secret ENV_FILE (KEY=VALUE per line)
+          printf "%s" "${{ secrets.ENV_FILE }}" > .env.all || true
+          # Runtime env: all keys
+          if [ -s .env.all ]; then
+            cp .env.all .env.runtime
+            echo "Runtime env file created from secrets."
+          else
+            echo "No ENV_FILE secret set or it is empty."
+          fi
+          # Build-time env for Next.js: only NEXT_PUBLIC_* keys
+          if [ -s .env.all ]; then
+            grep -E '^[[:space:]]*NEXT_PUBLIC_[A-Z0-9_]+=' .env.all > .env.production || true
+            if [ -s .env.production ]; then
+              echo "Build-time env (.env.production) prepared for Next build."
+            else
+              echo "No NEXT_PUBLIC_* vars found; .env.production not created."
+            fi
+          fi
+
+      - name: Build image
+        run: |
+          docker build -t app-frontend:latest .
+
+      - name: Stop old container (if running)
+        run: |
+          if [ "$(docker ps -q -f name=^/app-frontend$)" ]; then
+            docker stop app-frontend || true
+          fi
+          if [ "$(docker ps -aq -f name=^/app-frontend$)" ]; then
+            docker rm app-frontend || true
+          fi
+
+      - name: Run container on port 3001
+        env:
+          TZ: Europe/Rome
+        run: |
+          set -euo pipefail
+          ENV_FILE_OPT=""
+          if [ -s .env.runtime ]; then
+            echo "Using env from GitHub secret (ENV_FILE)"
+            ENV_FILE_OPT="--env-file .env.runtime"
+          fi
+          docker run -d \
+            --name app-frontend \
+            --restart unless-stopped \
+            -p 3001:3001 \
+            $ENV_FILE_OPT \
+            app-frontend:latest
+
+      - name: Cleanup old images (dangling)
+        run: |
+          docker image prune -f

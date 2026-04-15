@@ -1,0 +1,55 @@
+# Dipendenze di Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Ambiente di produzione
+.env
+.env.local
+.env.*.local
+
+# Cartelle di log
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Test coverage
+coverage/
+chat.db
+
+# Cartelle di build
+build/
+dist/
+out/
+.cache/
+frontend/.next/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+
+# Configurazioni di editor vari
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# File di sistema
+.DS_Store
+Thumbs.db
+
+# Cartelle temporanee
+tmp/
+temp/
+
+# Database (SQLite) – ignore DB files and journals in database/
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database.sqlite
+.env.all
+.env.runtime
+.env.production
