@@ -16,7 +16,6 @@ import {
   OllamaConnectionOption,
 } from '../../../lib/aiModels';
 import {
-  MagnifyingGlassIcon,
   PaperAirplaneIcon,
   PlayIcon,
   PauseIcon,
@@ -24,7 +23,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
 } from '@heroicons/react/24/solid';
-import { InformationCircleIcon } from '@heroicons/react/24/outline';
 
 type Agent = {
   id: number;
@@ -96,33 +94,6 @@ function normalizeParentRunId(value: unknown): number | null {
   if (value === null || value === undefined || value === '' || value === 'null') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function AgentInfoHint({ description, agentName }: { description?: string | null; agentName: string }) {
-  const [open, setOpen] = useState(false);
-  const content = String(description || '').trim();
-  if (!content) return null;
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen((current) => !current);
-        }}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-gray-500 hover:text-white"
-        aria-label={`Info ${agentName}`}
-      >
-        <InformationCircleIcon className="h-4 w-4" />
-      </button>
-      {open ? (
-        <div className="absolute left-0 top-7 z-20 w-64 rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-xs text-gray-200 shadow-xl">
-          {content}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function LoadingBubble({ label = 'L’agente sta elaborando' }: { label?: string }) {
@@ -216,11 +187,10 @@ export default function AliveAgentsPage() {
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [detail, setDetail] = useState<AliveDetail | null>(null);
-  const [agentSearch, setAgentSearch] = useState('');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showRunTree, setShowRunTree] = useState(true);
+  const [showRunTree, setShowRunTree] = useState(false);
   const [aiOptions, setAiOptions] = useState<AiOptionsResponse | null>(null);
   const [selectedModelConfig, setSelectedModelConfig] = useState<ModelConfig>({ provider: 'ollama', model: 'qwen3.5', ollama_server_id: null });
   const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
@@ -347,13 +317,16 @@ export default function AliveAgentsPage() {
     forceAutoScrollRef.current = false;
   }, [visibleMessages]);
 
-  const filteredAgents = useMemo(() => {
-    const normalized = agentSearch.trim().toLowerCase();
-    if (!normalized) return agents;
-    return agents.filter((agent) =>
-      agent.name.toLowerCase().includes(normalized) || agent.slug.toLowerCase().includes(normalized)
-    );
-  }, [agentSearch, agents]);
+  const selectedAgentOption = useMemo(() => {
+    if (!detail?.agent) return null;
+    return agents.find((agent) => agent.id === detail.agent.id) || detail.agent;
+  }, [agents, detail?.agent]);
+  const agentSelectOptions = useMemo(() => {
+    if (!selectedAgentOption) return agents;
+    return agents.some((agent) => agent.id === selectedAgentOption.id)
+      ? agents
+      : [selectedAgentOption, ...agents];
+  }, [agents, selectedAgentOption]);
 
   const modelOptions = useMemo(
     () => buildModelOptions(aiOptions?.catalog, selectedModelConfig),
@@ -561,15 +534,24 @@ export default function AliveAgentsPage() {
             </h1>
           </div>
           <div className="flex w-full flex-col gap-2 lg:w-auto lg:flex-row lg:items-center">
-            <div className="flex w-full items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 lg:w-auto">
-              <MagnifyingGlassIcon className="h-3.5 w-3.5 text-gray-400" />
-              <input
-                value={agentSearch}
-                onChange={(e) => setAgentSearch(e.target.value)}
-                placeholder="Cerca agente..."
-                className="w-full bg-transparent text-sm text-white outline-none placeholder:text-gray-500 lg:w-48"
-              />
-            </div>
+            <select
+              value={detail?.agent?.id || ''}
+              onChange={(e) => {
+                const nextAgent = agents.find((agent) => String(agent.id) === e.target.value);
+                if (nextAgent) handleSelectAgent(nextAgent);
+              }}
+              disabled={agents.length === 0}
+              className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+            >
+              {agentSelectOptions.length === 0 ? (
+                <option value="">Nessun agent disponibile</option>
+              ) : null}
+              {agentSelectOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} · {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}
+                </option>
+              ))}
+            </select>
             <select
               value={encodeModelValue(selectedModelConfig)}
               onChange={(e) => setSelectedModelConfig((current) => normalizeModelConfig({
@@ -617,62 +599,13 @@ export default function AliveAgentsPage() {
         </div>
       </div>
 
-      <div className="border-b border-white/10 bg-gray-950/50 px-4 py-2 sm:px-6">
-        <div className="max-w-5xl py-1">
-          <div className="-mx-1 flex snap-x snap-mandatory gap-1.5 overflow-x-auto px-1 pb-1">
-            {filteredAgents.map((agent) => {
-              const isSelected = String(detail?.agent?.id || '') === String(agent.id);
-              return (
-                <div
-                  key={agent.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectAgent(agent)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
-                    handleSelectAgent(agent);
-                  }}
-                  className={`w-[208px] shrink-0 snap-start cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-400/70 ${
-                    isSelected ? 'border-emerald-500 bg-emerald-600/10' : 'border-gray-800 bg-gray-900/70 hover:border-gray-700'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <h2 className="truncate text-sm font-medium text-white">{agent.name}</h2>
-                      <AgentInfoHint description={agent.user_description} agentName={agent.name} />
-                    </div>
-                    <span className={`rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] ${
-                      agent.is_processing ? 'bg-amber-500/10 text-amber-300' : agent.loop_status === 'play' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-gray-800 text-gray-400'
-                    }`}>
-                      {agent.is_processing ? 'run' : agent.loop_status || 'pause'}
-                    </span>
-                  </div>
-                  <div className="mt-1 truncate text-[11px] uppercase tracking-[0.16em] text-gray-500">
-                    {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}
-                  </div>
-                  {agent.last_error ? (
-                    <div className="mt-2 line-clamp-2 text-xs text-rose-300">{agent.last_error}</div>
-                  ) : null}
-                </div>
-              );
-            })}
-            {!isLoading && filteredAgents.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-gray-700 p-4 text-sm text-gray-400">
-                Nessun alive agent disponibile.
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
       <div className="flex flex-1 overflow-hidden">
         <div ref={conversationRef} onScroll={handleConversationScroll} className="min-w-0 flex-1 overflow-y-auto p-4 space-y-4">
           {error ? (
             <div className="rounded-xl border border-rose-800/50 bg-rose-950/30 px-4 py-3 text-sm text-rose-200">{error}</div>
           ) : null}
           {detail?.agent?.system_prompt ? (
-            <CollapsibleCard title={detail.agent.alive_include_goals && detail.agent.goals ? 'System Prompt + Goals' : 'System Prompt'} defaultOpen>
+            <CollapsibleCard title={detail.agent.alive_include_goals && detail.agent.goals ? 'System Prompt + Goals' : 'System Prompt'}>
               <div className="space-y-3 text-sm text-gray-100">
                 <div className="whitespace-pre-wrap">{detail.agent.system_prompt}</div>
                 {detail.agent.alive_include_goals && detail.agent.goals ? (

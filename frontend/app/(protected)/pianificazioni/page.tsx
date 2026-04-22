@@ -1868,13 +1868,22 @@ export default function TaskPage() {
                   {editingTaskId ? 'Dettaglio task' : 'Nuovo task'}
                 </h2>
               </div>
-              <button
-                type="button"
-                onClick={closeModal}
-                className="rounded-xl border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
-              >
-                Chiudi
-              </button>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 text-sm text-gray-200">
+                  <span>Task attivo</span>
+                  <Toggle
+                    checked={form.is_active}
+                    onChange={() => setForm((current) => ({ ...current, is_active: !current.is_active }))}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="rounded-xl border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                >
+                  Chiudi
+                </button>
+              </div>
             </div>
 
             <div className="mt-6 inline-flex rounded-2xl border border-gray-800 bg-gray-950/70 p-1">
@@ -1901,7 +1910,7 @@ export default function TaskPage() {
 
             {activeTab === 'config' ? (
               <form onSubmit={handleSave} className="mt-6 space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
                   <label className="text-sm text-gray-200">
                     <span className="mb-1 block">Titolo</span>
                     <input
@@ -1927,6 +1936,44 @@ export default function TaskPage() {
                       ))}
                     </select>
                   </label>
+                  <label className="block text-sm text-gray-200">
+                    <span className="mb-1 block">Modello AI</span>
+                    <select
+                      value={encodeModelValue(form.model_config)}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        model_config: normalizeModelConfig({
+                          ...decodeModelValue(event.target.value, current.model_config),
+                          ollama_server_id: current.model_config.ollama_server_id,
+                        }, current.model_config),
+                      }))}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                    >
+                      {modelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-gray-200">
+                    <span className="mb-1 block">Server Ollama</span>
+                    <select
+                      value={form.model_config.ollama_server_id || ''}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        model_config: {
+                          ...current.model_config,
+                          ollama_server_id: event.target.value || null,
+                        },
+                      }))}
+                      disabled={form.model_config.provider !== 'ollama'}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
+                    >
+                      <option value="">Default globale</option>
+                      {ollamaOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.name}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
 
                 <label className="block text-sm text-gray-200">
@@ -1938,7 +1985,7 @@ export default function TaskPage() {
                   />
                 </label>
 
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)_auto_auto] xl:items-end">
                   <label className="text-sm text-gray-200">
                     <span className="mb-1 block">Tipo schedulazione</span>
                     <select
@@ -1950,24 +1997,20 @@ export default function TaskPage() {
                       <option value="once">una tantum</option>
                     </select>
                   </label>
-                  <label className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                    <input
-                      type="checkbox"
-                      checked={form.is_active}
-                      onChange={(event) => setForm((current) => ({ ...current, is_active: event.target.checked }))}
-                      className="h-4 w-4 accent-sky-500"
+                  <div className="flex min-h-11 items-center gap-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
+                    <span>Notifiche abilitate</span>
+                    <Toggle
+                      checked={form.notifications_enabled}
+                      onChange={() => setForm((current) => ({ ...current, notifications_enabled: !current.notifications_enabled }))}
                     />
-                    Task attivo
-                  </label>
-                  <label className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                    <input
-                      type="checkbox"
+                  </div>
+                  <div className="flex min-h-11 items-center gap-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
+                    <span>Richiede conferma utente</span>
+                    <Toggle
                       checked={form.needs_confirmation}
-                      onChange={(event) => setForm((current) => ({ ...current, needs_confirmation: event.target.checked }))}
-                      className="h-4 w-4 accent-sky-500"
+                      onChange={() => setForm((current) => ({ ...current, needs_confirmation: !current.needs_confirmation }))}
                     />
-                    Richiede conferma utente
-                  </label>
+                  </div>
                 </div>
 
                 {form.schedule_mode === 'cron' ? (
@@ -2095,63 +2138,11 @@ export default function TaskPage() {
                   />
                 </label>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Modello AI</span>
-                    <select
-                      value={encodeModelValue(form.model_config)}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        model_config: normalizeModelConfig({
-                          ...decodeModelValue(event.target.value, current.model_config),
-                          ollama_server_id: current.model_config.ollama_server_id,
-                        }, current.model_config),
-                      }))}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                    >
-                      {modelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Server Ollama</span>
-                    <select
-                      value={form.model_config.ollama_server_id || ''}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        model_config: {
-                          ...current.model_config,
-                          ollama_server_id: event.target.value || null,
-                        },
-                      }))}
-                      disabled={form.model_config.provider !== 'ollama'}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
-                    >
-                      <option value="">Default globale</option>
-                      {ollamaOptions.map((option) => (
-                        <option key={option.id} value={option.id}>{option.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                <label className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                  <input
-                    type="checkbox"
-                    checked={form.notifications_enabled}
-                    onChange={(event) => setForm((current) => ({ ...current, notifications_enabled: event.target.checked }))}
-                    className="h-4 w-4 accent-sky-500"
-                  />
-                  Notifiche abilitate
-                </label>
-
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-wrap items-center justify-start gap-3">
                   <button
                     type="submit"
                     disabled={isSaving}
-                    className="rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+                    className="rounded-xl bg-sky-600 px-6 py-3 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
                   >
                     {isSaving ? 'Salvataggio...' : editingTaskId ? 'Aggiorna task' : 'Crea task'}
                   </button>

@@ -69,6 +69,11 @@ type Tool = {
   description: string;
 };
 
+type ToolOption = Tool & {
+  available: boolean;
+  selected: boolean;
+};
+
 type AuthUser = {
   name: string;
   is_super_admin: boolean;
@@ -235,6 +240,39 @@ function Toggle({
   );
 }
 
+function CollapsiblePanel({
+  title,
+  subtitle,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="flex w-full items-start justify-between gap-3 text-left"
+      >
+        <div>
+          <p className="text-sm font-semibold text-white">{title}</p>
+          {subtitle ? <p className="mt-1 text-xs text-gray-400">{subtitle}</p> : null}
+        </div>
+        <span className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+          {isOpen ? 'Nascondi' : 'Mostra'}
+        </span>
+      </button>
+      {isOpen ? <div className="mt-4">{children}</div> : null}
+    </div>
+  );
+}
+
 function buildGuardrailsPayload(guardrails: GuardrailForm) {
   const extra = JSON.parse(guardrails.extra_json || '{}');
   return {
@@ -317,6 +355,7 @@ export default function AgentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentKind>('orchestrator');
+  const [configTab, setConfigTab] = useState<'properties' | 'personalization'>('properties');
   const [aiOptions, setAiOptions] = useState<AiOptionsResponse | null>(null);
   const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
 
@@ -375,16 +414,39 @@ export default function AgentsPage() {
   }, [fetchData]);
 
   const normalizedToolSearch = toolSearch.trim().toLowerCase();
+  const mergedTools = useMemo<ToolOption[]>(() => {
+    const availableByName = new Map(tools.map((tool) => [tool.name, tool]));
+    const selectedMissing = form.tool_names
+      .filter((toolName) => !availableByName.has(toolName))
+      .map((toolName) => ({
+        name: toolName,
+        description: 'Tool attualmente non disponibile sul server MCP.',
+        available: false,
+        selected: true,
+      }));
+
+    const availableTools = tools.map((tool) => ({
+      ...tool,
+      available: true,
+      selected: form.tool_names.includes(tool.name),
+    }));
+
+    return [...availableTools, ...selectedMissing].sort((a, b) => {
+      if (a.selected !== b.selected) return a.selected ? -1 : 1;
+      if (a.available !== b.available) return a.available ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [tools, form.tool_names]);
   const filteredTools = useMemo(
     () =>
-      tools.filter((tool) => {
+      mergedTools.filter((tool) => {
         if (!normalizedToolSearch) return true;
         return (
           tool.name.toLowerCase().includes(normalizedToolSearch) ||
           tool.description.toLowerCase().includes(normalizedToolSearch)
         );
       }),
-    [tools, normalizedToolSearch]
+    [mergedTools, normalizedToolSearch]
   );
 
   const normalizedAgentSearch = agentSearch.trim().toLowerCase();
@@ -476,6 +538,7 @@ export default function AgentsPage() {
     setSuccess(null);
     setError(null);
     setToolSearch('');
+    setConfigTab('properties');
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -639,6 +702,7 @@ export default function AgentsPage() {
     setSuccess(null);
     setError(null);
     setToolSearch('');
+    setConfigTab('properties');
     setIsConfigOpen(true);
   };
 
@@ -651,6 +715,7 @@ export default function AgentsPage() {
     setSuccess(null);
     setError(null);
     setToolSearch('');
+    setConfigTab('properties');
     setIsConfigOpen(true);
   };
 
@@ -875,130 +940,130 @@ export default function AgentsPage() {
                   </div>
 
                   <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Nome <InfoHint label="Nome" description="Etichetta leggibile dell'agente. E usata in UI, timeline e strumenti di delega." /></span>
-                        <input
-                          value={form.name}
-                          onChange={(e) => setForm((current) => ({ ...current, name: e.target.value }))}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                          required
-                        />
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Slug <InfoHint label="Slug" description="Identificatore stabile e URL-friendly. Se vuoto viene generato automaticamente dal nome." /></span>
-                        <input
-                          value={form.slug}
-                          onChange={(e) => setForm((current) => ({ ...current, slug: e.target.value }))}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                          placeholder="auto se vuoto"
-                        />
-                      </label>
+                    <div className="inline-flex rounded-2xl border border-gray-800 bg-gray-950/70 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setConfigTab('properties')}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${configTab === 'properties' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}
+                      >
+                        Proprieta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfigTab('personalization')}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${configTab === 'personalization' ? 'bg-sky-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}
+                      >
+                        Personalizzazione
+                      </button>
                     </div>
 
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Descrizione utente <InfoHint label="Descrizione utente" description="Testo breve mostrato in chat per aiutare l'utente a capire quando usare questo agente." /></span>
-                      <textarea
-                        value={form.user_description}
-                        onChange={(e) => setForm((current) => ({ ...current, user_description: e.target.value }))}
-                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        placeholder="Spiega in modo semplice cosa fa questo agente e quando conviene usarlo."
-                      />
-                    </label>
+                    {configTab === 'properties' ? (
+                      <>
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Nome <InfoHint label="Nome" description="Etichetta leggibile dell'agente. E usata in UI, timeline e strumenti di delega." /></span>
+                            <input
+                              value={form.name}
+                              onChange={(e) => setForm((current) => ({ ...current, name: e.target.value }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              required
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Tipo <InfoHint label="Tipo" description="Worker esegue task e usa tool. Orchestrator può anche delegare ai sotto-agenti configurati." /></span>
+                            <select
+                              value={form.kind}
+                              onChange={(e) => setForm((current) => ({ ...current, kind: e.target.value as AgentKind }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            >
+                              <option value="worker">worker</option>
+                              <option value="orchestrator">orchestrator</option>
+                            </select>
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello predefinito usato per le nuove chat di questo agente, salvo override manuale." /></span>
+                            <select
+                              value={encodeModelValue(form.default_model_config)}
+                              onChange={(e) => setForm((current) => ({
+                                ...current,
+                                default_model_config: normalizeModelConfig(
+                                  decodeModelValue(e.target.value, current.default_model_config),
+                                  current.default_model_config
+                                ),
+                              }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            >
+                              {modelOptions.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Server Ollama <InfoHint label="Server Ollama" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama." /></span>
+                            <select
+                              value={form.default_model_config.ollama_server_id || ''}
+                              onChange={(e) => setForm((current) => ({
+                                ...current,
+                                default_model_config: {
+                                  ...current.default_model_config,
+                                  ollama_server_id: e.target.value || null,
+                                },
+                              }))}
+                              disabled={form.default_model_config.provider !== 'ollama'}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
+                            >
+                              <option value="">Default globale</option>
+                              {ollamaOptions.map((option) => (
+                                <option key={option.id} value={option.id}>{option.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
 
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Gruppi Azure abilitati <InfoHint label="Gruppi Azure abilitati" description="Elenco gruppi Azure separati da virgola che possono accedere a questo agente. Puoi usare nomi parlanti mappati nella sezione Impostazioni oppure direttamente gli Object ID Azure. I membri di `chrisbot.admin` hanno sempre accesso anche se qui non indicati." /></span>
-                      <input
-                        value={form.allowed_group_names_csv}
-                        onChange={(e) => setForm((current) => ({ ...current, allowed_group_names_csv: e.target.value }))}
-                        className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        placeholder="es. chrisbot.admin, chrisbot.helpdesk"
-                      />
-                    </label>
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.55fr)_minmax(0,1.45fr)]">
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Visibilità <InfoHint label="Visibilità" description="Public rende l'agente accessibile a tutti gli utenti autorizzati dal flusso base. Restricted/private preparano il terreno per policy più strette." /></span>
+                            <select
+                              value={form.visibility_scope}
+                              onChange={(e) => setForm((current) => ({ ...current, visibility_scope: e.target.value as VisibilityScope }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            >
+                              <option value="public">public</option>
+                              <option value="restricted">restricted</option>
+                              <option value="private">private</option>
+                            </select>
+                          </label>
+                          <div className="space-y-4">
+                            <label className="block text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Gruppi Azure abilitati <InfoHint label="Gruppi Azure abilitati" description="Elenco gruppi Azure separati da virgola che possono accedere a questo agente. Puoi usare nomi parlanti mappati nella sezione Impostazioni oppure direttamente gli Object ID Azure. I membri di `chrisbot.admin` hanno sempre accesso anche se qui non indicati." /></span>
+                              <input
+                                value={form.allowed_group_names_csv}
+                                onChange={(e) => setForm((current) => ({ ...current, allowed_group_names_csv: e.target.value }))}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                placeholder="es. chrisbot.admin, chrisbot.helpdesk"
+                              />
+                            </label>
+                          </div>
+                        </div>
 
-                    <div className="grid gap-4 sm:grid-cols-3">
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Tipo <InfoHint label="Tipo" description="Worker esegue task e usa tool. Orchestrator può anche delegare ai sotto-agenti configurati." /></span>
-                        <select
-                          value={form.kind}
-                          onChange={(e) => setForm((current) => ({ ...current, kind: e.target.value as AgentKind }))}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        >
-                          <option value="worker">worker</option>
-                          <option value="orchestrator">orchestrator</option>
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello predefinito usato per le nuove chat di questo agente, salvo override manuale." /></span>
-                        <select
-                          value={encodeModelValue(form.default_model_config)}
-                          onChange={(e) => setForm((current) => ({
-                            ...current,
-                            default_model_config: normalizeModelConfig(
-                              decodeModelValue(e.target.value, current.default_model_config),
-                              current.default_model_config
-                            ),
-                          }))}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        >
-                          {modelOptions.map((option) => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Server Ollama <InfoHint label="Server Ollama" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama." /></span>
-                        <select
-                          value={form.default_model_config.ollama_server_id || ''}
-                          onChange={(e) => setForm((current) => ({
-                            ...current,
-                            default_model_config: {
-                              ...current.default_model_config,
-                              ollama_server_id: e.target.value || null,
-                            },
-                          }))}
-                          disabled={form.default_model_config.provider !== 'ollama'}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
-                        >
-                          <option value="">Default globale</option>
-                          {ollamaOptions.map((option) => (
-                            <option key={option.id} value={option.id}>{option.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Visibilità <InfoHint label="Visibilità" description="Public rende l'agente accessibile a tutti gli utenti autorizzati dal flusso base. Restricted/private preparano il terreno per policy più strette." /></span>
-                        <select
-                          value={form.visibility_scope}
-                          onChange={(e) => setForm((current) => ({ ...current, visibility_scope: e.target.value as VisibilityScope }))}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        >
-                          <option value="public">public</option>
-                          <option value="restricted">restricted</option>
-                          <option value="private">private</option>
-                        </select>
-                      </label>
-                    </div>
+                        <label className="block text-sm text-gray-200">
+                          <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Usa `username:chat` o `username:manage` per l'identificativo interno, oppure `upn:nome.cognome@azienda.it:chat` e `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
+                          <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username:chat`, `username:manage`, `upn:nome.cognome@azienda.it:chat`, `upn:nome.cognome@azienda.it:manage`.</span>
+                          <textarea
+                            value={form.permissions_text}
+                            onChange={(e) => setForm((current) => ({ ...current, permissions_text: e.target.value }))}
+                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white"
+                          />
+                        </label>
 
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Prompt di sistema <InfoHint label="Prompt di sistema" description="Istruzioni di comportamento dell'agente. Definiscono ruolo, stile, vincoli e obiettivi operativi." /></span>
-                      <textarea
-                        value={form.system_prompt}
-                        onChange={(e) => setForm((current) => ({ ...current, system_prompt: e.target.value }))}
-                        className="min-h-32 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        required
-                      />
-                    </label>
-
-                    <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
-                      <p className="flex items-center gap-2 text-sm font-semibold text-white">Guardrail <InfoHint label="Guardrail" description="Vincoli enforced lato server per limitare profondità, numero di deleghe e iterazioni tool." /></p>
-                      <p className="mt-1 text-xs text-gray-400">
-                        Limiti strutturati per iterazioni, deleghe e profondità. Il JSON extra resta disponibile per estensioni future.
-                      </p>
-                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                        <label className="text-sm text-gray-200">
-                          <span className="mb-1 flex items-center gap-2">Max tool rounds <InfoHint label="Max tool rounds" description="Numero massimo di cicli assistant -> tool -> assistant concessi in una singola run." /></span>
-                          <input
+                        <CollapsiblePanel
+                          title="Guardrail"
+                          subtitle="Limiti strutturati per iterazioni, deleghe e profondita. Il JSON extra resta disponibile per estensioni future."
+                        >
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <label className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Max tool rounds <InfoHint label="Max tool rounds" description="Numero massimo di cicli assistant -> tool -> assistant concessi in una singola run." /></span>
+                              <input
                             type="number"
                             min={1}
                             value={form.guardrails.max_tool_rounds}
@@ -1039,226 +1104,251 @@ export default function AgentsPage() {
                       </div>
                       <label className="mt-4 block text-sm text-gray-200">
                         <span className="mb-1 flex items-center gap-2">Extra guardrails JSON <InfoHint label="Extra guardrails JSON" description="Campi avanzati non ancora modellati in UI. Restano serializzati insieme ai guardrail principali." /></span>
-                        <textarea
-                          value={form.guardrails.extra_json}
-                          onChange={(e) => setGuardrailField('extra_json', e.target.value)}
-                          className="min-h-24 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 font-mono text-sm text-white"
-                        />
-                      </label>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="flex items-center gap-2 text-sm font-medium text-gray-200">Tool MCP assegnati <InfoHint label="Tool MCP assegnati" description="Elenco delle funzioni MCP che l'agente può invocare. Per gli orchestratori puoi limitarli ai soli tool necessari." /></p>
-                        <div className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2">
-                          <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
-                          <input
-                            value={toolSearch}
-                            onChange={(e) => setToolSearch(e.target.value)}
-                            placeholder="Filtra nome o descrizione..."
-                            className="w-56 bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+                          <textarea
+                            value={form.guardrails.extra_json}
+                            onChange={(e) => setGuardrailField('extra_json', e.target.value)}
+                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 font-mono text-sm text-white"
                           />
-                        </div>
-                      </div>
-                      <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-gray-800 bg-gray-950/80 p-3">
-                        {filteredTools.length === 0 && (
-                          <div className="text-sm text-gray-400">Nessun tool corrisponde alla ricerca.</div>
-                        )}
-                        {filteredTools.map((tool) => (
-                          <label key={tool.name} className="flex items-start gap-3 text-sm text-gray-200">
-                            <input
-                              type="checkbox"
-                              checked={form.tool_names.includes(tool.name)}
-                              onChange={() => toggleTool(tool.name)}
-                              className="mt-1 h-4 w-4 accent-sky-500"
-                            />
-                            <span>
-                              <span className="block font-medium text-white">{tool.name}</span>
-                              <span className="text-xs text-gray-400">{tool.description}</span>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
+                        </label>
+                        </CollapsiblePanel>
 
-                    {form.kind === 'orchestrator' && (
-                      <div>
-                        <p className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-200">Sotto-agenti delegabili <InfoHint label="Sotto-agenti delegabili" description="Worker che l'orchestratore può chiamare come strumenti virtuali di delega." /></p>
-                        <div className="max-h-64 space-y-3 overflow-y-auto rounded-2xl border border-gray-800 bg-gray-950/80 p-3">
-                          {workerAgents.map((agent) => (
-                            <div key={agent.id} className="rounded-xl border border-gray-800 bg-black/20 p-3">
-                              <label className="flex items-center gap-3 text-sm text-gray-200">
+                        <div>
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="flex items-center gap-2 text-sm font-medium text-gray-200">Tool MCP assegnati <InfoHint label="Tool MCP assegnati" description="Elenco delle funzioni MCP che l'agente può invocare. Per gli orchestratori puoi limitarli ai soli tool necessari." /></p>
+                            <div className="flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2">
+                              <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
+                              <input
+                                value={toolSearch}
+                                onChange={(e) => setToolSearch(e.target.value)}
+                                placeholder="Filtra nome o descrizione..."
+                                className="w-56 bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-gray-800 bg-gray-950/80 p-3">
+                            {filteredTools.length === 0 && (
+                              <div className="text-sm text-gray-400">Nessun tool corrisponde alla ricerca.</div>
+                            )}
+                            {filteredTools.map((tool) => (
+                              <label key={tool.name} className={`flex items-start gap-3 text-sm ${tool.available ? 'text-gray-200' : 'text-gray-500'}`}>
                                 <input
                                   type="checkbox"
-                                  checked={selectedRelationIds.has(agent.id)}
-                                  onChange={() => toggleChild(agent.id)}
-                                  className="h-4 w-4 accent-emerald-500"
+                                  checked={tool.selected}
+                                  disabled={!tool.available}
+                                  onChange={() => toggleTool(tool.name)}
+                                  className="mt-1 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
                                 />
-                                <span>{agent.name}</span>
+                                <span>
+                                  <span className="block font-medium text-white">
+                                    {tool.name}
+                                    {!tool.available ? ' · non disponibile' : ''}
+                                  </span>
+                                  <span className="text-xs text-gray-400">{tool.description}</span>
+                                </span>
                               </label>
-                              {selectedRelationIds.has(agent.id) && (
-                                <div className="mt-3 space-y-3">
-                                  <label className="block text-sm text-gray-200">
-                                    <span className="mb-1 flex items-center gap-2">Routing hint <InfoHint label="Routing hint" description="Testo breve usato nel contesto dell'orchestratore per spiegare quando delegare a questo sotto-agente." /></span>
-                                    <input
-                                      value={form.relations.find((entry) => entry.worker_agent_id === agent.id)?.routing_hint || ''}
-                                      onChange={(e) => setRelationField(agent.id, 'routing_hint', e.target.value)}
-                                      placeholder="Es: usa questo agente per AV, sale e supporto eventi"
-                                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                                    />
-                                  </label>
-                                  <label className="flex items-center gap-2 text-sm text-gray-200">
+                            ))}
+                          </div>
+                        </div>
+
+                        {form.kind === 'orchestrator' && (
+                          <div>
+                            <p className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-200">Sotto-agenti delegabili <InfoHint label="Sotto-agenti delegabili" description="Worker che l'orchestratore può chiamare come strumenti virtuali di delega." /></p>
+                            <div className="max-h-64 space-y-3 overflow-y-auto rounded-2xl border border-gray-800 bg-gray-950/80 p-3">
+                              {workerAgents.map((agent) => (
+                                <div key={agent.id} className="rounded-xl border border-gray-800 bg-black/20 p-3">
+                                  <label className="flex items-center gap-3 text-sm text-gray-200">
                                     <input
                                       type="checkbox"
-                                      checked={form.relations.find((entry) => entry.worker_agent_id === agent.id)?.is_active !== false}
-                                      onChange={(e) => setRelationField(agent.id, 'is_active', e.target.checked)}
+                                      checked={selectedRelationIds.has(agent.id)}
+                                      onChange={() => toggleChild(agent.id)}
                                       className="h-4 w-4 accent-emerald-500"
                                     />
-                                    Relazione attiva
+                                    <span>{agent.name}</span>
                                   </label>
+                                  {selectedRelationIds.has(agent.id) && (
+                                    <div className="mt-3 space-y-3">
+                                      <label className="block text-sm text-gray-200">
+                                        <span className="mb-1 flex items-center gap-2">Routing hint <InfoHint label="Routing hint" description="Testo breve usato nel contesto dell'orchestratore per spiegare quando delegare a questo sotto-agente." /></span>
+                                        <input
+                                          value={form.relations.find((entry) => entry.worker_agent_id === agent.id)?.routing_hint || ''}
+                                          onChange={(e) => setRelationField(agent.id, 'routing_hint', e.target.value)}
+                                          placeholder="Es: usa questo agente per AV, sale e supporto eventi"
+                                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                        />
+                                      </label>
+                                      <label className="flex items-center gap-2 text-sm text-gray-200">
+                                        <input
+                                          type="checkbox"
+                                          checked={form.relations.find((entry) => entry.worker_agent_id === agent.id)?.is_active !== false}
+                                          onChange={(e) => setRelationField(agent.id, 'is_active', e.target.checked)}
+                                          className="h-4 w-4 accent-emerald-500"
+                                        />
+                                        Relazione attiva
+                                      </label>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                          </div>
+                        )}
 
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Usa `username:chat` o `username:manage` per l'identificativo interno, oppure `upn:nome.cognome@azienda.it:chat` e `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
-                      <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username:chat`, `username:manage`, `upn:nome.cognome@azienda.it:chat`, `upn:nome.cognome@azienda.it:manage`.</span>
-                      <textarea
-                        value={form.permissions_text}
-                        onChange={(e) => setForm((current) => ({ ...current, permissions_text: e.target.value }))}
-                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white"
-                      />
-                    </label>
-
-                    <div className="flex flex-wrap gap-4 text-sm text-gray-200">
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={form.direct_chat_enabled}
-                          onChange={(e) => setForm((current) => ({
-                            ...current,
-                            direct_chat_enabled: e.target.checked,
-                            is_alive: e.target.checked ? current.is_alive : false,
-                          }))}
-                          className="h-4 w-4 accent-sky-500"
-                        />
-                        Chat diretta abilitata
-                        <InfoHint label="Chat diretta abilitata" description="Se disattivata, l'agente non può essere scelto per chat diretta ma può ancora essere usato come sotto-agente." />
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={form.is_alive}
-                          onChange={(e) => setForm((current) => ({ ...current, is_alive: e.target.checked }))}
-                          disabled={!form.direct_chat_enabled}
-                          className="h-4 w-4 accent-sky-500 disabled:opacity-50"
-                        />
-                        Is alive
-                        <InfoHint label="Is alive" description="Disponibile solo per agenti con chat diretta. Abilita la chat alive globale dell'agente nella nuova sezione dedicata." />
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={form.is_active}
-                          onChange={(e) => setForm((current) => ({ ...current, is_active: e.target.checked }))}
-                          className="h-4 w-4 accent-sky-500"
-                        />
-                        Agente attivo
-                        <InfoHint label="Agente attivo" description="Disabilita temporaneamente l'agente senza eliminarne configurazione, chat e storico." />
-                      </label>
-                    </div>
-
-                    {form.is_alive ? (
-                      <div className="rounded-2xl border border-emerald-800/40 bg-emerald-950/10 p-4">
-                        <p className="text-sm font-semibold text-white">Alive mode</p>
-                        <p className="mt-1 text-xs text-gray-400">
-                          Parametri del loop automatico usati nella sezione Alive agents.
-                        </p>
-                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                          <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Secondi loop <InfoHint label="Secondi loop" description="Intervallo in secondi tra una risposta dell'agente e il successivo invio automatico del prompt alive." /></span>
-                            <input
-                              type="number"
-                              min={1}
-                              value={form.alive_loop_seconds}
-                              onChange={(e) => setForm((current) => ({ ...current, alive_loop_seconds: toPositiveInteger(e.target.value, 60) || 60 }))}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                            />
-                          </label>
-                          <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Context message <InfoHint label="Context message" description="Numero massimo di messaggi visibili user/assistant inviati al modello a ogni iterazione." /></span>
-                            <input
-                              type="number"
-                              min={1}
-                              value={form.alive_context_messages}
-                              onChange={(e) => setForm((current) => ({ ...current, alive_context_messages: toPositiveInteger(e.target.value, 12) || 12 }))}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                            />
-                          </label>
-                        </div>
-                        <label className="mt-4 block text-sm text-gray-200">
-                          <span className="mb-1 flex items-center gap-2">Prompt alive <InfoHint label="Prompt alive" description="Prompt utente riutilizzato dal loop automatico quando la chat resta in play." /></span>
+                        {form.is_alive ? (
+                          <div className="rounded-2xl border border-emerald-800/40 bg-emerald-950/10 p-4">
+                            <p className="text-sm font-semibold text-white">Alive mode</p>
+                            <p className="mt-1 text-xs text-gray-400">
+                              Parametri del loop automatico usati nella sezione Alive agents.
+                            </p>
+                            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)]">
+                              <div className="space-y-4">
+                                <label className="block text-sm text-gray-200">
+                                  <span className="mb-1 flex items-center gap-2">Secondi loop <InfoHint label="Secondi loop" description="Intervallo in secondi tra una risposta dell'agente e il successivo invio automatico del prompt alive." /></span>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={form.alive_loop_seconds}
+                                    onChange={(e) => setForm((current) => ({ ...current, alive_loop_seconds: toPositiveInteger(e.target.value, 60) || 60 }))}
+                                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                  />
+                                </label>
+                                <label className="block text-sm text-gray-200">
+                                  <span className="mb-1 flex items-center gap-2">Context message <InfoHint label="Context message" description="Numero massimo di messaggi visibili user/assistant inviati al modello a ogni iterazione." /></span>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={form.alive_context_messages}
+                                    onChange={(e) => setForm((current) => ({ ...current, alive_context_messages: toPositiveInteger(e.target.value, 12) || 12 }))}
+                                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                  />
+                                </label>
+                              </div>
+                              <label className="block text-sm text-gray-200">
+                                <span className="mb-1 flex items-center gap-2">Prompt alive <InfoHint label="Prompt alive" description="Prompt utente riutilizzato dal loop automatico quando la chat resta in play." /></span>
+                                <textarea
+                                  value={form.alive_prompt}
+                                  onChange={(e) => setForm((current) => ({ ...current, alive_prompt: e.target.value }))}
+                                  className="min-h-[10.5rem] w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <label className="block text-sm text-gray-200">
+                          <span className="mb-1 flex items-center gap-2">Descrizione utente <InfoHint label="Descrizione utente" description="Testo breve mostrato in chat per aiutare l'utente a capire quando usare questo agente." /></span>
                           <textarea
-                            value={form.alive_prompt}
-                            onChange={(e) => setForm((current) => ({ ...current, alive_prompt: e.target.value }))}
+                            value={form.user_description}
+                            onChange={(e) => setForm((current) => ({ ...current, user_description: e.target.value }))}
+                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            placeholder="Spiega in modo semplice cosa fa questo agente e quando conviene usarlo."
+                          />
+                        </label>
+
+                        <label className="block text-sm text-gray-200">
+                          <span className="mb-1 flex items-center gap-2">Prompt di sistema <InfoHint label="Prompt di sistema" description="Istruzioni di comportamento dell'agente. Definiscono ruolo, stile, vincoli e obiettivi operativi." /></span>
+                          <textarea
+                            value={form.system_prompt}
+                            onChange={(e) => setForm((current) => ({ ...current, system_prompt: e.target.value }))}
+                            className="min-h-32 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            required
+                          />
+                        </label>
+
+                        <label className="block text-sm text-gray-200">
+                          <span className="mb-1 flex flex-wrap items-center justify-between gap-3">
+                            <span className="flex items-center gap-2">Goals <InfoHint label="Goals" description="Obiettivi persistenti dell'agente. Possono essere letti/modificati anche tramite i tool interni get/edit goals." /></span>
+                            {form.is_alive ? (
+                              <span className="inline-flex items-center gap-2 rounded-xl border border-emerald-800/40 bg-emerald-950/10 px-3 py-2 text-xs text-gray-200">
+                                <input
+                                  type="checkbox"
+                                  checked={form.alive_include_goals}
+                                  onChange={(e) => setForm((current) => ({ ...current, alive_include_goals: e.target.checked }))}
+                                  className="h-4 w-4 accent-emerald-500"
+                                />
+                                Goals nel system prompt
+                                <InfoHint label="Goals nel system prompt" description="Se attivo, il testo Goals viene concatenato al prompt di sistema nelle esecuzioni alive." />
+                              </span>
+                            ) : null}
+                          </span>
+                          <textarea
+                            value={form.goals}
+                            onChange={(e) => setForm((current) => ({ ...current, goals: e.target.value }))}
                             className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                           />
                         </label>
-                        <label className="mt-4 flex items-center gap-2 text-sm text-gray-200">
-                          <input
-                            type="checkbox"
-                            checked={form.alive_include_goals}
-                            onChange={(e) => setForm((current) => ({ ...current, alive_include_goals: e.target.checked }))}
-                            className="h-4 w-4 accent-emerald-500"
+
+                        <label className="block text-sm text-gray-200">
+                          <span className="mb-1 flex items-center gap-2">Memories <InfoHint label="Memories" description="Memoria persistente dell'agente. Può essere letta/modificata anche tramite i tool interni get/edit memories." /></span>
+                          <textarea
+                            value={form.memories}
+                            onChange={(e) => setForm((current) => ({ ...current, memories: e.target.value }))}
+                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                           />
-                          Goals nel system prompt
-                          <InfoHint label="Goals nel system prompt" description="Se attivo, il testo Goals viene concatenato al prompt di sistema nelle esecuzioni alive." />
                         </label>
-                      </div>
-                    ) : null}
-
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Goals <InfoHint label="Goals" description="Obiettivi persistenti dell'agente. Possono essere letti/modificati anche tramite i tool interni get/edit goals." /></span>
-                      <textarea
-                        value={form.goals}
-                        onChange={(e) => setForm((current) => ({ ...current, goals: e.target.value }))}
-                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                      />
-                    </label>
-
-                    <label className="block text-sm text-gray-200">
-                      <span className="mb-1 flex items-center gap-2">Memories <InfoHint label="Memories" description="Memoria persistente dell'agente. Può essere letta/modificata anche tramite i tool interni get/edit memories." /></span>
-                      <textarea
-                        value={form.memories}
-                        onChange={(e) => setForm((current) => ({ ...current, memories: e.target.value }))}
-                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                      />
-                    </label>
+                      </>
+                    )}
 
                     {error && <p className="text-sm text-rose-300">{error}</p>}
                     {success && <p className="text-sm text-emerald-300">{success}</p>}
 
-                    <div className="flex gap-3">
-                      <button
-                        type="submit"
-                        disabled={isSaving}
-                        className="flex-1 rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
-                      >
-                        {isSaving ? 'Salvataggio...' : form.id ? 'Aggiorna agente' : 'Crea agente'}
-                      </button>
-                      {form.id && (
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-4 text-sm text-gray-200">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={form.direct_chat_enabled}
+                            onChange={(e) => setForm((current) => ({
+                              ...current,
+                              direct_chat_enabled: e.target.checked,
+                              is_alive: e.target.checked ? current.is_alive : false,
+                            }))}
+                            className="h-4 w-4 accent-sky-500"
+                          />
+                          Chat diretta abilitata
+                          <InfoHint label="Chat diretta abilitata" description="Se disattivata, l'agente non può essere scelto per chat diretta ma può ancora essere usato come sotto-agente." />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={form.is_alive}
+                            onChange={(e) => setForm((current) => ({ ...current, is_alive: e.target.checked }))}
+                            disabled={!form.direct_chat_enabled}
+                            className="h-4 w-4 accent-sky-500 disabled:opacity-50"
+                          />
+                          Is alive
+                          <InfoHint label="Is alive" description="Disponibile solo per agenti con chat diretta. Abilita la chat alive globale dell'agente nella nuova sezione dedicata." />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={form.is_active}
+                            onChange={(e) => setForm((current) => ({ ...current, is_active: e.target.checked }))}
+                            className="h-4 w-4 accent-sky-500"
+                          />
+                          Agente attivo
+                          <InfoHint label="Agente attivo" description="Disabilita temporaneamente l'agente senza eliminarne configurazione, chat e storico." />
+                        </label>
+                      </div>
+                      <div className="ml-auto flex items-center gap-3">
                         <button
-                          type="button"
-                          onClick={() => handleDelete(form.id as number)}
-                          className="rounded-xl border border-rose-800 px-4 py-3 text-sm text-rose-300 hover:bg-rose-950/60"
+                          type="submit"
+                          disabled={isSaving}
+                          className="rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
                         >
-                          Elimina
+                          {isSaving ? 'Salvataggio...' : form.id ? 'Aggiorna agente' : 'Crea agente'}
                         </button>
-                      )}
+                        {form.id && (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(form.id as number)}
+                            className="rounded-xl border border-rose-800 px-4 py-3 text-sm text-rose-300 hover:bg-rose-950/60"
+                          >
+                            Elimina
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </form>
                 </Dialog.Panel>

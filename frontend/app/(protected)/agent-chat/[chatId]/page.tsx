@@ -6,8 +6,7 @@ import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AiOptionsResponse, buildModelOptions, decodeModelValue, encodeModelValue, getModelLabel, ModelConfig, normalizeModelConfig, OllamaConnectionOption } from '../../../../lib/aiModels';
-import { PaperAirplaneIcon, ChevronDownIcon, ChevronRightIcon, MagnifyingGlassIcon, PlayIcon } from '@heroicons/react/24/solid';
-import { InformationCircleIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/solid';
 
 type Message = {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -334,35 +333,6 @@ function RunEventBlock({
   );
 }
 
-function AgentInfoHint({ description, agentName }: { description?: string | null; agentName: string }) {
-  const [open, setOpen] = useState(false);
-  const content = String(description || '').trim();
-
-  if (!content) return null;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen((current) => !current);
-        }}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-gray-500 hover:text-white"
-        aria-label={`Info ${agentName}`}
-      >
-        <InformationCircleIcon className="h-4 w-4" />
-      </button>
-      {open ? (
-        <div className="absolute left-0 top-7 z-20 w-64 rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-xs text-gray-200 shadow-xl">
-          {content}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default function AgentChatPage() {
   const params = useParams();
   const router = useRouter();
@@ -374,14 +344,11 @@ export default function AgentChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [agentSearch, setAgentSearch] = useState('');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [selectedModelConfig, setSelectedModelConfig] = useState<ModelConfig>({ provider: 'ollama', model: 'qwen3.5', ollama_server_id: null });
   const [runs, setRuns] = useState<AgentRun[]>([]);
-  const [showRunTree, setShowRunTree] = useState(true);
-  const [showAgentPicker, setShowAgentPicker] = useState(true);
-  const [isMobile, setIsMobile] = useState(false);
+  const [showRunTree, setShowRunTree] = useState(false);
   const [pendingChatId, setPendingChatId] = useState<string | null>(null);
   const [aiOptions, setAiOptions] = useState<AiOptionsResponse | null>(null);
   const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
@@ -399,20 +366,6 @@ export default function AgentChatPage() {
   useEffect(() => {
     selectedAgentRef.current = selectedAgent;
   }, [selectedAgent]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mediaQuery = window.matchMedia('(max-width: 1023px)');
-    const applyLayoutMode = (matches: boolean) => {
-      setIsMobile(matches);
-      setShowRunTree(!matches);
-      setShowAgentPicker(!matches);
-    };
-    applyLayoutMode(mediaQuery.matches);
-    const listener = (event: MediaQueryListEvent) => applyLayoutMode(event.matches);
-    mediaQuery.addEventListener('change', listener);
-    return () => mediaQuery.removeEventListener('change', listener);
-  }, []);
 
   const readPendingMessages = useCallback((targetChatId: string): Message[] => {
     try {
@@ -660,11 +613,6 @@ export default function AgentChatPage() {
     return () => window.clearInterval(intervalId);
   }, [chatId, fetchExistingChat, isLoading, isNewChat, isPendingRoute, pendingChatId, router, runs]);
 
-  const filteredAgents = agents.filter((agent) => {
-    const normalized = agentSearch.trim().toLowerCase();
-    if (!normalized) return true;
-    return agent.name.toLowerCase().includes(normalized) || agent.slug.toLowerCase().includes(normalized);
-  });
   const hasRunningRun = runs.some((run) => run.status === 'running');
   const isBusy = isLoading || hasRunningRun;
 
@@ -742,10 +690,12 @@ export default function AgentChatPage() {
     () => buildModelOptions(aiOptions?.catalog, selectedModelConfig),
     [aiOptions?.catalog, selectedModelConfig]
   );
-  const selectedAgentLabel = useMemo(() => {
-    if (!selectedAgent) return 'Nessun assistente selezionato';
-    return `${selectedAgent.name} · ${selectedAgent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}`;
-  }, [selectedAgent]);
+  const agentSelectOptions = useMemo(() => {
+    if (!selectedAgent) return agents;
+    return agents.some((agent) => agent.id === selectedAgent.id)
+      ? agents
+      : [selectedAgent, ...agents];
+  }, [agents, selectedAgent]);
   const activeRunsByParent = activeRuns.reduce<Record<string, AgentRun[]>>((acc, run) => {
     const key = String(normalizeParentRunId(run.parent_run_id) ?? 'root');
     if (!acc[key]) acc[key] = [];
@@ -921,18 +871,31 @@ export default function AgentChatPage() {
             </h1>
           </div>
           <div className="flex w-full flex-col gap-2 lg:w-auto lg:flex-row lg:items-center">
-            {isNewChat ? (
-              <div className="flex w-full items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 lg:w-auto">
-                <MagnifyingGlassIcon className="h-3.5 w-3.5 text-gray-400" />
-                <input
-                  value={agentSearch}
-                  onChange={(e) => setAgentSearch(e.target.value)}
-                  placeholder="Cerca agente..."
-                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-gray-500 lg:w-48"
-                />
-              </div>
-            ) : null}
             <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:w-auto lg:items-center">
+              {isNewChat ? (
+                <select
+                  value={selectedAgent?.id || ''}
+                  onChange={(e) => {
+                    const nextAgent = agents.find((agent) => String(agent.id) === e.target.value);
+                    if (!nextAgent) return;
+                    setSelectedAgent(nextAgent);
+                    if (nextAgent.default_model_config) {
+                      setSelectedModelConfig(normalizeModelConfig(nextAgent.default_model_config, aiOptions?.default_selection));
+                    }
+                  }}
+                  disabled={agents.length === 0}
+                  className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+                >
+                  {agentSelectOptions.length === 0 ? (
+                    <option value="">Nessun agente disponibile</option>
+                  ) : null}
+                  {agentSelectOptions.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} · {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               <select
                 value={encodeModelValue(selectedModelConfig)}
                 onChange={(e) => setSelectedModelConfig((current) => normalizeModelConfig({
@@ -972,122 +935,6 @@ export default function AgentChatPage() {
           </div>
         </div>
       </div>
-
-      {isNewChat && (
-        <div className="border-b border-white/10 bg-gray-950/50 px-4 py-2 sm:px-6">
-          {isMobile ? (
-            <div className="space-y-2 py-1">
-              <button
-                type="button"
-                onClick={() => setShowAgentPicker((current) => !current)}
-                className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2.5 text-left"
-              >
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300">Assistente</div>
-                  <div className="mt-0.5 text-sm text-white">{selectedAgentLabel}</div>
-                </div>
-                {showAgentPicker ? <ChevronDownIcon className="h-4 w-4 text-gray-300" /> : <ChevronRightIcon className="h-4 w-4 text-gray-300" />}
-              </button>
-              {showAgentPicker ? (
-                <div className="-mx-1 flex snap-x snap-mandatory gap-1.5 overflow-x-auto px-1 pb-1">
-                  {filteredAgents.map((agent) => {
-                    const isSelected = selectedAgent?.id === agent.id;
-                    return (
-                      <div
-                        key={agent.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          setSelectedAgent(agent);
-                          setShowAgentPicker(false);
-                          if (agent.default_model_config) {
-                            setSelectedModelConfig(normalizeModelConfig(agent.default_model_config, aiOptions?.default_selection));
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'Enter' && event.key !== ' ') return;
-                          event.preventDefault();
-                          setSelectedAgent(agent);
-                          setShowAgentPicker(false);
-                          if (agent.default_model_config) {
-                            setSelectedModelConfig(normalizeModelConfig(agent.default_model_config, aiOptions?.default_selection));
-                          }
-                        }}
-                        className={`w-[172px] shrink-0 snap-start cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-400/70 ${
-                          isSelected
-                            ? 'border-emerald-500 bg-emerald-600/10'
-                            : 'border-gray-800 bg-gray-900/70 hover:border-gray-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <h2 className="truncate text-sm font-medium text-white">{agent.name}</h2>
-                            <AgentInfoHint description={agent.user_description} agentName={agent.name} />
-                          </div>
-                          <PlayIcon className={`h-4 w-4 shrink-0 ${isSelected ? 'text-emerald-300' : 'text-gray-500'}`} />
-                        </div>
-                        <div className="mt-1 truncate text-[11px] uppercase tracking-[0.16em] text-gray-500">
-                          {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-          <div className="max-w-5xl py-1">
-            <div className="-mx-1 flex snap-x snap-mandatory gap-1.5 overflow-x-auto px-1 pb-1">
-              {filteredAgents.map((agent) => {
-                const isSelected = selectedAgent?.id === agent.id;
-                return (
-                  <div
-                    key={agent.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      setSelectedAgent(agent);
-                      if (agent.default_model_config) {
-                        setSelectedModelConfig(normalizeModelConfig(agent.default_model_config, aiOptions?.default_selection));
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return;
-                      event.preventDefault();
-                      setSelectedAgent(agent);
-                      if (agent.default_model_config) {
-                        setSelectedModelConfig(normalizeModelConfig(agent.default_model_config, aiOptions?.default_selection));
-                      }
-                    }}
-                    className={`w-[188px] shrink-0 snap-start cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-400/70 ${
-                      isSelected
-                        ? 'border-emerald-500 bg-emerald-600/10'
-                        : 'border-gray-800 bg-gray-900/70 hover:border-gray-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <h2 className="truncate text-sm font-medium text-white">{agent.name}</h2>
-                        <AgentInfoHint description={agent.user_description} agentName={agent.name} />
-                      </div>
-                      <PlayIcon className={`h-4 w-4 shrink-0 ${isSelected ? 'text-emerald-300' : 'text-gray-500'}`} />
-                    </div>
-                    <div className="mt-1 truncate text-[11px] uppercase tracking-[0.16em] text-gray-500">
-                      {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'}
-                    </div>
-                  </div>
-                );
-              })}
-              {!isLoading && filteredAgents.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-gray-700 p-4 text-sm text-gray-400">
-                  Nessun agente disponibile con i filtri correnti.
-                </div>
-              )}
-            </div>
-          </div>
-          )}
-        </div>
-      )}
 
       <div className="flex flex-1 overflow-hidden">
         <div
