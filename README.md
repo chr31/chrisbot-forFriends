@@ -51,3 +51,10 @@ Servizi esposti:
 
 - [Struttura env](docs/struttura-env.md)
 - [Funzioni](docs/funzioni.md)
+
+## Last updates
+
+- **Alive agents**: una nuova modalità pensata per trasformare alcuni agenti in presenze operative continue, capaci di lavorare in autonomia in una chat dedicata e sempre coerente.
+- Gli amministratori possono attivare questa funzione solo sugli agenti abilitati alla chat diretta, definendo ritmo di interazione, contesto conversazionale e obiettivi da seguire nel tempo.
+- La nuova sezione **Alive agents** rende immediato monitorare, avviare, mettere in pausa e riprendere agenti persistenti, mantenendo una singola conversazione per agente e una gestione più ordinata delle attività.
+- L’esperienza è progettata per supportare flussi continuativi: l’agente può proseguire il proprio ciclo anche in background, conservare memoria e obiettivi aggiornabili e offrire maggiore continuità operativa nelle attività ripetitive o di presidio.
