@@ -1,4 +1,5 @@
 const { createInternalNotification } = require('./notifications');
+const { getMemories, editMemories, getGoals, editGoals } = require('./agentState');
 
 const DEFAULT_INTERNAL_PREFIX = 'chrisbot_';
 
@@ -19,18 +20,6 @@ const INTERNAL_TOOL_DEFINITIONS = [
           type: 'string',
           description: 'Titolo opzionale della notifica.',
         },
-        _chatId: {
-          type: 'string',
-          description: 'Chat agente sorgente usata per risolvere il proprietario della notifica.',
-        },
-        _agentId: {
-          type: 'number',
-          description: 'ID agente associato alla notifica.',
-        },
-        _runId: {
-          type: 'number',
-          description: 'ID esecuzione agente associato alla notifica.',
-        },
       },
       required: ['description'],
       additionalProperties: false,
@@ -39,6 +28,66 @@ const INTERNAL_TOOL_DEFINITIONS = [
       await createInternalNotification(args);
       return 'Notifica inviata correttamente.';
     },
+  },
+  {
+    key: 'getMemories',
+    name: 'getMemories',
+    publicName: `${DEFAULT_INTERNAL_PREFIX}getMemories`,
+    description: 'Restituisce il testo corrente delle memories dell’agente che chiama il tool.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    handler: getMemories,
+  },
+  {
+    key: 'editMemories',
+    name: 'editMemories',
+    publicName: `${DEFAULT_INTERNAL_PREFIX}editMemories`,
+    description: 'Sostituisce interamente le memories dell’agente. Recupera prima il valore corrente con getMemories.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Nuovo testo completo delle memories.',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: editMemories,
+  },
+  {
+    key: 'getGoals',
+    name: 'getGoals',
+    publicName: `${DEFAULT_INTERNAL_PREFIX}getGoals`,
+    description: 'Restituisce il testo corrente dei goals dell’agente che chiama il tool.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    handler: getGoals,
+  },
+  {
+    key: 'editGoals',
+    name: 'editGoals',
+    publicName: `${DEFAULT_INTERNAL_PREFIX}editGoals`,
+    description: 'Sostituisce interamente i goals dell’agente. Recupera prima il valore corrente con getGoals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Nuovo testo completo dei goals.',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: editGoals,
   },
 ];
 

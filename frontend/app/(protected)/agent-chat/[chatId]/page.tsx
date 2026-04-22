@@ -308,6 +308,12 @@ function isTopLevelAssistantReply(msg: Message) {
   return msg.role === 'assistant' && !isChildAssistantMessage(msg) && msg.event_type === 'message';
 }
 
+function isStandaloneRunMarkerMessage(msg: Message) {
+  if (!isTopLevelAssistantReply(msg)) return false;
+  const content = String(msg.content || '').trim();
+  return !content && typeof msg.total_tokens === 'number';
+}
+
 function RunEventBlock({
   label,
   subtitle,
@@ -381,12 +387,18 @@ export default function AgentChatPage() {
   const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const selectedAgentRef = useRef<Agent | null>(null);
+  const aiDefaultSelectionRef = useRef<ModelConfig | null>(null);
   const hasInitializedMessagesRef = useRef(false);
   const shouldStickToBottomRef = useRef(false);
   const forceAutoScrollRef = useRef(false);
   const previousMessageCountRef = useRef(0);
 
   const isNewChat = chatId === 'new';
+
+  useEffect(() => {
+    selectedAgentRef.current = selectedAgent;
+  }, [selectedAgent]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -437,6 +449,13 @@ export default function AgentChatPage() {
 
     if (!hasInitializedMessagesRef.current) {
       hasInitializedMessagesRef.current = true;
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({
+          behavior: 'auto',
+          block: 'end',
+        });
+        shouldStickToBottomRef.current = true;
+      });
       forceAutoScrollRef.current = false;
       return;
     }
@@ -492,6 +511,7 @@ export default function AgentChatPage() {
     const data = await response.json() as AiOptionsResponse;
     setAiOptions(data);
     setOllamaOptions(Array.isArray(data?.ollama?.connections) ? data.ollama.connections : []);
+    aiDefaultSelectionRef.current = data?.default_selection || null;
     setSelectedModelConfig((current) => normalizeModelConfig(current, data?.default_selection));
   }, []);
 
@@ -566,10 +586,13 @@ export default function AgentChatPage() {
       await fetchAiOptions();
 
       if (isNewChat) {
-        const nextSelected = loadedAgents.find((agent) => String(agent.id) === String(agentId)) || null;
+        const nextSelected = loadedAgents.find((agent) => String(agent.id) === String(agentId))
+          || selectedAgentRef.current
+          || loadedAgents[0]
+          || null;
         setSelectedAgent(nextSelected);
         if (nextSelected?.default_model_config) {
-          setSelectedModelConfig(normalizeModelConfig(nextSelected.default_model_config, aiOptions?.default_selection));
+          setSelectedModelConfig(normalizeModelConfig(nextSelected.default_model_config, aiDefaultSelectionRef.current));
         }
         setMessages([{
           role: 'assistant',
@@ -609,7 +632,7 @@ export default function AgentChatPage() {
     } finally {
       setIsLoading(keepLoading);
     }
-  }, [agentId, aiOptions?.default_selection, chatId, fetchAgents, fetchAiOptions, fetchChatMeta, fetchExistingChat, isNewChat, isPendingRoute, readPendingMessages, router]);
+  }, [agentId, chatId, fetchAgents, fetchAiOptions, fetchChatMeta, fetchExistingChat, isNewChat, isPendingRoute, readPendingMessages, router]);
 
   useEffect(() => {
     fetchChat();
@@ -768,6 +791,7 @@ export default function AgentChatPage() {
       }
 
       if (isTopLevelAssistantReply(msg)) {
+        if (isStandaloneRunMarkerMessage(msg)) return;
         const hasVisibleReply = Boolean(String(msg.content || '').trim());
         if (!hasVisibleReply) return;
         items.push(
@@ -777,11 +801,6 @@ export default function AgentChatPage() {
               <div className="markdown-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
               </div>
-              {msg.reasoning ? (
-                <div className="mt-3">
-                  <CollapsibleCard title="Ragionamento" content={msg.reasoning} tone="slate" />
-                </div>
-              ) : null}
               {typeof msg.total_tokens === 'number' && (
                 <div className="mt-2 border-t border-white/10 pt-2 text-[11px] text-gray-400">
                   Token totali: {msg.total_tokens.toLocaleString('it-IT')}
@@ -800,9 +819,10 @@ export default function AgentChatPage() {
     const children = activeRunsByParent[String(run.id)] || [];
     const runMessages = messages.filter((message) => Number(message.metadata_json?.run_id) === Number(run.id));
     const reasoningMessages = runMessages.filter((message) => Boolean(message.reasoning));
+    const chatMarkerMessages = runMessages.filter((message) => isStandaloneRunMarkerMessage(message));
     const delegationMessages = runMessages.filter((message) => message.event_type === 'delegation');
     const toolMessages = runMessages.filter((message) => message.role === 'tool');
-    const hasDetails = reasoningMessages.length > 0 || delegationMessages.length > 0 || toolMessages.length > 0;
+    const hasDetails = reasoningMessages.length > 0 || chatMarkerMessages.length > 0 || delegationMessages.length > 0 || toolMessages.length > 0;
     return (
       <div key={run.id}>
         <div className="rounded-xl border border-gray-800 bg-gray-950/70 p-3">
@@ -844,6 +864,14 @@ export default function AgentChatPage() {
             <div className="mt-3">
               <CollapsibleCard title="Dettagli run" tone="slate">
                 <div className="space-y-3">
+                  {chatMarkerMessages.map((message, index) => (
+                    <RunEventBlock
+                      key={`chat-marker-${run.id}-${index}`}
+                      label="Messaggio chat"
+                      subtitle={message.agent_name || null}
+                      content={`Token totali: ${Number(message.total_tokens || 0).toLocaleString('it-IT')}`}
+                    />
+                  ))}
                   {reasoningMessages.map((message, index) => (
                     <RunEventBlock
                       key={`reasoning-${run.id}-${index}`}

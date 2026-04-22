@@ -82,6 +82,13 @@ function hydrateAgent(row) {
     visibility_scope: normalizeVisibilityScope(row.visibility_scope),
     direct_chat_enabled: Number(row.direct_chat_enabled) === 1,
     is_active: Number(row.is_active) === 1,
+    is_alive: Number(row.is_alive) === 1,
+    alive_loop_seconds: Number.isFinite(Number(row.alive_loop_seconds)) ? Math.max(1, Math.trunc(Number(row.alive_loop_seconds))) : 60,
+    alive_prompt: String(row.alive_prompt || '').trim(),
+    alive_context_messages: Number.isFinite(Number(row.alive_context_messages)) ? Math.max(1, Math.trunc(Number(row.alive_context_messages))) : 12,
+    alive_include_goals: Number(row.alive_include_goals) === 1,
+    goals: String(row.goals || ''),
+    memories: String(row.memories || ''),
     guardrails_json: parseJsonField(row.guardrails_json, {}),
     default_model_config: defaultModelConfig,
   };
@@ -103,6 +110,13 @@ async function initAgentsTables() {
       guardrails_json JSON NULL,
       visibility_scope ENUM('public', 'restricted', 'private') NOT NULL DEFAULT 'public',
       direct_chat_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      is_alive TINYINT(1) NOT NULL DEFAULT 0,
+      alive_loop_seconds INT NOT NULL DEFAULT 60,
+      alive_prompt LONGTEXT NULL,
+      alive_context_messages INT NOT NULL DEFAULT 12,
+      alive_include_goals TINYINT(1) NOT NULL DEFAULT 0,
+      goals LONGTEXT NULL,
+      memories LONGTEXT NULL,
       is_active TINYINT(1) NOT NULL DEFAULT 1,
       created_by VARCHAR(255) NULL,
       created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -171,6 +185,83 @@ async function initAgentsTables() {
     await pool.query(`
       ALTER TABLE agents
       ADD COLUMN default_ollama_server_id VARCHAR(128) NULL AFTER default_model_name
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN is_alive TINYINT(1) NOT NULL DEFAULT 0 AFTER direct_chat_enabled
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN alive_loop_seconds INT NOT NULL DEFAULT 60 AFTER is_alive
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN alive_prompt LONGTEXT NULL AFTER alive_loop_seconds
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN alive_context_messages INT NOT NULL DEFAULT 12 AFTER alive_prompt
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN alive_include_goals TINYINT(1) NOT NULL DEFAULT 0 AFTER alive_context_messages
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN goals LONGTEXT NULL AFTER alive_include_goals
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN memories LONGTEXT NULL AFTER goals
     `);
   } catch (error) {
     if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
@@ -262,6 +353,8 @@ async function ensureUniqueSlug(baseSlug, excludedId = null) {
 async function insertAgent(input) {
   const name = String(input?.name || '').trim();
   const systemPrompt = String(input?.system_prompt || '').trim();
+  const directChatEnabled = normalizeBooleanFlag(input?.direct_chat_enabled, 1);
+  const isAlive = directChatEnabled ? normalizeBooleanFlag(input?.is_alive, 0) : 0;
   if (!name) throw new Error('name is required');
   if (!systemPrompt) throw new Error('system_prompt is required');
 
@@ -269,8 +362,8 @@ async function insertAgent(input) {
   const defaultModelConfig = normalizeModelConfig(input, getDefaultModelConfig());
   const [result] = await pool.query(
     `INSERT INTO agents
-      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_active, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_alive, alive_loop_seconds, alive_prompt, alive_context_messages, alive_include_goals, goals, memories, is_active, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       name,
       slug,
@@ -283,7 +376,14 @@ async function insertAgent(input) {
       defaultModelConfig.ollama_server_id,
       JSON.stringify(parseJsonField(input?.guardrails_json, input?.guardrails || {})),
       normalizeVisibilityScope(input?.visibility_scope),
-      normalizeBooleanFlag(input?.direct_chat_enabled, 1),
+      directChatEnabled,
+      isAlive,
+      Number.isFinite(Number(input?.alive_loop_seconds)) ? Math.max(1, Math.trunc(Number(input.alive_loop_seconds))) : 60,
+      String(input?.alive_prompt || '').trim() || null,
+      Number.isFinite(Number(input?.alive_context_messages)) ? Math.max(1, Math.trunc(Number(input.alive_context_messages))) : 12,
+      normalizeBooleanFlag(input?.alive_include_goals, 0),
+      String(input?.goals || '') || null,
+      String(input?.memories || '') || null,
       normalizeBooleanFlag(input?.is_active, 1),
       input?.created_by ? String(input.created_by) : null,
     ]
@@ -320,13 +420,17 @@ async function updateAgent(id, updates) {
     values.push(String(updates.system_prompt || '').trim());
   }
   if (
-    updates.default_model_provider !== undefined
+    updates.default_model_config !== undefined
+    || updates.default_model_provider !== undefined
     || updates.default_model_name !== undefined
     || updates.default_ollama_server_id !== undefined
     || updates.model_config !== undefined
   ) {
     const currentAgent = await getAgentById(id);
-    const defaultModelConfig = normalizeModelConfig(updates, currentAgent?.default_model_config || getDefaultModelConfig());
+    const defaultModelConfig = normalizeModelConfig(
+      updates.default_model_config ? { model_config: updates.default_model_config } : updates,
+      currentAgent?.default_model_config || getDefaultModelConfig()
+    );
     entries.push('default_model_provider = ?');
     values.push(defaultModelConfig.provider);
     entries.push('default_model_name = ?');
@@ -345,6 +449,41 @@ async function updateAgent(id, updates) {
   if (updates.direct_chat_enabled !== undefined) {
     entries.push('direct_chat_enabled = ?');
     values.push(normalizeBooleanFlag(updates.direct_chat_enabled, 1));
+  }
+  if (updates.is_alive !== undefined || updates.direct_chat_enabled !== undefined) {
+    const currentAgent = await getAgentById(id);
+    const nextDirectChatEnabled = updates.direct_chat_enabled !== undefined
+      ? normalizeBooleanFlag(updates.direct_chat_enabled, 1)
+      : normalizeBooleanFlag(currentAgent?.direct_chat_enabled, 1);
+    const nextIsAlive = nextDirectChatEnabled
+      ? normalizeBooleanFlag(updates.is_alive !== undefined ? updates.is_alive : currentAgent?.is_alive, 0)
+      : 0;
+    entries.push('is_alive = ?');
+    values.push(nextIsAlive);
+  }
+  if (updates.alive_loop_seconds !== undefined) {
+    entries.push('alive_loop_seconds = ?');
+    values.push(Number.isFinite(Number(updates.alive_loop_seconds)) ? Math.max(1, Math.trunc(Number(updates.alive_loop_seconds))) : 60);
+  }
+  if (updates.alive_prompt !== undefined) {
+    entries.push('alive_prompt = ?');
+    values.push(String(updates.alive_prompt || '').trim() || null);
+  }
+  if (updates.alive_context_messages !== undefined) {
+    entries.push('alive_context_messages = ?');
+    values.push(Number.isFinite(Number(updates.alive_context_messages)) ? Math.max(1, Math.trunc(Number(updates.alive_context_messages))) : 12);
+  }
+  if (updates.alive_include_goals !== undefined) {
+    entries.push('alive_include_goals = ?');
+    values.push(normalizeBooleanFlag(updates.alive_include_goals, 0));
+  }
+  if (updates.goals !== undefined) {
+    entries.push('goals = ?');
+    values.push(String(updates.goals || '') || null);
+  }
+  if (updates.memories !== undefined) {
+    entries.push('memories = ?');
+    values.push(String(updates.memories || '') || null);
   }
   if (updates.is_active !== undefined) {
     entries.push('is_active = ?');
@@ -542,6 +681,13 @@ async function getAgentPermissions(agentId) {
   return Array.isArray(rows) ? rows : [];
 }
 
+async function getAliveAgents() {
+  const [rows] = await pool.query(
+    'SELECT * FROM agents WHERE is_alive = 1 AND direct_chat_enabled = 1 AND is_active = 1 ORDER BY name ASC, id ASC'
+  );
+  return Array.isArray(rows) ? rows.map(hydrateAgent) : [];
+}
+
 module.exports = {
   initAgentsTables,
   insertAgent,
@@ -549,6 +695,7 @@ module.exports = {
   getAgentById,
   getAgentBySlug,
   getAllAgents,
+  getAliveAgents,
   deleteAgent,
   replaceAgentTools,
   getAgentToolNames,

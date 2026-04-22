@@ -29,9 +29,16 @@ router.get('/catalog', async (req, res) => {
         kind: agent.kind,
         user_description: agent.user_description || '',
         default_model_config: agent.default_model_config,
-        direct_chat_enabled: agent.direct_chat_enabled,
-        is_active: agent.is_active,
-      }));
+      direct_chat_enabled: agent.direct_chat_enabled,
+      is_active: agent.is_active,
+      is_alive: agent.is_alive,
+      alive_loop_seconds: agent.alive_loop_seconds,
+      alive_prompt: agent.alive_prompt,
+      alive_context_messages: agent.alive_context_messages,
+      alive_include_goals: agent.alive_include_goals,
+      goals: agent.goals,
+      memories: agent.memories,
+    }));
     return res.json(catalog);
   } catch (error) {
     console.error('Errore nel recupero catalogo agenti:', error);
@@ -53,6 +60,13 @@ function normalizeCreatePayload(body, username) {
     guardrails: body?.guardrails,
     visibility_scope: body?.visibility_scope,
     direct_chat_enabled: body?.direct_chat_enabled,
+    is_alive: body?.is_alive,
+    alive_loop_seconds: body?.alive_loop_seconds,
+    alive_prompt: body?.alive_prompt,
+    alive_context_messages: body?.alive_context_messages,
+    alive_include_goals: body?.alive_include_goals,
+    goals: body?.goals,
+    memories: body?.memories,
     is_active: body?.is_active,
     created_by: username,
   };
@@ -138,7 +152,14 @@ router.put('/:id', async (req, res) => {
     if (!canManage) {
       return res.status(403).json({ error: 'Accesso negato' });
     }
-    await updateAgent(req.params.id, req.body || {});
+    const payload = {
+      ...normalizeCreatePayload(req.body, req.user?.name),
+      tool_names: req.body?.tool_names,
+      relations: req.body?.relations,
+      child_agent_ids: req.body?.child_agent_ids,
+      permissions: req.body?.permissions,
+    };
+    await updateAgent(req.params.id, payload);
     await syncAgentAssociations(req.params.id, req.body || {});
     const updated = await buildAgentDetails(await getAgentById(req.params.id));
     return res.json(updated);

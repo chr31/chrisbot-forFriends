@@ -174,6 +174,11 @@ function isNotificationToolName(functionName) {
     || normalized.endsWith(':sendnotification');
 }
 
+function isInternalPortalToolName(functionName) {
+  const normalized = String(functionName || '').trim().toLowerCase();
+  return normalized.startsWith('chrisbot_');
+}
+
 function normalizeGuardrails(agent) {
   const raw = agent?.guardrails_json && typeof agent.guardrails_json === 'object' ? agent.guardrails_json : {};
   return {
@@ -184,8 +189,13 @@ function normalizeGuardrails(agent) {
   };
 }
 
+async function persistConversationMessages(context, messages) {
+  const writer = typeof context?.messageWriter === 'function' ? context.messageWriter : insertAgentMessages;
+  await writer(messages);
+}
+
 async function logAgentEvent(context, agent, eventType, content, metadata = {}) {
-  await insertAgentMessages([{
+  await persistConversationMessages(context, [{
     chat_id: context.chatId,
     agent_id: agent?.id || null,
     role: eventType === 'guardrail' ? 'assistant' : 'assistant',
@@ -213,6 +223,11 @@ async function executeMcpTool(functionName, args, context, toolCall, agent) {
   let content = '';
   try {
     const toolArgs = { ...(args || {}) };
+    if (isInternalPortalToolName(functionName)) {
+      toolArgs._chatId = context.chatId || null;
+      toolArgs._agentId = agent?.id || context.agentId || null;
+      toolArgs._runId = context.runId || null;
+    }
     if (isNotificationToolName(functionName)) {
       toolArgs._chatId = context.chatId || null;
       toolArgs._agentId = agent?.id || context.agentId || null;
@@ -228,7 +243,7 @@ async function executeMcpTool(functionName, args, context, toolCall, agent) {
     ].join('\n');
   }
 
-  await insertAgentMessages([{
+  await persistConversationMessages(context, [{
     chat_id: context.chatId,
     agent_id: agent.id,
     role: 'tool',
@@ -348,7 +363,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
       || Boolean(String(responseMessage.reasoning || '').trim())
       || Number.isFinite(responseMessage.total_tokens);
     if ((context.depth || 0) === 0 && hasVisibleAssistantPayload) {
-      await insertAgentMessages([{
+      await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: agent.id,
         role: 'assistant',
@@ -414,7 +429,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
       const childInfo = childByToolName.get(fnName);
       const childAgent = childInfo.agent;
       const delegatedTask = String(parsedArgs.task || '').trim();
-      await insertAgentMessages([{
+      await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: childAgent.id,
         role: 'assistant',
@@ -456,6 +471,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           modelConfig: getAgentDefaultModelConfig(childAgent),
           ollamaServerId: getAgentDefaultModelConfig(childAgent).ollama_server_id || null,
           depth: context.depth + 1,
+          messageWriter: context.messageWriter,
         }, 0, {
           resultBySignature: new Map(),
           callsBySignature: new Map(),
@@ -475,7 +491,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
       }
 
       const childContent = typeof childResult === 'string' ? childResult : JSON.stringify(childResult);
-      await insertAgentMessages([{
+      await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: childAgent.id,
         role: 'tool',
@@ -522,7 +538,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
   }
 
   if (depth === 0) {
-    await insertAgentMessages([{
+    await persistConversationMessages(context, [{
       chat_id: context.chatId,
       agent_id: agent.id,
       role: 'assistant',
@@ -540,33 +556,62 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
 
   return fallbackText;
 }
+function buildAgentSystemPrompt(agent, options = {}) {
+  const includeGoals = options.includeGoals === true;
+  const promptParts = [String(agent?.system_prompt || '').trim()];
+  if (includeGoals && String(agent?.goals || '').trim()) {
+    promptParts.push(`Goals:\n${String(agent.goals).trim()}`);
+  }
+  return `${promptParts.filter(Boolean).join('\n\n')} Oggi e il ${new Date().toISOString()}`.trim();
+}
 
-async function buildInitialAgentHistory(agent, rows) {
+function mapStoredRowToHistoryEntry(row, options = {}) {
+  const visibleOnly = options.visibleOnly === true;
+  if (row.event_type === 'delegation') {
+    return null;
+  }
+  if (row.event_type === 'guardrail') {
+    return null;
+  }
+  if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {
+    return null;
+  }
+  if (isNestedWorkerToolResult(row)) {
+    return null;
+  }
+  if (visibleOnly) {
+    if (row.role !== 'user' && row.role !== 'assistant') return null;
+    if (row.event_type !== 'message' && row.event_type !== 'alive_prompt') return null;
+    return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+  }
+  if (row.role === 'tool' && row.metadata_json?.tool_call_id) {
+    return { role: 'tool', content: row.content, tool_call_id: row.metadata_json.tool_call_id };
+  }
+  if (row.role === 'tool') {
+    return null;
+  }
+  return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+}
+
+async function buildInitialAgentHistory(agent, rows, options = {}) {
+  const includeGoals = options.includeGoals === true;
   if (Array.isArray(rows) && rows.length > 0) {
-    return rows.map((row) => {
-      if (row.event_type === 'delegation') {
-        return null;
-      }
-      if (row.event_type === 'guardrail') {
-        return null;
-      }
-      if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {
-        return null;
-      }
-      if (isNestedWorkerToolResult(row)) {
-        return null;
-      }
-      if (row.role === 'tool' && row.metadata_json?.tool_call_id) {
-        return { role: 'tool', content: row.content, tool_call_id: row.metadata_json.tool_call_id };
-      }
-      if (row.role === 'tool') {
-        return null;
-      }
-      return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+    const mapped = rows.map((row) => {
+      return mapStoredRowToHistoryEntry(row, options);
     }).filter(Boolean);
+    if (options.visibleOnly === true) {
+      const visibleLimit = Number.isFinite(Number(options.visibleLimit))
+        ? Math.max(1, Math.trunc(Number(options.visibleLimit)))
+        : mapped.length;
+      return [
+        { role: 'system', content: buildAgentSystemPrompt(agent, { includeGoals }) },
+        ...mapped.slice(-visibleLimit),
+      ];
+    }
+    return mapped;
   }
   return [
-    { role: 'system', content: `${agent.system_prompt} Oggi e il ${new Date().toISOString()}` },
+    { role: 'system', content: buildAgentSystemPrompt(agent, { includeGoals }) },
   ];
 }
 
@@ -576,6 +621,7 @@ function createChatId() {
 
 module.exports = {
   runAgentConversation,
+  buildAgentSystemPrompt,
   buildInitialAgentHistory,
   createChatId,
 };

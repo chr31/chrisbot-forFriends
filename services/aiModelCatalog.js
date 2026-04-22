@@ -42,8 +42,8 @@ function normalizeModelConfig(input, fallback = null) {
     ? input.model_config
     : {};
   const source = {
-    provider: input?.model_provider ?? input?.default_model_provider ?? nested.provider,
-    model: input?.model_name ?? input?.default_model_name ?? nested.model,
+    provider: input?.provider ?? input?.model_provider ?? input?.default_model_provider ?? nested.provider,
+    model: input?.model ?? input?.model_name ?? input?.default_model_name ?? nested.model,
     ollama_server_id: input?.ollama_server_id ?? input?.default_ollama_server_id ?? nested.ollama_server_id,
   };
 

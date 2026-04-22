@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS agents (
   guardrails_json JSON NULL,
   visibility_scope ENUM('public', 'restricted', 'private') NOT NULL DEFAULT 'public',
   direct_chat_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  is_alive TINYINT(1) NOT NULL DEFAULT 0,
+  alive_loop_seconds INT NOT NULL DEFAULT 60,
+  alive_prompt LONGTEXT NULL,
+  alive_context_messages INT NOT NULL DEFAULT 12,
+  alive_include_goals TINYINT(1) NOT NULL DEFAULT 0,
+  goals LONGTEXT NULL,
+  memories LONGTEXT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_by VARCHAR(255) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -196,6 +203,38 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   INDEX idx_agent_runs_agent (agent_id),
   INDEX idx_agent_runs_status (status),
   INDEX idx_agent_runs_parent (parent_run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS alive_agent_chats (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  chat_id VARCHAR(255) NOT NULL UNIQUE,
+  agent_id BIGINT UNSIGNED NOT NULL UNIQUE,
+  config_json JSON NULL,
+  loop_status ENUM('play', 'pause') NOT NULL DEFAULT 'pause',
+  is_processing TINYINT(1) NOT NULL DEFAULT 0,
+  next_loop_at DATETIME(3) NULL,
+  last_error TEXT NULL,
+  last_started_at DATETIME(3) NULL,
+  last_finished_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  INDEX idx_alive_agent_chats_loop (loop_status, next_loop_at),
+  INDEX idx_alive_agent_chats_processing (is_processing)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS alive_agent_messages (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  chat_id VARCHAR(255) NOT NULL,
+  agent_id BIGINT UNSIGNED NULL,
+  role VARCHAR(32) NOT NULL,
+  event_type VARCHAR(32) NOT NULL DEFAULT 'message',
+  content LONGTEXT NOT NULL,
+  metadata_json JSON NULL,
+  reasoning LONGTEXT NULL,
+  total_tokens INT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX idx_alive_agent_messages_chat (chat_id, created_at, id),
+  INDEX idx_alive_agent_messages_agent (agent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS telegram_user_links (

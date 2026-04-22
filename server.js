@@ -9,6 +9,7 @@ const inboxRoutes = require('./routes/inboxRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const agentsRoutes = require('./routes/agentsRoutes');
 const agentChatRoutes = require('./routes/agentChatRoutes');
+const aliveAgentRoutes = require('./routes/aliveAgentRoutes');
 const tasksRoutes = require('./routes/tasksRoutes');
 const { initWebPushTables } = require('./database/db_web_push');
 const { initAppSettingsTable } = require('./database/db_app_settings');
@@ -18,6 +19,7 @@ const { initLegacyRoutineTables } = require('./database/db_legacy_routines');
 const { initRoutineDefinitionsTable } = require('./database/db_routine_definitions');
 const { initAgentsTables } = require('./database/db_agents');
 const { initAgentChatsTables } = require('./database/db_agent_chats');
+const { initAliveAgentChatsTables } = require('./database/db_alive_agent_chats');
 const { initAgentRunsTable } = require('./database/db_agent_runs');
 const {
   initTasksTables,
@@ -29,6 +31,7 @@ const { initializeLegacyRoutineScheduler } = require('./services/legacyRoutineRu
 const { initializeAppSettings } = require('./services/appSettings');
 const { initializeWebPushScheduler } = require('./services/webPushScheduler');
 const { initializeTelegramBot } = require('./services/telegramBot');
+const { initializeAliveAgentScheduler } = require('./services/aliveAgentService');
 
 
 // Middleware per il parsing del body delle richieste
@@ -42,6 +45,7 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/agents', agentsRoutes);
 app.use('/api/agent-chats', agentChatRoutes);
+app.use('/api/alive-agents', aliveAgentRoutes);
 app.use('/api/tasks', tasksRoutes);
 
 async function bootstrap() {
@@ -55,6 +59,7 @@ async function bootstrap() {
     await initRoutineDefinitionsTable();
     await initAgentsTables();
     await initAgentChatsTables();
+    await initAliveAgentChatsTables();
     await initAgentRunsTable();
     await initTasksTables();
     await cleanupLegacyScheduledActionsTable();
@@ -63,6 +68,7 @@ async function bootstrap() {
     await initializeLegacyRoutineScheduler();
     initializeWebPushScheduler();
     initializeTelegramBot();
+    initializeAliveAgentScheduler();
     
     // Imposta una porta fissa per il backend
     const PORT = process.env.PORT || 3000;

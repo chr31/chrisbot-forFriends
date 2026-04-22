@@ -44,6 +44,13 @@ type Agent = {
   guardrails_json: Record<string, unknown>;
   visibility_scope: VisibilityScope;
   direct_chat_enabled: boolean;
+  is_alive: boolean;
+  alive_loop_seconds: number;
+  alive_prompt: string;
+  alive_context_messages: number;
+  alive_include_goals: boolean;
+  goals: string;
+  memories: string;
   is_active: boolean;
   tool_names: string[];
   permissions: AgentPermission[];
@@ -86,6 +93,13 @@ type FormState = {
   default_model_config: ModelConfig;
   visibility_scope: VisibilityScope;
   direct_chat_enabled: boolean;
+  is_alive: boolean;
+  alive_loop_seconds: number;
+  alive_prompt: string;
+  alive_context_messages: number;
+  alive_include_goals: boolean;
+  goals: string;
+  memories: string;
   is_active: boolean;
   tool_names: string[];
   relations: Array<{
@@ -116,6 +130,13 @@ const EMPTY_FORM: FormState = {
   default_model_config: { provider: 'ollama', model: 'qwen3.5', ollama_server_id: null },
   visibility_scope: 'public',
   direct_chat_enabled: true,
+  is_alive: false,
+  alive_loop_seconds: 60,
+  alive_prompt: '',
+  alive_context_messages: 12,
+  alive_include_goals: false,
+  goals: '',
+  memories: '',
   is_active: true,
   tool_names: [],
   relations: [],
@@ -259,6 +280,13 @@ function formFromAgent(agent: Agent): FormState {
     default_model_config: normalizeModelConfig(agent.default_model_config),
     visibility_scope: agent.visibility_scope,
     direct_chat_enabled: agent.direct_chat_enabled,
+    is_alive: agent.is_alive,
+    alive_loop_seconds: agent.alive_loop_seconds || 60,
+    alive_prompt: agent.alive_prompt || '',
+    alive_context_messages: agent.alive_context_messages || 12,
+    alive_include_goals: agent.alive_include_goals,
+    goals: agent.goals || '',
+    memories: agent.memories || '',
     is_active: agent.is_active,
     tool_names: agent.tool_names || [],
     relations: (agent.relations || [])
@@ -473,6 +501,13 @@ export default function AgentsPage() {
         default_model_config: form.default_model_config,
         visibility_scope: form.visibility_scope,
         direct_chat_enabled: form.direct_chat_enabled,
+        is_alive: form.direct_chat_enabled ? form.is_alive : false,
+        alive_loop_seconds: form.alive_loop_seconds,
+        alive_prompt: form.alive_prompt,
+        alive_context_messages: form.alive_context_messages,
+        alive_include_goals: form.alive_include_goals,
+        goals: form.goals,
+        memories: form.memories,
         is_active: form.is_active,
         tool_names: form.tool_names,
         relations: form.kind === 'orchestrator' ? form.relations : [],
@@ -1104,11 +1139,26 @@ export default function AgentsPage() {
                         <input
                           type="checkbox"
                           checked={form.direct_chat_enabled}
-                          onChange={(e) => setForm((current) => ({ ...current, direct_chat_enabled: e.target.checked }))}
+                          onChange={(e) => setForm((current) => ({
+                            ...current,
+                            direct_chat_enabled: e.target.checked,
+                            is_alive: e.target.checked ? current.is_alive : false,
+                          }))}
                           className="h-4 w-4 accent-sky-500"
                         />
                         Chat diretta abilitata
                         <InfoHint label="Chat diretta abilitata" description="Se disattivata, l'agente non può essere scelto per chat diretta ma può ancora essere usato come sotto-agente." />
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={form.is_alive}
+                          onChange={(e) => setForm((current) => ({ ...current, is_alive: e.target.checked }))}
+                          disabled={!form.direct_chat_enabled}
+                          className="h-4 w-4 accent-sky-500 disabled:opacity-50"
+                        />
+                        Is alive
+                        <InfoHint label="Is alive" description="Disponibile solo per agenti con chat diretta. Abilita la chat alive globale dell'agente nella nuova sezione dedicata." />
                       </label>
                       <label className="flex items-center gap-2">
                         <input
@@ -1121,6 +1171,73 @@ export default function AgentsPage() {
                         <InfoHint label="Agente attivo" description="Disabilita temporaneamente l'agente senza eliminarne configurazione, chat e storico." />
                       </label>
                     </div>
+
+                    {form.is_alive ? (
+                      <div className="rounded-2xl border border-emerald-800/40 bg-emerald-950/10 p-4">
+                        <p className="text-sm font-semibold text-white">Alive mode</p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          Parametri del loop automatico usati nella sezione Alive agents.
+                        </p>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Secondi loop <InfoHint label="Secondi loop" description="Intervallo in secondi tra una risposta dell'agente e il successivo invio automatico del prompt alive." /></span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={form.alive_loop_seconds}
+                              onChange={(e) => setForm((current) => ({ ...current, alive_loop_seconds: toPositiveInteger(e.target.value, 60) || 60 }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Context message <InfoHint label="Context message" description="Numero massimo di messaggi visibili user/assistant inviati al modello a ogni iterazione." /></span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={form.alive_context_messages}
+                              onChange={(e) => setForm((current) => ({ ...current, alive_context_messages: toPositiveInteger(e.target.value, 12) || 12 }))}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                            />
+                          </label>
+                        </div>
+                        <label className="mt-4 block text-sm text-gray-200">
+                          <span className="mb-1 flex items-center gap-2">Prompt alive <InfoHint label="Prompt alive" description="Prompt utente riutilizzato dal loop automatico quando la chat resta in play." /></span>
+                          <textarea
+                            value={form.alive_prompt}
+                            onChange={(e) => setForm((current) => ({ ...current, alive_prompt: e.target.value }))}
+                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                          />
+                        </label>
+                        <label className="mt-4 flex items-center gap-2 text-sm text-gray-200">
+                          <input
+                            type="checkbox"
+                            checked={form.alive_include_goals}
+                            onChange={(e) => setForm((current) => ({ ...current, alive_include_goals: e.target.checked }))}
+                            className="h-4 w-4 accent-emerald-500"
+                          />
+                          Goals nel system prompt
+                          <InfoHint label="Goals nel system prompt" description="Se attivo, il testo Goals viene concatenato al prompt di sistema nelle esecuzioni alive." />
+                        </label>
+                      </div>
+                    ) : null}
+
+                    <label className="block text-sm text-gray-200">
+                      <span className="mb-1 flex items-center gap-2">Goals <InfoHint label="Goals" description="Obiettivi persistenti dell'agente. Possono essere letti/modificati anche tramite i tool interni get/edit goals." /></span>
+                      <textarea
+                        value={form.goals}
+                        onChange={(e) => setForm((current) => ({ ...current, goals: e.target.value }))}
+                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                      />
+                    </label>
+
+                    <label className="block text-sm text-gray-200">
+                      <span className="mb-1 flex items-center gap-2">Memories <InfoHint label="Memories" description="Memoria persistente dell'agente. Può essere letta/modificata anche tramite i tool interni get/edit memories." /></span>
+                      <textarea
+                        value={form.memories}
+                        onChange={(e) => setForm((current) => ({ ...current, memories: e.target.value }))}
+                        className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                      />
+                    </label>
 
                     {error && <p className="text-sm text-rose-300">{error}</p>}
                     {success && <p className="text-sm text-emerald-300">{success}</p>}

@@ -11,8 +11,6 @@ import {
   ClockIcon,
   Cog6ToothIcon,
   ArrowLeftOnRectangleIcon, // Icona per il logout
-  ChevronDownIcon,
-  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { CpuChipIcon } from '@heroicons/react/24/outline';
 import { usePathname, useRouter } from 'next/navigation';
@@ -33,16 +31,6 @@ type AgentChat = {
   agent_kind: 'worker' | 'orchestrator';
   unreadCount: number;
   last_date?: string;
-};
-
-type AgentListItem = {
-  id: number;
-  name: string;
-  slug: string;
-  kind: 'worker' | 'orchestrator';
-  user_description?: string;
-  direct_chat_enabled: boolean;
-  is_active: boolean;
 };
 
 type ConversationItem = {
@@ -89,9 +77,7 @@ function isAbortLikeError(error: unknown) {
 
 export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (open: boolean) => void }) {
   const [agentChats, setAgentChats] = useState<AgentChat[]>([]);
-  const [availableAgents, setAvailableAgents] = useState<AgentListItem[]>([]);
   const [currentConversationPage, setCurrentConversationPage] = useState(1);
-  const [agentsSectionOpen, setAgentsSectionOpen] = useState(true);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
@@ -106,6 +92,7 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
 
   const navigation = [
     { name: 'Nuova chat', href: '/agent-chat/new', icon: PlusIcon },
+    ...(authUser?.is_super_admin ? [{ name: 'Alive agents', href: '/alive-agents', icon: CpuChipIcon }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Inbox', href: '/notifications', icon: BellIcon, count: unreadNotificationsCount }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Agenti', href: '/agents', icon: CpuChipIcon }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Task', href: '/pianificazioni', icon: ClockIcon }] : []),
@@ -198,39 +185,6 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
     }
   }, [router]);
 
-  const fetchAvailableAgents = useCallback(async () => {
-    const token = localStorage.getItem('authToken');
-    if (!token) return;
-    try {
-      const response = await fetch(`${API_URL}/agents/catalog`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
-      if (!response.ok) {
-        if (response.status === 403) {
-          localStorage.removeItem('authToken');
-          router.push('/login');
-        }
-        throw new Error(`Errore dal server: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      const nextAgents = (Array.isArray(data) ? data : [])
-        .filter((agent) => agent?.direct_chat_enabled && agent?.is_active)
-        .sort((a, b) => {
-          if (a.kind !== b.kind) {
-            return a.kind === 'orchestrator' ? -1 : 1;
-          }
-          return String(a.name || '').localeCompare(String(b.name || ''), 'it');
-        });
-      setAvailableAgents(nextAgents);
-    } catch (error) {
-      if (!isAbortLikeError(error)) {
-        setAvailableAgents([]);
-      }
-    }
-  }, [router]);
-
   const checkUnreadNotifications = useCallback(async () => {
     if (!authResolvedRef.current) return;
     const token = localStorage.getItem('authToken');
@@ -290,14 +244,12 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
   }, [checkUnreadNotifications, fetchAuthUser]);
 
   useEffect(() => {
-    fetchAvailableAgents();
     refreshChats();
-  }, [fetchAvailableAgents, refreshChats]);
+  }, [refreshChats]);
 
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        fetchAvailableAgents();
         refreshChats();
         checkUnreadNotifications();
       }
@@ -305,7 +257,6 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
 
     const chatsIntervalId = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchAvailableAgents();
         refreshChats();
       }
     }, 10000);
@@ -315,7 +266,6 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
       }
     }, 30000);
 
-    window.addEventListener('agentCatalogUpdated', fetchAvailableAgents);
     window.addEventListener('agentChatCreated', refreshChats);
     window.addEventListener('agentChatUpdated', refreshChats);
     window.addEventListener('notificationsViewed', checkUnreadNotifications);
@@ -324,13 +274,12 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
     return () => {
       clearInterval(chatsIntervalId);
       clearInterval(intervalId);
-      window.removeEventListener('agentCatalogUpdated', fetchAvailableAgents);
       window.removeEventListener('agentChatCreated', refreshChats);
       window.removeEventListener('agentChatUpdated', refreshChats);
       window.removeEventListener('notificationsViewed', checkUnreadNotifications);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [checkUnreadNotifications, fetchAvailableAgents, refreshChats]);
+  }, [checkUnreadNotifications, refreshChats]);
 
   useEffect(() => {
     if (currentConversationPage > totalConversationPages) {
@@ -427,43 +376,6 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
         </ul>
       </li>
       <li className="flex-grow flex flex-col">
-        <div className="mb-6">
-          <button
-            type="button"
-            onClick={() => setAgentsSectionOpen((current) => !current)}
-            className="flex w-full items-center justify-between px-1 py-1 text-left"
-          >
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Agenti disponibili</div>
-            <div className="text-gray-400">
-              {agentsSectionOpen ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
-            </div>
-          </button>
-          {agentsSectionOpen && (
-            <div className="mt-2 space-y-1">
-              {availableAgents.length === 0 ? (
-                <div className="rounded-md border border-dashed border-gray-800 px-3 py-2 text-xs text-gray-500">
-                  Nessun agente disponibile per chat diretta.
-                </div>
-              ) : (
-                availableAgents.map((agent) => (
-                  <a
-                    key={agent.id}
-                    href={`/agent-chat/new?agentId=${agent.id}`}
-                    className="group flex items-center justify-between rounded-md border border-gray-800 px-3 py-2 hover:border-gray-700 hover:bg-gray-800/60"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-white">{agent.name}</div>
-                      <div className="truncate text-xs text-gray-500 group-hover:text-gray-300">
-                        {agent.kind === 'orchestrator' ? 'Orchestrator' : 'Worker'} · {agent.slug}
-                      </div>
-                    </div>
-                    <CpuChipIcon className="h-4 w-4 shrink-0 text-emerald-400 group-hover:text-emerald-300" />
-                  </a>
-                ))
-              )}
-            </div>
-          )}
-        </div>
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-semibold leading-6 text-gray-400">Conversazioni</div>
           <button
