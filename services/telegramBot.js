@@ -1,7 +1,11 @@
-const axios = require('axios');
 const {
   getTelegramRuntimeSettingsSync,
 } = require('./appSettings');
+const { buildTelegramSendDeliveries } = require('./telegramFormatting');
+const {
+  postTelegramMethod,
+  sendTelegramDelivery,
+} = require('./telegramApiClient');
 const {
   getTelegramUserLinkByTelegramUserId,
   getTelegramChatSession,
@@ -34,21 +38,9 @@ const BOT_COMMANDS = [
   { command: 'whoami', description: 'Mostra il tuo Telegram user id' },
 ];
 
-function getApiBaseUrl() {
-  const token = String(getTelegramRuntimeSettingsSync()?.bot_token || '').trim();
-  return token ? `https://api.telegram.org/bot${token}` : null;
-}
-
 async function telegramApi(method, payload = {}) {
-  const apiBaseUrl = getApiBaseUrl();
-  if (!apiBaseUrl) throw new Error('Telegram bot token non configurato');
-  const response = await axios.post(`${apiBaseUrl}/${method}`, payload, {
-    timeout: 30000,
-  });
-  if (!response.data?.ok) {
-    throw new Error(response.data?.description || `Telegram API error on ${method}`);
-  }
-  return response.data.result;
+  const token = String(getTelegramRuntimeSettingsSync()?.bot_token || '').trim();
+  return postTelegramMethod(token, method, payload);
 }
 
 async function syncTelegramCommands() {
@@ -57,26 +49,33 @@ async function syncTelegramCommands() {
   });
 }
 
-function chunkText(text) {
-  const source = String(text || '').trim() || 'Risposta vuota.';
-  const chunks = [];
-  let current = source;
-  while (current.length > TELEGRAM_TEXT_LIMIT) {
-    chunks.push(current.slice(0, TELEGRAM_TEXT_LIMIT));
-    current = current.slice(TELEGRAM_TEXT_LIMIT);
-  }
-  chunks.push(current);
-  return chunks;
-}
-
 async function sendTelegramMessage(chatId, text, extra = {}) {
-  const chunks = chunkText(text);
-  for (let index = 0; index < chunks.length; index += 1) {
-    await telegramApi('sendMessage', {
-      chat_id: String(chatId),
-      text: chunks[index],
-      reply_markup: index === chunks.length - 1 ? extra.reply_markup : undefined,
-    });
+  const runtime = getTelegramRuntimeSettingsSync();
+  const token = String(runtime?.bot_token || '').trim();
+  const deliveries = await buildTelegramSendDeliveries({
+    chatId,
+    text,
+    parseMode: extra.parse_mode ?? runtime?.parse_mode,
+    replyMarkup: extra.reply_markup,
+    maxLength: TELEGRAM_TEXT_LIMIT,
+  });
+  for (const delivery of deliveries) {
+    try {
+      await sendTelegramDelivery(token, delivery);
+    } catch (error) {
+      if (delivery.method === 'sendPhoto' && delivery.fallbackPayloads?.length) {
+        console.error('Errore invio immagine tabella Telegram, uso fallback testo:', error?.message || error);
+        const fallbackPayloads = delivery.fallbackPayloads.map((payload) => ({ ...payload }));
+        if (delivery.payload?.reply_markup && fallbackPayloads.length > 0) {
+          fallbackPayloads[fallbackPayloads.length - 1].reply_markup = delivery.payload.reply_markup;
+        }
+        for (const fallbackPayload of fallbackPayloads) {
+          await postTelegramMethod(token, 'sendMessage', fallbackPayload);
+        }
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

@@ -79,6 +79,7 @@ type TelegramRuntimeSettings = {
   enabled: boolean;
   bot_token: string;
   polling_interval_ms: number;
+  parse_mode: '' | 'HTML';
 };
 
 type TelegramUserLink = {
@@ -1246,6 +1247,20 @@ export default function SettingsPage() {
                     onChange={(event) => setTelegramRuntime((current) => current ? { ...current, polling_interval_ms: Number(event.target.value || 0) } : current)}
                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                   />
+                </label>
+                <label className="text-sm text-gray-200">
+                  <span className="mb-1 block">Parse mode</span>
+                  <select
+                    value={telegramRuntime.parse_mode}
+                    onChange={(event) => setTelegramRuntime((current) => current ? {
+                      ...current,
+                      parse_mode: event.target.value === 'HTML' ? 'HTML' : '',
+                    } : current)}
+                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                  >
+                    <option value="HTML">HTML (consigliato)</option>
+                    <option value="">Nessuno</option>
+                  </select>
                 </label>
               </div>
 

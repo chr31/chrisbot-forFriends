@@ -1,7 +1,8 @@
-const axios = require('axios');
 const pool = require('../database/mysql');
 const { enqueueWebPushNotification } = require('../database/db_web_push');
 const { getTelegramRuntimeSettingsSync } = require('./appSettings');
+const { buildTelegramSendDeliveries } = require('./telegramFormatting');
+const { postTelegramMethod, sendTelegramDelivery } = require('./telegramApiClient');
 const { ADMIN_SHARED_OWNER } = require('../utils/adminAccess');
 
 const TELEGRAM_TEXT_LIMIT = 4000;
@@ -19,35 +20,30 @@ function normalizeTelegramText(input = {}) {
   return body || title || 'Notifica';
 }
 
-function chunkTelegramText(text) {
-  const source = String(text || '').trim() || 'Notifica';
-  const chunks = [];
-  let current = source;
-
-  while (current.length > TELEGRAM_TEXT_LIMIT) {
-    chunks.push(current.slice(0, TELEGRAM_TEXT_LIMIT));
-    current = current.slice(TELEGRAM_TEXT_LIMIT);
-  }
-
-  chunks.push(current);
-  return chunks;
-}
-
 async function sendTelegramChunks(chatId, text) {
   const runtime = getTelegramRuntimeSettingsSync();
   const token = String(runtime?.bot_token || '').trim();
   if (runtime?.enabled !== true || !token) return;
 
-  const chunks = chunkTelegramText(text);
-  for (const chunk of chunks) {
-    await axios.post(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        chat_id: String(chatId),
-        text: chunk,
-      },
-      { timeout: 30000 }
-    );
+  const deliveries = await buildTelegramSendDeliveries({
+    chatId,
+    text: String(text || '').trim() || 'Notifica',
+    parseMode: runtime?.parse_mode,
+    maxLength: TELEGRAM_TEXT_LIMIT,
+  });
+  for (const delivery of deliveries) {
+    try {
+      await sendTelegramDelivery(token, delivery);
+    } catch (error) {
+      if (delivery.method === 'sendPhoto' && delivery.fallbackPayloads?.length) {
+        console.error('Errore invio immagine tabella Telegram, uso fallback testo:', error?.message || error);
+        for (const fallbackPayload of delivery.fallbackPayloads) {
+          await postTelegramMethod(token, 'sendMessage', fallbackPayload);
+        }
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

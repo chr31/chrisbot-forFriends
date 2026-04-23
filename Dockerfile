@@ -36,9 +36,10 @@ WORKDIR /app
 ENV TZ=Europe/Rome
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-     tzdata ca-certificates iputils-ping curl \
+     tzdata ca-certificates iputils-ping curl fontconfig fonts-dejavu-core \
   && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
   && echo $TZ > /etc/timezone \
+  && fc-cache -f \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy node_modules from builder
