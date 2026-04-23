@@ -48,6 +48,17 @@ function parseJsonField(value, fallback) {
   }
 }
 
+function sanitizeGuardrailsConfig(value) {
+  const source = parseJsonField(value, {});
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return {};
+  }
+
+  const nextValue = { ...source };
+  delete nextValue.allow_direct_tool_access;
+  return nextValue;
+}
+
 function slugify(value) {
   return String(value || '')
     .trim()
@@ -89,7 +100,7 @@ function hydrateAgent(row) {
     alive_include_goals: Number(row.alive_include_goals) === 1,
     goals: String(row.goals || ''),
     memories: String(row.memories || ''),
-    guardrails_json: parseJsonField(row.guardrails_json, {}),
+    guardrails_json: sanitizeGuardrailsConfig(row.guardrails_json),
     default_model_config: defaultModelConfig,
   };
 }
@@ -271,6 +282,16 @@ async function initAgentsTables() {
 
   await pool.query(`
     UPDATE agents
+       SET guardrails_json = JSON_REMOVE(guardrails_json, '$.allow_direct_tool_access')
+     WHERE JSON_CONTAINS_PATH(guardrails_json, 'one', '$.allow_direct_tool_access')
+  `).catch((error) => {
+    if (error && error.code !== 'ER_BAD_FIELD_ERROR' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
+  });
+
+  await pool.query(`
+    UPDATE agents
        SET default_model_name = COALESCE(NULLIF(default_model_name, ''), default_model),
            default_model_provider = CASE
              WHEN default_model_provider IS NULL OR default_model_provider = '' THEN 'ollama'
@@ -374,7 +395,7 @@ async function insertAgent(input) {
       defaultModelConfig.provider,
       defaultModelConfig.model,
       defaultModelConfig.ollama_server_id,
-      JSON.stringify(parseJsonField(input?.guardrails_json, input?.guardrails || {})),
+      JSON.stringify(sanitizeGuardrailsConfig(input?.guardrails_json ?? input?.guardrails)),
       normalizeVisibilityScope(input?.visibility_scope),
       directChatEnabled,
       isAlive,
@@ -440,7 +461,7 @@ async function updateAgent(id, updates) {
   }
   if (updates.guardrails !== undefined || updates.guardrails_json !== undefined) {
     entries.push('guardrails_json = ?');
-    values.push(JSON.stringify(parseJsonField(updates.guardrails_json, updates.guardrails || {})));
+    values.push(JSON.stringify(sanitizeGuardrailsConfig(updates.guardrails_json ?? updates.guardrails)));
   }
   if (updates.visibility_scope !== undefined) {
     entries.push('visibility_scope = ?');

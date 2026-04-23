@@ -23,6 +23,7 @@ const PORTAL_ACCESS_SENSITIVE_FIELDS = Object.freeze([
   'local_admin_password',
   'azure_client_secret',
 ]);
+const SECRET_PLACEHOLDER_VALUES = new Set(['', '********', '••••••••']);
 
 function normalizeGroupList(input, fallback = []) {
   const source = Array.isArray(input) ? input : String(input || '').split(',');
@@ -327,6 +328,85 @@ function normalizeTelegramRuntimeSettings(value) {
   };
 }
 
+function hasReplacementSecret(value) {
+  const normalized = String(value ?? '').trim();
+  return Boolean(normalized) && !SECRET_PLACEHOLDER_VALUES.has(normalized);
+}
+
+function preserveExistingSecrets(normalized, incoming, current, fields) {
+  const nextValue = { ...normalized };
+  for (const field of fields) {
+    if (!hasReplacementSecret(incoming?.[field]) && current?.[field]) {
+      nextValue[field] = current[field];
+    }
+  }
+  return nextValue;
+}
+
+function redactPortalAccessSettings(value) {
+  return {
+    ...value,
+    local_admin_password: '',
+    local_admin_password_configured: Boolean(String(value?.local_admin_password || '').trim()),
+    azure_client_secret: '',
+    azure_client_secret_configured: Boolean(String(value?.azure_client_secret || '').trim()),
+  };
+}
+
+function redactOpenAiRuntimeSettings(value) {
+  return {
+    ...value,
+    api_key: '',
+    api_key_configured: Boolean(String(value?.api_key || '').trim()),
+  };
+}
+
+function redactMcpRuntimeSettings(value) {
+  return {
+    ...value,
+    connections: (value?.connections || []).map((connection) => ({
+      ...connection,
+      headers_json: Object.fromEntries(
+        Object.keys(connection?.headers_json || {}).map((key) => [key, ''])
+      ),
+      headers_configured: Object.fromEntries(
+        Object.entries(connection?.headers_json || {}).map(([key, headerValue]) => [key, Boolean(String(headerValue || '').trim())])
+      ),
+    })),
+  };
+}
+
+function redactTelegramRuntimeSettings(value) {
+  return {
+    ...value,
+    bot_token: '',
+    bot_token_configured: Boolean(String(value?.bot_token || '').trim()),
+  };
+}
+
+function preserveMcpHeaderSecrets(normalized, incoming, current) {
+  const currentById = new Map((current?.connections || []).map((connection) => [connection.id, connection]));
+  const incomingById = new Map((incoming?.connections || []).map((connection) => [String(connection?.id || ''), connection]));
+  return {
+    ...normalized,
+    connections: (normalized.connections || []).map((connection) => {
+      const currentConnection = currentById.get(connection.id);
+      const incomingConnection = incomingById.get(connection.id);
+      const nextHeaders = { ...(connection.headers_json || {}) };
+      for (const [key, currentValue] of Object.entries(currentConnection?.headers_json || {})) {
+        const incomingValue = incomingConnection?.headers_json?.[key];
+        if (!hasReplacementSecret(incomingValue) && String(currentValue || '').trim()) {
+          nextHeaders[key] = currentValue;
+        }
+      }
+      return {
+        ...connection,
+        headers_json: nextHeaders,
+      };
+    }),
+  };
+}
+
 async function loadOrSeedSetting(settingKey, defaultBuilder, normalizer, options = {}) {
   const deserialize = typeof options.deserialize === 'function' ? options.deserialize : (input) => input;
   const serialize = typeof options.serialize === 'function' ? options.serialize : (input) => input;
@@ -416,21 +496,38 @@ function getTelegramRuntimeSettingsSync() {
 }
 
 async function updatePortalAccessSettings(nextValue) {
-  const normalized = normalizePortalAccessSettings(nextValue);
+  const current = getPortalAccessSettingsSync();
+  const normalized = preserveExistingSecrets(
+    normalizePortalAccessSettings({ ...current, ...(nextValue || {}) }),
+    nextValue || {},
+    current,
+    PORTAL_ACCESS_SENSITIVE_FIELDS
+  );
   await setSetting(SETTINGS_KEYS.portalAccess, serializePortalAccessSettings(normalized));
   settingsCache.portalAccess = normalized;
   return normalized;
 }
 
 async function updateOpenAiRuntimeSettings(nextValue) {
-  const normalized = normalizeOpenAiRuntimeSettings(nextValue);
+  const current = getOpenAiRuntimeSettingsSync();
+  const normalized = preserveExistingSecrets(
+    normalizeOpenAiRuntimeSettings({ ...current, ...(nextValue || {}) }),
+    nextValue || {},
+    current,
+    ['api_key']
+  );
   await setSetting(SETTINGS_KEYS.openaiRuntime, serializeOpenAiRuntimeSettings(normalized));
   settingsCache.openaiRuntime = normalized;
   return normalized;
 }
 
 async function updateMcpRuntimeSettings(nextValue) {
-  const normalized = normalizeMcpRuntimeSettings(nextValue);
+  const current = getMcpRuntimeSettingsSync();
+  const normalized = preserveMcpHeaderSecrets(
+    normalizeMcpRuntimeSettings(nextValue),
+    nextValue || {},
+    current
+  );
   await setSetting(SETTINGS_KEYS.mcpRuntime, normalized);
   settingsCache.mcpRuntime = normalized;
   return normalized;
@@ -444,19 +541,29 @@ async function updateOllamaRuntimeSettings(nextValue) {
 }
 
 async function updateTelegramRuntimeSettings(nextValue) {
-  const normalized = normalizeTelegramRuntimeSettings(nextValue);
+  const current = getTelegramRuntimeSettingsSync();
+  const normalized = preserveExistingSecrets(
+    normalizeTelegramRuntimeSettings({ ...current, ...(nextValue || {}) }),
+    nextValue || {},
+    current,
+    ['bot_token']
+  );
   await setSetting(SETTINGS_KEYS.telegramRuntime, normalized);
   settingsCache.telegramRuntime = normalized;
   return normalized;
 }
 
-function getSettingsSnapshot() {
+function getSettingsSnapshot(options = {}) {
+  const redactSecrets = options.redactSecrets !== false;
+  const portalAccess = getPortalAccessSettingsSync();
+  const openAiRuntime = getOpenAiRuntimeSettingsSync();
+  const telegramRuntime = getTelegramRuntimeSettingsSync();
   return {
-    portal_access: getPortalAccessSettingsSync(),
-    mcp_runtime: getMcpRuntimeSettingsSync(),
+    portal_access: redactSecrets ? redactPortalAccessSettings(portalAccess) : portalAccess,
+    mcp_runtime: redactSecrets ? redactMcpRuntimeSettings(getMcpRuntimeSettingsSync()) : getMcpRuntimeSettingsSync(),
     ollama_runtime: getOllamaRuntimeSettingsSync(),
-    openai_runtime: getOpenAiRuntimeSettingsSync(),
-    telegram_runtime: getTelegramRuntimeSettingsSync(),
+    openai_runtime: redactSecrets ? redactOpenAiRuntimeSettings(openAiRuntime) : openAiRuntime,
+    telegram_runtime: redactSecrets ? redactTelegramRuntimeSettings(telegramRuntime) : telegramRuntime,
   };
 }
 

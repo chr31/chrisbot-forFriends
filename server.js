@@ -21,6 +21,7 @@ const { initAgentsTables } = require('./database/db_agents');
 const { initAgentChatsTables } = require('./database/db_agent_chats');
 const { initAliveAgentChatsTables } = require('./database/db_alive_agent_chats');
 const { initAgentRunsTable } = require('./database/db_agent_runs');
+const { runDatabaseMigrations } = require('./database/migrations');
 const {
   initTasksTables,
   cleanupLegacyScheduledActionsTable,
@@ -53,6 +54,7 @@ async function bootstrap() {
     await initWebPushTables();
     await initAppSettingsTable();
     await initializeAppSettings();
+    await runDatabaseMigrations();
     await initTelegramTables();
     await initInboxTables();
     await initLegacyRoutineTables();

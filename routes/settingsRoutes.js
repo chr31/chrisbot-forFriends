@@ -69,8 +69,8 @@ router.get('/ollama/status', async (_req, res) => {
 
 router.put('/portal-access', async (req, res) => {
   try {
-    const updated = await updatePortalAccessSettings(req.body || {});
-    return res.json(updated);
+    await updatePortalAccessSettings(req.body || {});
+    return res.json(getSettingsSnapshot().portal_access);
   } catch (error) {
     console.error('Errore aggiornamento impostazioni portale:', error);
     return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni del portale' });
@@ -79,9 +79,9 @@ router.put('/portal-access', async (req, res) => {
 
 router.put('/mcp', async (req, res) => {
   try {
-    const updated = await updateMcpRuntimeSettings(req.body || {});
+    await updateMcpRuntimeSettings(req.body || {});
     await reconnectAndRefreshToolCache();
-    return res.json(updated);
+    return res.json(getSettingsSnapshot().mcp_runtime);
   } catch (error) {
     console.error('Errore aggiornamento impostazioni MCP:', error);
     return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni MCP' });
@@ -100,8 +100,8 @@ router.put('/ollama', async (req, res) => {
 
 router.put('/openai', async (req, res) => {
   try {
-    const updated = await updateOpenAiRuntimeSettings(req.body || {});
-    return res.json(updated);
+    await updateOpenAiRuntimeSettings(req.body || {});
+    return res.json(getSettingsSnapshot().openai_runtime);
   } catch (error) {
     console.error('Errore aggiornamento impostazioni OpenAI:', error);
     return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni OpenAI' });
@@ -128,9 +128,9 @@ router.get('/telegram/groups', async (_req, res) => {
 
 router.put('/telegram', async (req, res) => {
   try {
-    const updated = await updateTelegramRuntimeSettings(req.body || {});
+    await updateTelegramRuntimeSettings(req.body || {});
     refreshTelegramBotRuntime();
-    return res.json(updated);
+    return res.json(getSettingsSnapshot().telegram_runtime);
   } catch (error) {
     console.error('Errore aggiornamento impostazioni Telegram:', error);
     return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni Telegram' });

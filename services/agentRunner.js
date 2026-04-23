@@ -53,6 +53,17 @@ function parseToolArguments(rawArgs) {
   return JSON.parse(rawArgs);
 }
 
+function parseToolArgumentsSafely(rawArgs) {
+  try {
+    return { args: parseToolArguments(rawArgs), error: null };
+  } catch (error) {
+    return {
+      args: {},
+      error: error?.message || 'JSON argomenti non valido',
+    };
+  }
+}
+
 function stableStringify(value) {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
@@ -179,13 +190,20 @@ function isInternalPortalToolName(functionName) {
   return normalized.startsWith('chrisbot_');
 }
 
+function isCacheableToolCall(functionName) {
+  const normalized = String(functionName || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (isNotificationToolName(normalized) || isInternalPortalToolName(normalized)) return false;
+  if (normalized.startsWith('delegate_to_')) return false;
+  return !/(^|[_.:-])(send|create|update|delete|remove|post|put|patch|write|upsert)([_.:-]|$)/.test(normalized);
+}
+
 function normalizeGuardrails(agent) {
   const raw = agent?.guardrails_json && typeof agent.guardrails_json === 'object' ? agent.guardrails_json : {};
   return {
     max_tool_rounds: Number.isFinite(Number(raw.max_tool_rounds)) ? Math.max(1, Math.trunc(Number(raw.max_tool_rounds))) : 8,
     max_delegations: Number.isFinite(Number(raw.max_delegations)) ? Math.max(0, Math.trunc(Number(raw.max_delegations))) : 3,
     max_depth: Number.isFinite(Number(raw.max_depth)) ? Math.max(0, Math.trunc(Number(raw.max_depth))) : 2,
-    allow_direct_tool_access: raw.allow_direct_tool_access !== false,
   };
 }
 
@@ -322,7 +340,7 @@ async function executeAgentRun(agent, messages, context) {
   }
 
   const agentToolNames = await getAgentToolNames(agent.id);
-  const mcpTools = guardrails.allow_direct_tool_access ? await getAllowedMcpTools(agentToolNames) : [];
+  const mcpTools = await getAllowedMcpTools(agentToolNames);
   const { tools: delegationTools, childByToolName } = await buildDelegationTools(agent);
   const allTools = [...mcpTools, ...delegationTools];
   const sanitizedMessages = sanitizeMessages(messages);
@@ -399,9 +417,40 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
   const toolMessages = [];
   for (const toolCall of responseMessage.tool_calls) {
     const fnName = toolCall?.function?.name || 'unknown_tool';
-    const parsedArgs = parseToolArguments(toolCall?.function?.arguments);
+    const parsedToolArgs = parseToolArgumentsSafely(toolCall?.function?.arguments);
+    if (parsedToolArgs.error) {
+      const content = [
+        'Argomenti tool non validi: JSON non parsabile.',
+        `Funzione: ${fnName}`,
+        `Dettaglio: ${parsedToolArgs.error}`,
+      ].join('\n');
+      await persistConversationMessages(context, [{
+        chat_id: context.chatId,
+        agent_id: agent.id,
+        role: 'tool',
+        event_type: 'tool_result',
+        content,
+        metadata_json: {
+          run_id: context.runId || null,
+          parent_run_id: context.parentRunId || null,
+          depth: Number.isFinite(context.depth) ? context.depth : 0,
+          tool_name: fnName,
+          tool_call_id: toolCall?.id || null,
+          invalid_arguments: true,
+          raw_arguments: toolCall?.function?.arguments ?? null,
+        },
+      }]);
+      toolMessages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content,
+      });
+      continue;
+    }
+    const parsedArgs = parsedToolArgs.args;
     const signature = `${fnName}::${stableStringify(parsedArgs)}`;
-    if (sharedToolState.resultBySignature.has(signature)) {
+    const canReuseToolResult = isCacheableToolCall(fnName);
+    if (canReuseToolResult && sharedToolState.resultBySignature.has(signature)) {
       toolMessages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
@@ -421,7 +470,9 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           { guardrail_type: 'max_delegations', blocked: true, tool_call_id: toolCall.id }
         );
         toolMessages.push({ role: 'tool', tool_call_id: toolCall.id, content });
-        sharedToolState.resultBySignature.set(signature, content);
+        if (canReuseToolResult) {
+          sharedToolState.resultBySignature.set(signature, content);
+        }
         continue;
       }
 
@@ -511,7 +562,9 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         tool_call_id: toolCall.id,
         content: childContent,
       });
-      sharedToolState.resultBySignature.set(signature, childContent);
+      if (canReuseToolResult) {
+        sharedToolState.resultBySignature.set(signature, childContent);
+      }
       continue;
     }
 
@@ -522,7 +575,9 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
       tool_call_id: toolCall.id,
       content,
     });
-    sharedToolState.resultBySignature.set(signature, content);
+    if (canReuseToolResult) {
+      sharedToolState.resultBySignature.set(signature, content);
+    }
   }
 
   messages.push(...toolMessages);

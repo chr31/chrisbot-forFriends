@@ -170,7 +170,10 @@ async function runAliveCycle(agentId, options = {}) {
       }, 'running');
 
       const refreshedChat = await getAliveAgentChatByAgentId(agent.id);
-      const shouldContinue = refreshedChat?.loop_status === 'play';
+      const requestedNextLoopStatus = options.next_loop_status === 'pause' ? 'pause' : null;
+      const shouldContinue = requestedNextLoopStatus
+        ? false
+        : refreshedChat?.loop_status === 'play';
       await releaseAliveAgentChatProcessing(agent.id, {
         loop_status: shouldContinue ? 'play' : 'pause',
         next_loop_at: shouldContinue ? new Date(Date.now() + (Math.max(1, Number(agent.alive_loop_seconds || 60)) * 1000)) : null,
@@ -254,6 +257,7 @@ async function submitAliveAgentMessage(agentId, options = {}) {
     throw conflict;
   }
   const modelConfig = getResolvedAliveModelConfig(agent, chat, options.model_config || null);
+  const nextLoopStatus = options.continue_loop === true || chat.loop_status === 'play' ? 'play' : 'pause';
   await updateAliveAgentChatConfig(agent.id, { model_config: modelConfig });
   await updateAliveAgentLoopState(agent.id, {
     loop_status: 'play',
@@ -264,6 +268,7 @@ async function submitAliveAgentMessage(agentId, options = {}) {
   return runAliveCycle(agent.id, {
     user_message: options.user_message || '',
     model_config: modelConfig,
+    next_loop_status: nextLoopStatus,
   });
 }
 

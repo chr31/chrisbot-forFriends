@@ -48,17 +48,6 @@ async function initAgentChatsTables() {
     }
   }
 
-  try {
-    await pool.query(`
-      ALTER TABLE agent_chats
-      ADD COLUMN config_json JSON NULL AFTER title
-    `);
-  } catch (error) {
-    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
-      throw error;
-    }
-  }
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_messages (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

@@ -83,7 +83,6 @@ type GuardrailForm = {
   max_tool_rounds: number;
   max_delegations: number;
   max_depth: number;
-  allow_direct_tool_access: boolean;
   extra_json: string;
 };
 
@@ -120,7 +119,6 @@ const DEFAULT_GUARDRAILS: GuardrailForm = {
   max_tool_rounds: 8,
   max_delegations: 3,
   max_depth: 2,
-  allow_direct_tool_access: true,
   extra_json: '{}',
 };
 
@@ -160,12 +158,10 @@ function splitGuardrails(raw: Record<string, unknown> | null | undefined): Guard
     max_tool_rounds: toPositiveInteger(source.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(source.max_delegations, 3),
     max_depth: toPositiveInteger(source.max_depth, 2),
-    allow_direct_tool_access: source.allow_direct_tool_access !== false,
   };
   delete source.max_tool_rounds;
   delete source.max_delegations;
   delete source.max_depth;
-  delete source.allow_direct_tool_access;
   return {
     ...known,
     extra_json: JSON.stringify(source, null, 2),
@@ -280,7 +276,6 @@ function buildGuardrailsPayload(guardrails: GuardrailForm) {
     max_tool_rounds: toPositiveInteger(guardrails.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(guardrails.max_delegations, 3),
     max_depth: toPositiveInteger(guardrails.max_depth, 2),
-    allow_direct_tool_access: Boolean(guardrails.allow_direct_tool_access),
   };
 }
 
@@ -358,6 +353,8 @@ export default function AgentsPage() {
   const [configTab, setConfigTab] = useState<'properties' | 'personalization'>('properties');
   const [aiOptions, setAiOptions] = useState<AiOptionsResponse | null>(null);
   const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
+  const [aliveLoopSecondsDraft, setAliveLoopSecondsDraft] = useState(String(EMPTY_FORM.alive_loop_seconds));
+  const [aliveContextMessagesDraft, setAliveContextMessagesDraft] = useState(String(EMPTY_FORM.alive_context_messages));
 
   const fetchData = useCallback(async () => {
     const token = localStorage.getItem('authToken');
@@ -504,6 +501,40 @@ export default function AgentsPage() {
     }));
   };
 
+  const setAliveNumberField = (field: 'alive_loop_seconds' | 'alive_context_messages', rawValue: string, fallback: number) => {
+    if (field === 'alive_loop_seconds') {
+      setAliveLoopSecondsDraft(rawValue);
+    } else {
+      setAliveContextMessagesDraft(rawValue);
+    }
+
+    if (rawValue.trim() === '') return;
+
+    const parsed = toPositiveInteger(rawValue, fallback);
+    setForm((current) => ({
+      ...current,
+      [field]: parsed,
+    }));
+  };
+
+  const commitAliveNumberField = (field: 'alive_loop_seconds' | 'alive_context_messages', fallback: number) => {
+    const rawValue = field === 'alive_loop_seconds' ? aliveLoopSecondsDraft : aliveContextMessagesDraft;
+    const parsed = toPositiveInteger(rawValue, fallback);
+
+    setForm((current) => ({
+      ...current,
+      [field]: parsed,
+    }));
+
+    if (field === 'alive_loop_seconds') {
+      setAliveLoopSecondsDraft(String(parsed));
+    } else {
+      setAliveContextMessagesDraft(String(parsed));
+    }
+
+    return parsed;
+  };
+
   const toggleTool = (toolName: string) => {
     setForm((current) => ({
       ...current,
@@ -535,6 +566,8 @@ export default function AgentsPage() {
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
+    setAliveLoopSecondsDraft(String(EMPTY_FORM.alive_loop_seconds));
+    setAliveContextMessagesDraft(String(EMPTY_FORM.alive_context_messages));
     setSuccess(null);
     setError(null);
     setToolSearch('');
@@ -554,6 +587,8 @@ export default function AgentsPage() {
     }
 
     try {
+      const normalizedAliveLoopSeconds = commitAliveNumberField('alive_loop_seconds', 60);
+      const normalizedAliveContextMessages = commitAliveNumberField('alive_context_messages', 12);
       const payload = {
         name: form.name,
         slug: form.slug || undefined,
@@ -565,9 +600,9 @@ export default function AgentsPage() {
         visibility_scope: form.visibility_scope,
         direct_chat_enabled: form.direct_chat_enabled,
         is_alive: form.direct_chat_enabled ? form.is_alive : false,
-        alive_loop_seconds: form.alive_loop_seconds,
+        alive_loop_seconds: normalizedAliveLoopSeconds,
         alive_prompt: form.alive_prompt,
-        alive_context_messages: form.alive_context_messages,
+        alive_context_messages: normalizedAliveContextMessages,
         alive_include_goals: form.alive_include_goals,
         goals: form.goals,
         memories: form.memories,
@@ -690,15 +725,15 @@ export default function AgentsPage() {
   };
 
   const openCreateModal = () => {
-    setForm({
+    const nextForm = {
       ...EMPTY_FORM,
       kind: activeTab,
       default_model_config: normalizeModelConfig(aiOptions?.default_selection, EMPTY_FORM.default_model_config),
-      guardrails: {
-        ...DEFAULT_GUARDRAILS,
-        allow_direct_tool_access: activeTab === 'worker',
-      },
-    });
+      guardrails: DEFAULT_GUARDRAILS,
+    };
+    setForm(nextForm);
+    setAliveLoopSecondsDraft(String(nextForm.alive_loop_seconds));
+    setAliveContextMessagesDraft(String(nextForm.alive_context_messages));
     setSuccess(null);
     setError(null);
     setToolSearch('');
@@ -707,11 +742,16 @@ export default function AgentsPage() {
   };
 
   const openEditModal = (agent: Agent) => {
-    setForm((current) => ({
-      ...current,
+    const nextForm = {
       ...formFromAgent(agent),
       default_model_config: normalizeModelConfig(agent.default_model_config, aiOptions?.default_selection || EMPTY_FORM.default_model_config),
+    };
+    setForm((current) => ({
+      ...current,
+      ...nextForm,
     }));
+    setAliveLoopSecondsDraft(String(nextForm.alive_loop_seconds));
+    setAliveContextMessagesDraft(String(nextForm.alive_context_messages));
     setSuccess(null);
     setError(null);
     setToolSearch('');
@@ -1091,16 +1131,6 @@ export default function AgentsPage() {
                             className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-white"
                           />
                         </label>
-                        <label className="flex items-center gap-2 self-end rounded-xl border border-gray-800 bg-black/20 px-3 py-2 text-sm text-gray-200">
-                          <input
-                            type="checkbox"
-                            checked={form.guardrails.allow_direct_tool_access}
-                            onChange={(e) => setGuardrailField('allow_direct_tool_access', e.target.checked)}
-                            className="h-4 w-4 accent-sky-500"
-                          />
-                          Accesso diretto ai tool MCP
-                          <InfoHint label="Accesso diretto ai tool MCP" description="Se disattivato, l'agente non può chiamare tool MCP direttamente. Utile per orchestratori puri che devono solo delegare." />
-                        </label>
                       </div>
                       <label className="mt-4 block text-sm text-gray-200">
                         <span className="mb-1 flex items-center gap-2">Extra guardrails JSON <InfoHint label="Extra guardrails JSON" description="Campi avanzati non ancora modellati in UI. Restano serializzati insieme ai guardrail principali." /></span>
@@ -1206,8 +1236,9 @@ export default function AgentsPage() {
                                   <input
                                     type="number"
                                     min={1}
-                                    value={form.alive_loop_seconds}
-                                    onChange={(e) => setForm((current) => ({ ...current, alive_loop_seconds: toPositiveInteger(e.target.value, 60) || 60 }))}
+                                    value={aliveLoopSecondsDraft}
+                                    onChange={(e) => setAliveNumberField('alive_loop_seconds', e.target.value, 60)}
+                                    onBlur={() => commitAliveNumberField('alive_loop_seconds', 60)}
                                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                                   />
                                 </label>
@@ -1216,8 +1247,9 @@ export default function AgentsPage() {
                                   <input
                                     type="number"
                                     min={1}
-                                    value={form.alive_context_messages}
-                                    onChange={(e) => setForm((current) => ({ ...current, alive_context_messages: toPositiveInteger(e.target.value, 12) || 12 }))}
+                                    value={aliveContextMessagesDraft}
+                                    onChange={(e) => setAliveNumberField('alive_context_messages', e.target.value, 12)}
+                                    onBlur={() => commitAliveNumberField('alive_context_messages', 12)}
                                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                                   />
                                 </label>

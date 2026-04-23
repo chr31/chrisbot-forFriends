@@ -11,6 +11,7 @@ type PortalAccessSettings = {
   local_login_enabled: boolean;
   local_admin_username: string;
   local_admin_password: string;
+  local_admin_password_configured?: boolean;
   allowed_login_groups: string[];
   allowed_login_upns: string[];
   super_admin_groups: string[];
@@ -22,6 +23,7 @@ type PortalAccessSettings = {
   azure_tenant_id: string;
   azure_client_id: string;
   azure_client_secret: string;
+  azure_client_secret_configured?: boolean;
   azure_redirect_uri: string;
   backend_base_url: string;
   frontend_base_url: string;
@@ -72,12 +74,14 @@ type OllamaRuntimeSettings = {
 
 type OpenAiRuntimeSettings = {
   api_key: string;
+  api_key_configured?: boolean;
   chat_model: string;
 };
 
 type TelegramRuntimeSettings = {
   enabled: boolean;
   bot_token: string;
+  bot_token_configured?: boolean;
   polling_interval_ms: number;
 };
 
@@ -282,9 +286,11 @@ export default function SettingsPage() {
   const [localLoginEnabled, setLocalLoginEnabled] = useState(true);
   const [localAdminUsername, setLocalAdminUsername] = useState('');
   const [localAdminPassword, setLocalAdminPassword] = useState('');
+  const [localAdminPasswordConfigured, setLocalAdminPasswordConfigured] = useState(false);
   const [azureTenantId, setAzureTenantId] = useState('common');
   const [azureClientId, setAzureClientId] = useState('');
   const [azureClientSecret, setAzureClientSecret] = useState('');
+  const [azureClientSecretConfigured, setAzureClientSecretConfigured] = useState(false);
   const [azureRedirectUri, setAzureRedirectUri] = useState('');
   const [backendBaseUrl, setBackendBaseUrl] = useState('');
   const [frontendBaseUrl, setFrontendBaseUrl] = useState('');
@@ -365,9 +371,11 @@ export default function SettingsPage() {
       setLocalLoginEnabled(payload.portal_access?.local_login_enabled !== false);
       setLocalAdminUsername(payload.portal_access?.local_admin_username || '');
       setLocalAdminPassword(payload.portal_access?.local_admin_password || '');
+      setLocalAdminPasswordConfigured(Boolean(payload.portal_access?.local_admin_password_configured));
       setAzureTenantId(payload.portal_access?.azure_tenant_id || 'common');
       setAzureClientId(payload.portal_access?.azure_client_id || '');
       setAzureClientSecret(payload.portal_access?.azure_client_secret || '');
+      setAzureClientSecretConfigured(Boolean(payload.portal_access?.azure_client_secret_configured));
       setAzureRedirectUri(payload.portal_access?.azure_redirect_uri || '');
       setBackendBaseUrl(payload.portal_access?.backend_base_url || '');
       setFrontendBaseUrl(payload.portal_access?.frontend_base_url || '');
@@ -687,6 +695,9 @@ export default function SettingsPage() {
   const editingMcpConnection = editingMcpConnectionId && mcpRuntime
     ? mcpRuntime.connections.find((connection) => connection.id === editingMcpConnectionId) || null
     : null;
+  const isOpenAiConfigured = Boolean((openAiRuntime?.api_key_configured || openAiRuntime?.api_key.trim()) && openAiRuntime?.chat_model.trim());
+  const globalDefaultModelValue = ollamaRuntime?.default_model
+    || (isOpenAiConfigured ? '__openai__' : '');
 
   return (
     <div className="space-y-6 py-6">
@@ -755,7 +766,7 @@ export default function SettingsPage() {
                   value={localAdminPassword}
                   onChange={(event) => setLocalAdminPassword(event.target.value)}
                   className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder="Password account locale"
+                  placeholder={localAdminPasswordConfigured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password account locale'}
                 />
               </label>
             </div>
@@ -799,7 +810,7 @@ export default function SettingsPage() {
                   value={azureClientSecret}
                   onChange={(event) => setAzureClientSecret(event.target.value)}
                   className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder="Client secret"
+                  placeholder={azureClientSecretConfigured ? 'Gia configurato; lascia vuoto per mantenerlo' : 'Client secret'}
                 />
               </label>
               <label className="text-sm text-gray-200">
@@ -952,7 +963,7 @@ export default function SettingsPage() {
                   value={openAiRuntime.api_key}
                   onChange={(event) => setOpenAiRuntime((current) => current ? { ...current, api_key: event.target.value } : current)}
                   className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder="sk-..."
+                  placeholder={openAiRuntime.api_key_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'sk-...'}
                 />
               </label>
               <label className="text-sm text-gray-200">
@@ -1019,10 +1030,21 @@ export default function SettingsPage() {
                 <label className="text-sm text-gray-200">
                   <span className="mb-1 block">Modello globale di default</span>
                   <select
-                    value={ollamaRuntime.default_model || ''}
-                    onChange={(event) => setOllamaRuntime((current) => current ? { ...current, default_model: event.target.value } : current)}
+                    value={globalDefaultModelValue}
+                    onChange={(event) => setOllamaRuntime((current) => current ? {
+                      ...current,
+                      default_model: event.target.value === '__openai__' ? '' : event.target.value,
+                    } : current)}
                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                   >
+                    {isOpenAiConfigured ? (
+                      <option value="__openai__">
+                        {`ChatGPT (${openAiRuntime?.chat_model || 'gpt-5-mini'})`}
+                      </option>
+                    ) : null}
+                    {!isOpenAiConfigured && !(ollamaRuntime.models || []).length ? (
+                      <option value="" disabled>Nessun modello disponibile</option>
+                    ) : null}
                     {(ollamaRuntime.models || []).map((model) => (
                       <option key={model} value={model}>{model}</option>
                     ))}
@@ -1232,7 +1254,7 @@ export default function SettingsPage() {
                     value={telegramRuntime.bot_token}
                     onChange={(event) => setTelegramRuntime((current) => current ? { ...current, bot_token: event.target.value } : current)}
                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                    placeholder="123456:ABC..."
+                    placeholder={telegramRuntime.bot_token_configured ? 'Gia configurato; lascia vuoto per mantenerlo' : '123456:ABC...'}
                   />
                 </label>
               </div>
@@ -1447,13 +1469,6 @@ export default function SettingsPage() {
           <div className="flex gap-3">
             <button
               type="button"
-              onClick={addConnection}
-              className="rounded-xl border border-gray-700 px-4 py-2 text-sm text-gray-100 hover:bg-gray-800"
-            >
-              Aggiungi connessione
-            </button>
-            <button
-              type="button"
               onClick={handleSaveMcp}
               disabled={isSavingMcp || !mcpRuntime}
               className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
@@ -1465,44 +1480,81 @@ export default function SettingsPage() {
 
         {mcpRuntime ? (
           <>
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[
-                ['client_name', 'Client name'],
-                ['client_version', 'Client version'],
-                ['protocol_version', 'Protocol version'],
-                ['tool_cache_ttl_ms', 'Tool cache TTL ms'],
-                ['timeout_ms', 'Timeout ms'],
-                ['unavailable_cooldown_ms', 'Unavailable cooldown ms'],
-                ['call_retry_base_ms', 'Retry base ms'],
-                ['call_retry_max_ms', 'Retry max ms'],
-                ['call_max_retries', 'Max retries'],
-                ['av_timeout_ms', 'AV timeout ms'],
-              ].map(([key, label]) => (
-                <label key={key} className="text-sm text-gray-200">
-                  <span className="mb-1 block">{label}</span>
-                  <input
-                    value={String((mcpRuntime as any)[key] ?? '')}
-                    onChange={(event) => setMcpRuntime((current) => current ? ({
-                      ...current,
-                      [key]: ['client_name', 'client_version', 'protocol_version'].includes(key)
-                        ? event.target.value
-                        : Number.parseInt(event.target.value || '0', 10) || 0,
-                    }) : current)}
-                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                  />
-                </label>
-              ))}
+            <div className="mt-6 space-y-4">
+              <label className="block max-w-xl text-sm text-gray-200">
+                <span className="mb-1 block">Client name</span>
+                <input
+                  value={String(mcpRuntime.client_name ?? '')}
+                  onChange={(event) => setMcpRuntime((current) => current ? ({
+                    ...current,
+                    client_name: event.target.value,
+                  }) : current)}
+                  className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                />
+              </label>
+
+              <details className="group rounded-2xl border border-gray-800 bg-gray-950/40">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-gray-100">
+                  <span>Impostazioni avanzate MCP</span>
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 stroke-current text-gray-400 transition-transform group-open:rotate-180">
+                    <path d="m5 7.5 5 5 5-5" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </summary>
+                <div className="grid gap-4 border-t border-gray-800 px-4 py-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {[
+                    ['client_version', 'Client version'],
+                    ['protocol_version', 'Protocol version'],
+                    ['tool_cache_ttl_ms', 'Tool cache TTL ms'],
+                    ['timeout_ms', 'Timeout ms'],
+                    ['unavailable_cooldown_ms', 'Unavailable cooldown ms'],
+                    ['call_retry_base_ms', 'Retry base ms'],
+                    ['call_retry_max_ms', 'Retry max ms'],
+                    ['call_max_retries', 'Max retries'],
+                    ['av_timeout_ms', 'AV timeout ms'],
+                  ].map(([key, label]) => (
+                    <label key={key} className="text-sm text-gray-200">
+                      <span className="mb-1 block">{label}</span>
+                      <input
+                        value={String((mcpRuntime as any)[key] ?? '')}
+                        onChange={(event) => setMcpRuntime((current) => current ? ({
+                          ...current,
+                          [key]: ['client_name', 'client_version', 'protocol_version'].includes(key)
+                            ? event.target.value
+                            : Number.parseInt(event.target.value || '0', 10) || 0,
+                        }) : current)}
+                        className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </details>
             </div>
 
             <div className="mt-8">
-              <div className="hidden grid-cols-[120px_120px_180px_140px_minmax(240px,1fr)_96px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
-                <div>Attivo</div>
-                <div>Stato</div>
-                <div>Nome</div>
-                <div>Prefix</div>
-                <div>URL</div>
-                <div></div>
+              <div className="mb-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={addConnection}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-700 text-gray-100 hover:bg-gray-800"
+                  aria-label="Aggiungi connessione MCP"
+                  title="Aggiungi connessione"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-5 w-5 stroke-current">
+                    <path d="M10 4v12M4 10h12" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                </button>
               </div>
+
+              <div className="overflow-x-auto pb-2">
+                <div className="min-w-[980px]">
+                  <div className="hidden grid-cols-[120px_120px_220px_160px_minmax(260px,1fr)_96px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+                    <div>Attivo</div>
+                    <div>Stato</div>
+                    <div>Nome</div>
+                    <div>Prefix</div>
+                    <div>URL</div>
+                    <div></div>
+                  </div>
 
               <div className="mt-4 space-y-4">
                 {mcpRuntime.connections.length === 0 ? (
@@ -1515,7 +1567,7 @@ export default function SettingsPage() {
                     const statusMeta = getMcpStatusMeta(connection, status);
                     return (
                       <div key={connection.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                        <div className="grid gap-3 lg:grid-cols-[120px_120px_180px_140px_minmax(240px,1fr)_96px] lg:items-start">
+                        <div className="grid gap-3 lg:grid-cols-[120px_120px_220px_160px_minmax(260px,1fr)_96px] lg:items-start">
                           <div className="space-y-2">
                             <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                             <Toggle
@@ -1590,9 +1642,10 @@ export default function SettingsPage() {
                               className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-700 text-gray-100 hover:bg-gray-800"
                             >
                               <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 stroke-current">
-                                <path d="M4 13.5V16h2.5l7.1-7.1-2.5-2.5L4 13.5Z" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                                <path d="M10.8 4.6 13.4 7.2" strokeWidth="1.6" strokeLinecap="round" />
-                                <path d="M12.2 3.2a1.5 1.5 0 1 1 2.1 2.1l-.9.9-2.5-2.5.9-.9Z" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M8.5 11.5 4 16" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M6 14h2v-2" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M10 10a4 4 0 1 0 1.4-1.4" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M13 6.5h.01" strokeWidth="2.4" strokeLinecap="round" />
                               </svg>
                             </button>
                             <button
@@ -1629,6 +1682,8 @@ export default function SettingsPage() {
                     );
                   })
                 )}
+              </div>
+                </div>
               </div>
             </div>
           </>

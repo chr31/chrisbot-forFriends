@@ -6,6 +6,12 @@ CREATE DATABASE IF NOT EXISTS `chrisbot`
   COLLATE utf8mb4_unicode_ci;
 USE `chrisbot`;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id VARCHAR(128) NOT NULL PRIMARY KEY,
+  description VARCHAR(255) NULL,
+  applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS app_settings (
   setting_key VARCHAR(128) NOT NULL PRIMARY KEY,
   value_json JSON NOT NULL,
@@ -162,6 +168,7 @@ CREATE TABLE IF NOT EXISTS agent_chats (
   agent_id BIGINT UNSIGNED NOT NULL,
   owner_username VARCHAR(255) NULL,
   title VARCHAR(255) NULL,
+  config_json JSON NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   INDEX idx_agent_chats_agent (agent_id),
