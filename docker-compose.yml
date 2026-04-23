@@ -50,7 +50,7 @@ services:
       - ${CHRISBOT_DNS_1:-8.8.8.8}
       - ${CHRISBOT_DNS_2:-8.8.4.4}
     ports:
-      - "3001:3000"
+      - "3001:3001"
     env_file: .env
     environment:
       BACKEND_URL: http://chrisbot:3000
