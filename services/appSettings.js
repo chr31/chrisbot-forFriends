@@ -124,6 +124,7 @@ function buildDefaultTelegramRuntimeSettings() {
     enabled: false,
     bot_token: '',
     polling_interval_ms: 3000,
+    parse_mode: 'HTML',
   };
 }
 
@@ -321,10 +322,12 @@ function normalizeOllamaRuntimeSettings(value) {
 
 function normalizeTelegramRuntimeSettings(value) {
   const defaults = buildDefaultTelegramRuntimeSettings();
+  const parseMode = String(value?.parse_mode || defaults.parse_mode).trim().toUpperCase();
   return {
     enabled: value?.enabled === true,
     bot_token: String(value?.bot_token || defaults.bot_token).trim(),
     polling_interval_ms: parseInteger(value?.polling_interval_ms, defaults.polling_interval_ms),
+    parse_mode: parseMode === 'HTML' ? 'HTML' : '',
   };
 }
 
