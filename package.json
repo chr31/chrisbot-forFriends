@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "node server.js",
+    "dev:all": "node scripts/dev-all.js",
     "start": "node server.js"
   },
   "dependencies": {

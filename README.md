@@ -41,6 +41,14 @@ Servizi esposti:
 - Frontend: `http://127.0.0.1:3001`
 - MySQL: `127.0.0.1:3307`
 
+## Avvio locale senza Docker
+
+Per avviare contemporaneamente backend e frontend:
+
+```bash
+npm run dev:all
+```
+
 ## Impostazioni base
 
 - Impostazioni/Modelli AI: configura una api key OpenAI o i server Ollama necessari(necessario avviare ollama e attivare dalle impostazioni "Expose ollama to the network").
