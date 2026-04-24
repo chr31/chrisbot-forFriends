@@ -138,8 +138,10 @@ export default function NotificationsPage() {
     try {
       const response = await axios.get(`${API_URL}/agent-chats/${chatId}`, { headers });
       setChatMessages(Array.isArray(response.data) ? response.data : []);
-    } catch (err) {
-      console.error('Impossibile caricare la chat collegata', err);
+    } catch (err: any) {
+      if (err.response?.status !== 404) {
+        console.error('Impossibile caricare la chat collegata', err);
+      }
       setChatMessages([]);
     } finally {
       setChatLoading(false);

@@ -1,5 +1,7 @@
 'use strict';
 
+const { initializeAppSettings } = require('../services/appSettings');
+
 function serializeError(error) {
   return {
     message: String(error?.message || error || 'Errore sconosciuto'),
@@ -25,6 +27,8 @@ process.on('unhandledRejection', (reason) => {
 process.on('message', async (message) => {
   try {
     const { entrypointPath, definition, trigger, actorUsername } = message || {};
+    await initializeAppSettings();
+
     const routineModule = require(entrypointPath);
     const routineFn = typeof routineModule === 'function'
       ? routineModule
