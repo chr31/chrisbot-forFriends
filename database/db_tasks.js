@@ -5,7 +5,6 @@ const VALID_TASK_STATUSES = new Set([
   'pending',
   'scheduled',
   'running',
-  'needs_confirmation',
   'blocked',
   'completed',
   'failed',
@@ -88,12 +87,10 @@ function hydrateTask(row) {
     priority: normalizeTaskPriority(row.priority, 'normal'),
     is_active: Number(row.is_active) === 1,
     notifications_enabled: Number(row.notifications_enabled) === 1,
-    needs_confirmation: Number(row.needs_confirmation) === 1,
     notification_type: String(row.notification_type || '').trim(),
     legacy_source: toNullableString(row.legacy_source),
     schedule_json: parseJsonField(row.schedule_json, null),
     payload_json: parseJsonField(row.payload_json, {}),
-    confirmation_request_json: parseJsonField(row.confirmation_request_json, null),
     latest_run_status: row.latest_run_status ? normalizeRunStatus(row.latest_run_status, 'queued') : null,
     latest_run_chat_id: toNullableString(row.latest_run_chat_id),
     latest_run_metadata_json: parseJsonField(row.latest_run_metadata_json, null),
@@ -129,7 +126,7 @@ async function initTasksTables() {
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
       title VARCHAR(255) NOT NULL,
       description TEXT NULL,
-      status ENUM('draft', 'pending', 'scheduled', 'running', 'needs_confirmation', 'blocked', 'completed', 'failed', 'cancelled') NOT NULL DEFAULT 'draft',
+      status ENUM('draft', 'pending', 'scheduled', 'running', 'blocked', 'completed', 'failed', 'cancelled') NOT NULL DEFAULT 'draft',
       priority ENUM('low', 'normal', 'high', 'urgent') NOT NULL DEFAULT 'normal',
       schedule_json JSON NULL,
       owner_agent_id BIGINT UNSIGNED NULL,
@@ -138,8 +135,6 @@ async function initTasksTables() {
       notification_type VARCHAR(255) NULL,
       notifications_enabled TINYINT(1) NOT NULL DEFAULT 1,
       is_active TINYINT(1) NOT NULL DEFAULT 1,
-      needs_confirmation TINYINT(1) NOT NULL DEFAULT 0,
-      confirmation_request_json JSON NULL,
       legacy_source VARCHAR(64) NULL,
       legacy_source_id BIGINT UNSIGNED NULL,
       created_by VARCHAR(255) NULL,
@@ -158,7 +153,7 @@ async function initTasksTables() {
     ['notification_type', "ALTER TABLE tasks ADD COLUMN notification_type VARCHAR(255) NULL AFTER payload_json"],
     ['notifications_enabled', "ALTER TABLE tasks ADD COLUMN notifications_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER notification_type"],
     ['is_active', "ALTER TABLE tasks ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER notifications_enabled"],
-    ['legacy_source', "ALTER TABLE tasks ADD COLUMN legacy_source VARCHAR(64) NULL AFTER confirmation_request_json"],
+    ['legacy_source', "ALTER TABLE tasks ADD COLUMN legacy_source VARCHAR(64) NULL AFTER is_active"],
     ['legacy_source_id', "ALTER TABLE tasks ADD COLUMN legacy_source_id BIGINT UNSIGNED NULL AFTER legacy_source"],
   ];
 
@@ -176,6 +171,8 @@ async function initTasksTables() {
       await pool.query(sql);
     }
   }
+
+  await cleanupTaskConfirmationLegacyColumns();
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS task_runs (
@@ -246,6 +243,40 @@ async function initTasksTables() {
   `);
 }
 
+async function getTaskColumn(columnName) {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME, COLUMN_TYPE
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'tasks'
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [columnName]
+  );
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+async function cleanupTaskConfirmationLegacyColumns() {
+  const statusColumn = await getTaskColumn('status');
+  if (statusColumn?.COLUMN_TYPE && String(statusColumn.COLUMN_TYPE).includes('needs_confirmation')) {
+    await pool.query("UPDATE tasks SET status = 'pending' WHERE status = 'needs_confirmation'");
+    await pool.query(`
+      ALTER TABLE tasks
+      MODIFY COLUMN status ENUM('draft', 'pending', 'scheduled', 'running', 'blocked', 'completed', 'failed', 'cancelled') NOT NULL DEFAULT 'draft'
+    `);
+  }
+
+  const confirmationRequestColumn = await getTaskColumn('confirmation_request_json');
+  if (confirmationRequestColumn) {
+    await pool.query('ALTER TABLE tasks DROP COLUMN confirmation_request_json');
+  }
+
+  const needsConfirmationColumn = await getTaskColumn('needs_confirmation');
+  if (needsConfirmationColumn) {
+    await pool.query('ALTER TABLE tasks DROP COLUMN needs_confirmation');
+  }
+}
+
 async function cleanupLegacyScheduledActionsTable() {
   try {
     await pool.query('DROP TABLE IF EXISTS scheduled_actions');
@@ -279,8 +310,8 @@ async function insertTask(input) {
 
   const [result] = await pool.query(
     `INSERT INTO tasks
-      (title, description, status, priority, schedule_json, owner_agent_id, worker_agent_id, payload_json, notification_type, notifications_enabled, is_active, needs_confirmation, confirmation_request_json, legacy_source, legacy_source_id, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (title, description, status, priority, schedule_json, owner_agent_id, worker_agent_id, payload_json, notification_type, notifications_enabled, is_active, legacy_source, legacy_source_id, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       title,
       toNullableString(input?.description),
@@ -293,8 +324,6 @@ async function insertTask(input) {
       toNullableString(input?.notification_type),
       normalizeBooleanFlag(input?.notifications_enabled, 1),
       normalizeBooleanFlag(input?.is_active, 1),
-      normalizeBooleanFlag(input?.needs_confirmation, 0),
-      input?.confirmation_request_json === undefined ? null : toJsonString(input.confirmation_request_json, null),
       toNullableString(input?.legacy_source),
       toNullableUnsignedInt(input?.legacy_source_id),
       toNullableString(input?.created_by),
@@ -350,14 +379,6 @@ async function updateTask(id, updates) {
   if (updates.is_active !== undefined) {
     entries.push('is_active = ?');
     values.push(normalizeBooleanFlag(updates.is_active, 1));
-  }
-  if (updates.needs_confirmation !== undefined) {
-    entries.push('needs_confirmation = ?');
-    values.push(normalizeBooleanFlag(updates.needs_confirmation, 0));
-  }
-  if (updates.confirmation_request_json !== undefined) {
-    entries.push('confirmation_request_json = ?');
-    values.push(updates.confirmation_request_json === null ? null : toJsonString(updates.confirmation_request_json, null));
   }
 
   if (entries.length === 0) return { changes: 0 };

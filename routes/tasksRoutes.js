@@ -17,7 +17,6 @@ const {
 } = require('../database/db_tasks');
 const { getAgentById } = require('../database/db_agents');
 const { canUserAccessAgent } = require('../services/agentAccess');
-const { insertInboxItem, getInboxItemByKey, updateInboxItem, insertInboxMessage } = require('../database/db_inbox');
 const { requireSuperAdmin } = require('../utils/adminAccess');
 const {
   listLegacyRoutines,
@@ -45,7 +44,7 @@ const {
 } = require('../scheduled/tasks');
 const { askOllamaChatCompletions } = require('../utils/askGpt');
 const { createOpenAiClient, getDefaultOpenAiModel } = require('../services/openaiRuntime');
-const { MODEL_PROVIDERS, normalizeModelConfig, getAiOptionsSnapshot, getDefaultModelConfig } = require('../services/aiModelCatalog');
+const { MODEL_PROVIDERS, normalizeModelConfig, getDefaultModelConfig, getAgentDefaultModelConfig } = require('../services/aiModelCatalog');
 
 router.use(authenticateToken);
 router.use(requireSuperAdmin);
@@ -230,6 +229,57 @@ function parsePositiveInt(value, fallback, max = 100) {
   return Math.min(parsed, max);
 }
 
+function normalizeTaskRouteInput(input) {
+  const normalized = {};
+  const allowedFields = [
+    'title',
+    'description',
+    'status',
+    'priority',
+    'schedule_json',
+    'owner_agent_id',
+    'worker_agent_id',
+    'notification_type',
+    'notifications_enabled',
+    'is_active',
+    'legacy_source',
+    'legacy_source_id',
+    'assignments',
+  ];
+
+  for (const field of allowedFields) {
+    if (input?.[field] !== undefined) {
+      normalized[field] = input[field];
+    }
+  }
+
+  if (input?.payload_json && typeof input.payload_json === 'object' && !Array.isArray(input.payload_json)) {
+    const payload = {};
+    for (const field of ['request_text', 'notification_label']) {
+      if (input.payload_json[field] !== undefined) {
+        payload[field] = input.payload_json[field];
+      }
+    }
+    normalized.payload_json = payload;
+  }
+
+  return normalized;
+}
+
+async function getModelConfigForTaskWorker(workerAgentId) {
+  if (!workerAgentId) {
+    return getDefaultModelConfig();
+  }
+
+  const worker = await getAgentById(workerAgentId);
+  if (!worker) {
+    const error = new Error('Agente esecutore non trovato.');
+    error.statusCode = 404;
+    throw error;
+  }
+  return getAgentDefaultModelConfig(worker);
+}
+
 function extractJsonObject(rawValue) {
   if (rawValue && typeof rawValue === 'object') return rawValue;
   const text = String(rawValue || '').trim();
@@ -273,7 +323,7 @@ function normalizeCronExpression(rawValue) {
   return normalized;
 }
 
-async function generateCronWithLlm({ prompt, timezone, model_config }) {
+async function generateCronWithLlm({ prompt, timezone, modelConfig }) {
   const messages = [
     {
       role: 'system',
@@ -291,7 +341,7 @@ async function generateCronWithLlm({ prompt, timezone, model_config }) {
     },
   ];
 
-  const normalizedModelConfig = normalizeModelConfig(model_config || {}, getDefaultModelConfig());
+  const normalizedModelConfig = normalizeModelConfig(modelConfig || {}, getDefaultModelConfig());
   if (normalizedModelConfig.provider === MODEL_PROVIDERS.OPENAI) {
     const response = await createOpenAiClient().chat.completions.create({
       model: normalizedModelConfig.model || getDefaultOpenAiModel(),
@@ -308,66 +358,6 @@ async function generateCronWithLlm({ prompt, timezone, model_config }) {
     { ollamaServerId: normalizedModelConfig.ollama_server_id || null }
   );
   return extractJsonObject(response?.content || response);
-}
-
-async function syncTaskConfirmationInbox(task, actorUsername) {
-  if (!task?.id || !task?.created_by) return;
-  const itemKey = `task-confirmation-${task.id}`;
-  const existing = await getInboxItemByKey(itemKey);
-  const taskChat = await ensureTaskChat(task);
-
-  if (!task.needs_confirmation) {
-    if (existing) {
-      await updateInboxItem(existing.id, {
-        status: 'resolved',
-        requires_confirmation: 0,
-      });
-    }
-    return;
-  }
-
-  const title = task.confirmation_request_json?.title || `Conferma richiesta per task: ${task.title}`;
-  const description = task.confirmation_request_json?.description || task.description || 'Il task richiede una conferma utente.';
-  const payload = {
-    status: 'pending_user',
-    priority: task.priority || 'normal',
-    title,
-    description,
-    category: task.notification_type || 'Task',
-    chat_id: taskChat?.chatId || null,
-    requires_reply: 1,
-    requires_confirmation: 1,
-    confirmation_state: 'pending',
-    metadata_json: {
-      confirmation_request: task.confirmation_request_json || null,
-      task_id: task.id,
-    },
-    is_read: 0,
-    last_message_at: new Date(),
-  };
-
-  let inboxItemId = existing?.id || null;
-  if (!inboxItemId) {
-    const created = await insertInboxItem({
-      owner_username: task.created_by,
-      task_id: task.id,
-      agent_id: task.owner_agent_id || task.worker_agent_id || null,
-      item_key: itemKey,
-      ...payload,
-    });
-    inboxItemId = created.id;
-  } else {
-    await updateInboxItem(inboxItemId, payload);
-  }
-
-  await insertInboxMessage({
-    inbox_item_id: inboxItemId,
-    role: 'system',
-    message_type: 'status_update',
-    username: actorUsername || null,
-    content: description,
-    metadata_json: { source: 'task_confirmation_sync' },
-  });
 }
 
 router.get('/runtime/status', async (_req, res) => {
@@ -618,8 +608,12 @@ router.post('/generate-cron', async (req, res) => {
     }
 
     const timezone = String(req.body?.timezone || process.env.TZ || 'Europe/Rome').trim() || 'Europe/Rome';
-    const modelConfig = normalizeModelConfig(req.body?.model_config || {}, getDefaultModelConfig());
-    const suggestion = await generateCronWithLlm({ prompt, timezone, model_config: modelConfig });
+    const workerAgentId = req.body?.worker_agent_id || null;
+    if (workerAgentId) {
+      await ensureAgentAccess(workerAgentId, req.user, 'chat');
+    }
+    const modelConfig = await getModelConfigForTaskWorker(workerAgentId);
+    const suggestion = await generateCronWithLlm({ prompt, timezone, modelConfig });
     const cronExpression = normalizeCronExpression(suggestion?.cron_expression);
 
     if (!cronExpression) {
@@ -640,7 +634,6 @@ router.post('/generate-cron', async (req, res) => {
       summary: Array.isArray(suggestion?.summary) ? suggestion.summary : [],
       assumptions: Array.isArray(suggestion?.assumptions) ? suggestion.assumptions : [],
       timezone,
-      model_config: modelConfig,
     });
   } catch (error) {
     console.error('Errore generazione cron via LLM:', error);
@@ -721,14 +714,15 @@ router.get('/:id/events', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    await ensureAgentAccess(req.body?.owner_agent_id, req.user, 'chat');
-    await ensureAgentAccess(req.body?.worker_agent_id, req.user, 'chat');
+    const taskInput = normalizeTaskRouteInput(req.body || {});
+    await ensureAgentAccess(taskInput.owner_agent_id, req.user, 'chat');
+    await ensureAgentAccess(taskInput.worker_agent_id, req.user, 'chat');
     const created = await insertTask({
-      ...(req.body || {}),
+      ...taskInput,
       created_by: req.user?.name || null,
     });
-    if (req.body?.assignments !== undefined) {
-      await replaceTaskAssignments(created.id, req.body.assignments);
+    if (taskInput.assignments !== undefined) {
+      await replaceTaskAssignments(created.id, taskInput.assignments);
     }
     await insertTaskEvent({
       task_id: created.id,
@@ -737,17 +731,16 @@ router.post('/', async (req, res) => {
       actor_id: req.user?.name || null,
       content: 'Task creato.',
       payload_json: {
-        owner_agent_id: req.body?.owner_agent_id || null,
-        worker_agent_id: req.body?.worker_agent_id || null,
-        notifications_enabled: req.body?.notifications_enabled,
-        notification_type: req.body?.notification_type || null,
+        owner_agent_id: taskInput.owner_agent_id || null,
+        worker_agent_id: taskInput.worker_agent_id || null,
+        notifications_enabled: taskInput.notifications_enabled,
+        notification_type: taskInput.notification_type || null,
       },
     });
     await rescheduleTaskById(created.id);
     let createdTask = await getTaskById(created.id);
     await ensureTaskChat(createdTask);
     createdTask = await getTaskById(created.id);
-    await syncTaskConfirmationInbox(createdTask, req.user?.name || null);
     const task = await buildTaskDetails(createdTask);
     return res.status(201).json(task);
   } catch (error) {
@@ -762,11 +755,12 @@ router.put('/:id', async (req, res) => {
     if (!task) {
       return res.status(404).json({ error: 'Task non trovato' });
     }
-    await ensureAgentAccess(req.body?.owner_agent_id ?? task.owner_agent_id, req.user, 'chat');
-    await ensureAgentAccess(req.body?.worker_agent_id ?? task.worker_agent_id, req.user, 'chat');
-    await updateTask(req.params.id, req.body || {});
-    if (req.body?.assignments !== undefined) {
-      await replaceTaskAssignments(req.params.id, req.body.assignments);
+    const taskInput = normalizeTaskRouteInput(req.body || {});
+    await ensureAgentAccess(taskInput.owner_agent_id ?? task.owner_agent_id, req.user, 'chat');
+    await ensureAgentAccess(taskInput.worker_agent_id ?? task.worker_agent_id, req.user, 'chat');
+    await updateTask(req.params.id, taskInput);
+    if (taskInput.assignments !== undefined) {
+      await replaceTaskAssignments(req.params.id, taskInput.assignments);
     }
     await insertTaskEvent({
       task_id: req.params.id,
@@ -774,13 +768,12 @@ router.put('/:id', async (req, res) => {
       actor_type: 'user',
       actor_id: req.user?.name || null,
       content: 'Task aggiornato.',
-      payload_json: req.body || {},
+      payload_json: taskInput,
     });
     await rescheduleTaskById(req.params.id);
     let updatedTask = await getTaskById(req.params.id);
     await ensureTaskChat(updatedTask);
     updatedTask = await getTaskById(req.params.id);
-    await syncTaskConfirmationInbox(updatedTask, req.user?.name || null);
     const updated = await buildTaskDetails(updatedTask);
     return res.json(updated);
   } catch (error) {

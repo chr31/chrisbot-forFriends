@@ -17,7 +17,7 @@ const { runAgentConversation } = require('../services/agentRunner');
 const { upsertAdminInboxItem } = require('../utils/adminInbox');
 const { ADMIN_SHARED_OWNER } = require('../utils/adminAccess');
 const { ensureTaskChat } = require('../services/taskChat');
-const { getAgentDefaultModelConfig, normalizeModelConfig } = require('../services/aiModelCatalog');
+const { getAgentDefaultModelConfig } = require('../services/aiModelCatalog');
 
 const EMPTY_TASK_RESULT_MESSAGE = 'Run completata senza testo finale del modello.';
 
@@ -80,8 +80,6 @@ async function createOrUpdateTaskInboxItem(task, options) {
     task_id: task.id,
     task_run_id: options.task_run_id || null,
     requires_reply: options.requires_reply ? 1 : 0,
-    requires_confirmation: options.requires_confirmation ? 1 : 0,
-    confirmation_state: options.confirmation_state || null,
     item_key: options.item_key || null,
     metadata_json: options.metadata_json || {},
     metadata_json_by_owner: options.metadata_json_by_owner || null,
@@ -207,6 +205,7 @@ async function runTask(task, options = {}) {
       },
     ]);
 
+    const modelConfig = getAgentDefaultModelConfig(worker);
     const result = await runAgentConversation(
       worker,
       [
@@ -216,11 +215,11 @@ async function runTask(task, options = {}) {
       {
         chatId: taskChatId,
         agentId: worker.id,
-        ollamaServerId: normalizeModelConfig(freshTask.payload_json?.model_config || {}, getAgentDefaultModelConfig(worker)).ollama_server_id,
+        ollamaServerId: modelConfig.ollama_server_id,
         parentRunId: null,
         runId: run.id,
         parentAgentId: null,
-        modelConfig: normalizeModelConfig(freshTask.payload_json?.model_config || {}, getAgentDefaultModelConfig(worker)),
+        modelConfig,
         depth: 0,
       }
     );
@@ -273,27 +272,6 @@ async function runTask(task, options = {}) {
         },
         message: visibleResultText,
         message_role: 'agent',
-      });
-    }
-
-    if (freshTask.needs_confirmation) {
-      await createOrUpdateTaskInboxItem(freshTask, {
-        item_type: 'needs_confirmation',
-        status: 'pending_user',
-        title: freshTask.confirmation_request_json?.title || `Conferma richiesta per task: ${freshTask.title}`,
-        description: freshTask.confirmation_request_json?.description || 'Il task richiede una conferma utente per proseguire.',
-        category: freshTask.notification_type || 'Task',
-        chat_id: taskChatId,
-        task_run_id: run.id,
-        requires_reply: true,
-        requires_confirmation: true,
-        confirmation_state: 'pending',
-        item_key: `task-confirmation-${freshTask.id}`,
-        owner_usernames: [taskChat?.ownerUsername || ADMIN_SHARED_OWNER],
-        metadata_json: {
-          confirmation_request: freshTask.confirmation_request_json || null,
-        },
-        message: freshTask.confirmation_request_json?.description || 'Conferma richiesta dal task.',
       });
     }
 

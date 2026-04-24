@@ -4,7 +4,6 @@ const { broadcastTelegramNotification } = require('../services/telegramNotificat
 
 const VALID_ITEM_STATUSES = new Set(['open', 'pending_user', 'pending_agent', 'resolved', 'dismissed']);
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
-const VALID_CONFIRMATION_STATES = new Set(['pending', 'approved', 'rejected']);
 const VALID_MESSAGE_ROLES = new Set(['user', 'agent', 'system']);
 const VALID_MESSAGE_TYPES = new Set(['message', 'status_update', 'decision']);
 
@@ -16,11 +15,6 @@ function normalizeItemStatus(value, fallback = 'open') {
 function normalizePriority(value, fallback = 'normal') {
   const normalized = String(value || '').trim().toLowerCase();
   return VALID_PRIORITIES.has(normalized) ? normalized : fallback;
-}
-
-function normalizeConfirmationState(value, fallback = null) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return VALID_CONFIRMATION_STATES.has(normalized) ? normalized : fallback;
 }
 
 function normalizeMessageRole(value, fallback = 'system') {
@@ -86,7 +80,6 @@ function hydrateInboxItem(row) {
     priority: normalizePriority(row.priority, 'normal'),
     category: normalizeCategory(row.category),
     is_read: Number(row.is_read) === 1,
-    confirmation_state: normalizeConfirmationState(row.confirmation_state, null),
     metadata_json: parseJsonField(row.metadata_json, {}),
   };
 }
@@ -117,8 +110,6 @@ async function initInboxTables() {
       task_id BIGINT UNSIGNED NULL,
       task_run_id BIGINT UNSIGNED NULL,
       requires_reply TINYINT(1) NOT NULL DEFAULT 0,
-      requires_confirmation TINYINT(1) NOT NULL DEFAULT 0,
-      confirmation_state ENUM('pending', 'approved', 'rejected') NULL,
       item_key VARCHAR(255) NULL,
       metadata_json JSON NULL,
       is_read TINYINT(1) NOT NULL DEFAULT 0,
@@ -142,6 +133,8 @@ async function initInboxTables() {
     if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') throw error;
   });
 
+  await cleanupInboxConfirmationLegacyColumns();
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS inbox_messages (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -159,6 +152,31 @@ async function initInboxTables() {
   `);
 }
 
+async function getInboxItemColumn(columnName) {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'inbox_items'
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [columnName]
+  );
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+async function cleanupInboxConfirmationLegacyColumns() {
+  const confirmationStateColumn = await getInboxItemColumn('confirmation_state');
+  if (confirmationStateColumn) {
+    await pool.query('ALTER TABLE inbox_items DROP COLUMN confirmation_state');
+  }
+
+  const requiresConfirmationColumn = await getInboxItemColumn('requires_confirmation');
+  if (requiresConfirmationColumn) {
+    await pool.query('ALTER TABLE inbox_items DROP COLUMN requires_confirmation');
+  }
+}
+
 async function insertInboxItem(input, options = {}) {
   const db = options.db || pool;
   const title = String(input?.title || '').trim();
@@ -172,8 +190,8 @@ async function insertInboxItem(input, options = {}) {
 
   const [result] = await db.query(
     `INSERT INTO inbox_items
-      (owner_username, status, priority, title, description, category, agent_id, chat_id, agent_run_id, task_id, task_run_id, requires_reply, requires_confirmation, confirmation_state, item_key, metadata_json, is_read, last_message_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (owner_username, status, priority, title, description, category, agent_id, chat_id, agent_run_id, task_id, task_run_id, requires_reply, item_key, metadata_json, is_read, last_message_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       ownerUsername,
       normalizeItemStatus(input?.status, 'open'),
@@ -187,8 +205,6 @@ async function insertInboxItem(input, options = {}) {
       toNullableUnsignedInt(input?.task_id),
       toNullableUnsignedInt(input?.task_run_id),
       normalizeBooleanFlag(input?.requires_reply, 0),
-      normalizeBooleanFlag(input?.requires_confirmation, 0),
-      normalizeConfirmationState(input?.confirmation_state, null),
       toNullableString(input?.item_key),
       input?.metadata_json === undefined ? null : toJsonString(input.metadata_json, {}),
       normalizeBooleanFlag(input?.is_read, 0),
@@ -272,14 +288,6 @@ async function updateInboxItem(id, updates) {
   if (updates.requires_reply !== undefined) {
     entries.push('requires_reply = ?');
     values.push(normalizeBooleanFlag(updates.requires_reply, 0));
-  }
-  if (updates.requires_confirmation !== undefined) {
-    entries.push('requires_confirmation = ?');
-    values.push(normalizeBooleanFlag(updates.requires_confirmation, 0));
-  }
-  if (updates.confirmation_state !== undefined) {
-    entries.push('confirmation_state = ?');
-    values.push(normalizeConfirmationState(updates.confirmation_state, null));
   }
   if (updates.metadata_json !== undefined) {
     entries.push('metadata_json = ?');

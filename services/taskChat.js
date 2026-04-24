@@ -2,8 +2,8 @@ const crypto = require('crypto');
 const { ADMIN_SHARED_OWNER } = require('../utils/adminAccess');
 const { getTaskById, updateTask } = require('../database/db_tasks');
 const { getAgentById } = require('../database/db_agents');
-const { createAgentChat, getAgentChatByChatId } = require('../database/db_agent_chats');
-const { normalizeModelConfig, getAgentDefaultModelConfig } = require('./aiModelCatalog');
+const { createAgentChat, getAgentChatByChatId, updateAgentChatConfig } = require('../database/db_agent_chats');
+const { getAgentDefaultModelConfig } = require('./aiModelCatalog');
 
 function buildTaskChatId(taskId, runKey = null) {
   return runKey ? `task-${taskId}-${runKey}` : `task-${taskId}`;
@@ -23,8 +23,8 @@ async function ensureTaskChat(taskInput, options = {}) {
     : null;
   const chatId = forceNew ? buildTaskChatId(task.id, runKey) : (storedChatId || buildTaskChatId(task.id));
   const existingChat = await getAgentChatByChatId(chatId);
+  const modelConfig = getAgentDefaultModelConfig(worker);
   if (!existingChat) {
-    const modelConfig = normalizeModelConfig(task.payload_json?.model_config || {}, getAgentDefaultModelConfig(worker));
     await createAgentChat({
       chat_id: chatId,
       agent_id: worker.id,
@@ -37,6 +37,11 @@ async function ensureTaskChat(taskInput, options = {}) {
       config_json: {
         model_config: modelConfig,
       },
+    });
+  } else if (JSON.stringify(existingChat.config_json?.model_config || null) !== JSON.stringify(modelConfig)) {
+    await updateAgentChatConfig(chatId, {
+      ...(existingChat.config_json || {}),
+      model_config: modelConfig,
     });
   }
 

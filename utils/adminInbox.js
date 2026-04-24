@@ -50,8 +50,6 @@ async function upsertAdminInboxItem(options = {}) {
       task_id: options.task_id || null,
       task_run_id: options.task_run_id || null,
       requires_reply: options.requires_reply ? 1 : 0,
-      requires_confirmation: options.requires_confirmation ? 1 : 0,
-      confirmation_state: options.confirmation_state || null,
       metadata_json: ownerMetadata,
       is_read: 0,
       last_message_at: options.last_message_at || new Date(),

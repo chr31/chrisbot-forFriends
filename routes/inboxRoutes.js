@@ -16,7 +16,7 @@ const {
   deleteInboxItemsForUser,
   normalizeItemStatus,
 } = require('../database/db_inbox');
-const { insertTaskEvent, getTaskById, updateTask } = require('../database/db_tasks');
+const { insertTaskEvent } = require('../database/db_tasks');
 const { getAgentChatByChatId, getMessagesByAgentChatId, insertAgentMessages } = require('../database/db_agent_chats');
 const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
 const { buildInitialAgentHistory, runAgentConversation } = require('../services/agentRunner');
@@ -286,72 +286,6 @@ router.post('/:id/reply', async (req, res) => {
   } catch (error) {
     console.error('Errore reply inbox:', error);
     return res.status(400).json({ error: error.message || 'Impossibile inviare la risposta' });
-  }
-});
-
-router.post('/:id/confirm', async (req, res) => {
-  try {
-    const item = await loadOwnedInboxItem(req.params.id, req.user);
-    const decision = String(req.body?.decision || '').trim().toLowerCase();
-    const content = String(req.body?.content || '').trim();
-    if (!item) {
-      return res.status(404).json({ error: 'Inbox item non trovato' });
-    }
-    if (!item.requires_confirmation) {
-      return res.status(409).json({ error: 'Questo inbox item non richiede conferma.' });
-    }
-    if (!['approve', 'approved', 'reject', 'rejected'].includes(decision)) {
-      return res.status(400).json({ error: 'decision deve essere approve o reject.' });
-    }
-
-    const confirmationState = decision.startsWith('approve') ? 'approved' : 'rejected';
-    const decisionLabel = confirmationState === 'approved' ? 'Conferma approvata.' : 'Conferma rifiutata.';
-    const finalContent = content || decisionLabel;
-
-    await insertInboxMessage({
-      inbox_item_id: item.id,
-      role: 'user',
-      message_type: 'decision',
-      username: req.user?.name || null,
-      content: finalContent,
-      metadata_json: { decision: confirmationState },
-    });
-
-    await updateInboxItem(item.id, {
-      confirmation_state: confirmationState,
-      status: 'resolved',
-      requires_confirmation: 0,
-      requires_reply: 0,
-      is_read: 1,
-      last_message_at: new Date(),
-    });
-
-    if (item.task_id) {
-      const task = await getTaskById(item.task_id);
-      if (task) {
-        await updateTask(item.task_id, {
-          needs_confirmation: 0,
-          status: confirmationState === 'approved' ? 'pending' : 'cancelled',
-        });
-      }
-    }
-
-    await mirrorInboxMessageToLinkedDomains(item, {
-      event_type: 'task_confirmation_resolved',
-      actor_type: 'user',
-      actor_id: req.user?.name || null,
-      content: finalContent,
-      payload_json: { inbox_item_id: item.id, decision: confirmationState },
-      agent_message_role: 'user',
-      agent_event_type: 'confirmation_reply',
-    });
-
-    const updated = await getInboxItemById(item.id);
-    const messages = await getInboxMessages(item.id);
-    return res.json({ ...updated, messages });
-  } catch (error) {
-    console.error('Errore conferma inbox item:', error);
-    return res.status(400).json({ error: error.message || 'Impossibile registrare la conferma' });
   }
 });
 

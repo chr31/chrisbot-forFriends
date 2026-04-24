@@ -1,7 +1,6 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AiOptionsResponse, buildModelOptions, decodeModelValue, encodeModelValue, ModelConfig, normalizeModelConfig, OllamaConnectionOption } from '../../../lib/aiModels';
 
 type Agent = {
   id: number;
@@ -14,7 +13,7 @@ type Task = {
   id: number;
   title: string;
   description?: string | null;
-  status: 'draft' | 'pending' | 'scheduled' | 'running' | 'needs_confirmation' | 'blocked' | 'completed' | 'failed' | 'cancelled';
+  status: 'draft' | 'pending' | 'scheduled' | 'running' | 'blocked' | 'completed' | 'failed' | 'cancelled';
   schedule_json?: {
     mode?: 'cron' | 'once';
     cron?: string | null;
@@ -27,9 +26,7 @@ type Task = {
   payload_json?: {
     request_text?: string;
     notification_label?: string;
-    model_config?: ModelConfig | null;
   } | null;
-  needs_confirmation: boolean;
   latest_run_id?: number | null;
   latest_run_status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | null;
   latest_run_trigger_type?: string | null;
@@ -175,10 +172,8 @@ type TaskFormState = {
   worker_agent_id: string;
   request_text: string;
   notification_label: string;
-  model_config: ModelConfig;
   notifications_enabled: boolean;
   is_active: boolean;
-  needs_confirmation: boolean;
 };
 
 const TASKS_PER_PAGE = 20;
@@ -192,11 +187,16 @@ const EMPTY_FORM: TaskFormState = {
   worker_agent_id: '',
   request_text: '',
   notification_label: '',
-  model_config: { provider: 'ollama', model: 'qwen3.5', ollama_server_id: null },
   notifications_enabled: true,
   is_active: true,
-  needs_confirmation: false,
 };
+
+function sortTasksByUpdatedAt(tasks: Task[]) {
+  return [...tasks].sort((a, b) => {
+    const timeDiff = new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+    return timeDiff || Number(b.id || 0) - Number(a.id || 0);
+  });
+}
 
 function toDateTimeLocalValue(value: string | null | undefined) {
   if (!value) return '';
@@ -258,15 +258,18 @@ function Toggle({
   checked,
   onChange,
   disabled = false,
+  label = 'Cambia stato',
 }: {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;
+  label?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       disabled={disabled}
       onClick={onChange}
@@ -326,10 +329,8 @@ function buildFormFromTask(task: Task): TaskFormState {
     worker_agent_id: task.worker_agent_id ? String(task.worker_agent_id) : '',
     request_text: String(task.payload_json?.request_text || ''),
     notification_label: String(task.notification_type || task.payload_json?.notification_label || ''),
-    model_config: normalizeModelConfig(task.payload_json?.model_config || {}),
     notifications_enabled: Boolean(task.notifications_enabled),
     is_active: Boolean(task.is_active),
-    needs_confirmation: Boolean(task.needs_confirmation),
   };
 }
 
@@ -352,8 +353,6 @@ export default function TaskPage() {
   const [activeTab, setActiveTab] = useState<ModalTab>('config');
   const [form, setForm] = useState<TaskFormState>(EMPTY_FORM);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
-  const [aiOptions, setAiOptions] = useState<AiOptionsResponse | null>(null);
-  const [ollamaOptions, setOllamaOptions] = useState<OllamaConnectionOption[]>([]);
   const [isRuntimeUpdating, setIsRuntimeUpdating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -439,18 +438,6 @@ export default function TaskPage() {
     setRuntimeStatus(data);
   }, [authFetch]);
 
-  const fetchAiOptions = useCallback(async () => {
-    const response = await authFetch('/api/settings/ai/options');
-    if (!response.ok) throw new Error('Impossibile caricare le opzioni AI.');
-    const data = await response.json() as AiOptionsResponse;
-    setAiOptions(data);
-    setOllamaOptions(Array.isArray(data?.ollama?.connections) ? data.ollama.connections : []);
-    setForm((current) => ({
-      ...current,
-      model_config: normalizeModelConfig(current.model_config, data?.default_selection),
-    }));
-  }, [authFetch]);
-
   const fetchAuthUser = useCallback(async () => {
     const cachedRaw = localStorage.getItem('authUser');
     if (cachedRaw) {
@@ -524,7 +511,6 @@ export default function TaskPage() {
         fetchTasks(),
         fetchAgents(),
         fetchRuntimeStatus(),
-        fetchAiOptions(),
         fetchLegacyRoutines(),
         fetchRoutineTemplates(),
       ]);
@@ -533,7 +519,7 @@ export default function TaskPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [fetchAgents, fetchAiOptions, fetchAuthUser, fetchLegacyRoutines, fetchRoutineTemplates, fetchRuntimeStatus, fetchTasks]);
+  }, [fetchAgents, fetchAuthUser, fetchLegacyRoutines, fetchRoutineTemplates, fetchRuntimeStatus, fetchTasks]);
 
   useEffect(() => {
     loadPage();
@@ -622,10 +608,6 @@ export default function TaskPage() {
     () => new Map(agents.map((agent) => [agent.id, agent])),
     [agents]
   );
-  const modelOptions = useMemo(
-    () => buildModelOptions(aiOptions?.catalog, form.model_config),
-    [aiOptions?.catalog, form.model_config]
-  );
   const executorOptions = useMemo(() => {
     const assignedAgentIds = new Set(
       tasks
@@ -639,13 +621,38 @@ export default function TaskPage() {
       .sort((a, b) => a.label.localeCompare(b.label, 'it'));
   }, [agents, tasks]);
 
+  const applyTaskToList = useCallback((nextTask: Task | TaskDetail | null | undefined) => {
+    if (!nextTask?.id) return;
+    const normalizedTask = nextTask as Task;
+    setTasks((current) => {
+      const exists = current.some((task) => task.id === normalizedTask.id);
+      const nextTasks = exists
+        ? current.map((task) => (task.id === normalizedTask.id ? { ...task, ...normalizedTask } : task))
+        : [normalizedTask, ...current];
+      return sortTasksByUpdatedAt(nextTasks);
+    });
+    setTaskDetail((current) => {
+      if (!current || current.id !== normalizedTask.id) return current;
+      const nextDetail = nextTask as TaskDetail;
+      return {
+        ...current,
+        ...normalizedTask,
+        runs: Array.isArray(nextDetail.runs) ? nextDetail.runs : current.runs,
+        events: Array.isArray(nextDetail.events) ? nextDetail.events : current.events,
+        assignments: Array.isArray(nextDetail.assignments) ? nextDetail.assignments : current.assignments,
+      };
+    });
+  }, []);
+
+  const removeTaskFromList = useCallback((taskId: number) => {
+    setTasks((current) => current.filter((task) => task.id !== taskId));
+    setTaskDetail((current) => (current?.id === taskId ? null : current));
+  }, []);
+
   const openCreateModal = () => {
     setEditingTaskId(null);
     setTaskDetail(null);
-    setForm({
-      ...EMPTY_FORM,
-      model_config: normalizeModelConfig(aiOptions?.default_selection, EMPTY_FORM.model_config),
-    });
+    setForm(EMPTY_FORM);
     setActiveTab('config');
     setCronPrompt('');
     setCronSummary([]);
@@ -672,10 +679,7 @@ export default function TaskPage() {
     setIsModalOpen(false);
     setEditingTaskId(null);
     setTaskDetail(null);
-    setForm({
-      ...EMPTY_FORM,
-      model_config: normalizeModelConfig(aiOptions?.default_selection, EMPTY_FORM.model_config),
-    });
+    setForm(EMPTY_FORM);
     setActiveTab('config');
     setCronPrompt('');
     setCronSummary([]);
@@ -697,7 +701,7 @@ export default function TaskPage() {
         body: JSON.stringify({
           prompt,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Rome',
-          model_config: form.model_config,
+          worker_agent_id: form.worker_agent_id ? Number(form.worker_agent_id) : null,
         }),
       });
       const body = await response.json().catch(() => ({}));
@@ -749,14 +753,12 @@ export default function TaskPage() {
       notification_type: form.notification_label.trim() || null,
       notifications_enabled: form.notifications_enabled,
       is_active: form.is_active,
-      needs_confirmation: form.needs_confirmation,
       schedule_json: form.schedule_mode === 'cron'
         ? { mode: 'cron', cron: form.scheduler_cron.trim() }
         : { mode: 'once', run_at: form.run_at },
       payload_json: {
         request_text: form.request_text.trim(),
         notification_label: form.notification_label.trim() || null,
-        model_config: form.model_config,
       },
     };
 
@@ -771,11 +773,11 @@ export default function TaskPage() {
       if (!response.ok) {
         throw new Error(body?.error || 'Salvataggio non riuscito.');
       }
-      await loadPage();
+      applyTaskToList(body as TaskDetail);
       if (editingTaskId) {
         const updatedId = Number(body?.id || editingTaskId);
-        await fetchTaskDetail(updatedId);
         setEditingTaskId(updatedId);
+        setTaskDetail(body as TaskDetail);
       } else {
         closeModal();
       }
@@ -792,7 +794,7 @@ export default function TaskPage() {
     try {
       const response = await authFetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Eliminazione non riuscita.');
-      await loadPage();
+      removeTaskFromList(taskId);
       if (editingTaskId === taskId) closeModal();
     } catch {
       alert('Errore durante l\'eliminazione del task.');
@@ -806,11 +808,9 @@ export default function TaskPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: !task.is_active }),
       });
-      if (!response.ok) throw new Error('Aggiornamento task fallito.');
-      await loadPage();
-      if (editingTaskId === task.id) {
-        await fetchTaskDetail(task.id);
-      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Aggiornamento task fallito.');
+      applyTaskToList(body as TaskDetail);
     } catch {
       alert('Errore durante l\'attivazione/disattivazione del task.');
     }
@@ -825,10 +825,15 @@ export default function TaskPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: !areAllTasksActive }),
       });
+      const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error('Aggiornamento massivo task fallito.');
-      await loadPage();
+      const updatedTasks = Array.isArray(body) ? body as Task[] : [];
+      if (updatedTasks.length > 0) {
+        setTasks(sortTasksByUpdatedAt(updatedTasks));
+      }
       if (editingTaskId) {
-        await fetchTaskDetail(editingTaskId);
+        const updatedTask = updatedTasks.find((task) => task.id === editingTaskId);
+        if (updatedTask) applyTaskToList(updatedTask);
       }
     } catch {
       alert('Errore durante l\'attivazione/disattivazione massiva dei task.');
@@ -846,11 +851,9 @@ export default function TaskPage() {
           notifications_enabled: !task.notifications_enabled,
         }),
       });
-      if (!response.ok) throw new Error('Aggiornamento notifiche fallito.');
-      await loadPage();
-      if (editingTaskId === task.id) {
-        await fetchTaskDetail(task.id);
-      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Aggiornamento notifiche fallito.');
+      applyTaskToList(body as TaskDetail);
     } catch {
       alert('Errore durante l\'aggiornamento delle notifiche del task.');
     }
@@ -867,10 +870,7 @@ export default function TaskPage() {
         const reason = body?.reason ? ` (${body.reason})` : '';
         throw new Error(`${body?.error || 'Task non avviato'}${reason}`);
       }
-      await loadPage();
-      if (editingTaskId === task.id) {
-        await fetchTaskDetail(task.id);
-      }
+      applyTaskToList(body?.task as TaskDetail);
       alert(`Task avviato. Run ID: ${body?.run_id ?? 'n/d'}.`);
     } catch (err: any) {
       alert(err?.message || 'Errore durante l\'esecuzione del task.');
@@ -1460,6 +1460,7 @@ export default function TaskPage() {
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">
                               <Toggle
+                                label="Notifiche task"
                                 checked={task.notifications_enabled}
                                 onChange={() => handleToggleNotifications(task)}
                               />
@@ -1488,11 +1489,11 @@ export default function TaskPage() {
                                 )}
                               </IconButton>
                               <IconButton
-                                label="Apri"
+                                label="Modifica"
                                 onClick={() => openEditModal(task)}
                               >
                                 <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                                  <path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1Z" />
+                                  <path d="m13.5 3.5 3 3L8 15H5v-3l8.5-8.5Z" />
                                 </svg>
                               </IconButton>
                               <IconButton
@@ -1869,9 +1870,9 @@ export default function TaskPage() {
                 </h2>
               </div>
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-sm text-gray-200">
-                  <span>Task attivo</span>
+                <div className="flex items-center gap-2">
                   <Toggle
+                    label="Task attivo"
                     checked={form.is_active}
                     onChange={() => setForm((current) => ({ ...current, is_active: !current.is_active }))}
                   />
@@ -1910,7 +1911,7 @@ export default function TaskPage() {
 
             {activeTab === 'config' ? (
               <form onSubmit={handleSave} className="mt-6 space-y-4">
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)]">
                   <label className="text-sm text-gray-200">
                     <span className="mb-1 block">Titolo</span>
                     <input
@@ -1936,44 +1937,6 @@ export default function TaskPage() {
                       ))}
                     </select>
                   </label>
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Modello AI</span>
-                    <select
-                      value={encodeModelValue(form.model_config)}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        model_config: normalizeModelConfig({
-                          ...decodeModelValue(event.target.value, current.model_config),
-                          ollama_server_id: current.model_config.ollama_server_id,
-                        }, current.model_config),
-                      }))}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                    >
-                      {modelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Server Ollama</span>
-                    <select
-                      value={form.model_config.ollama_server_id || ''}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        model_config: {
-                          ...current.model_config,
-                          ollama_server_id: event.target.value || null,
-                        },
-                      }))}
-                      disabled={form.model_config.provider !== 'ollama'}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
-                    >
-                      <option value="">Default globale</option>
-                      {ollamaOptions.map((option) => (
-                        <option key={option.id} value={option.id}>{option.name}</option>
-                      ))}
-                    </select>
-                  </label>
                 </div>
 
                 <label className="block text-sm text-gray-200">
@@ -1985,7 +1948,7 @@ export default function TaskPage() {
                   />
                 </label>
 
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)_auto_auto] xl:items-end">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,0.7fr)] xl:items-end">
                   <label className="text-sm text-gray-200">
                     <span className="mb-1 block">Tipo schedulazione</span>
                     <select
@@ -1997,20 +1960,6 @@ export default function TaskPage() {
                       <option value="once">una tantum</option>
                     </select>
                   </label>
-                  <div className="flex min-h-11 items-center gap-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                    <span>Notifiche abilitate</span>
-                    <Toggle
-                      checked={form.notifications_enabled}
-                      onChange={() => setForm((current) => ({ ...current, notifications_enabled: !current.notifications_enabled }))}
-                    />
-                  </div>
-                  <div className="flex min-h-11 items-center gap-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
-                    <span>Richiede conferma utente</span>
-                    <Toggle
-                      checked={form.needs_confirmation}
-                      onChange={() => setForm((current) => ({ ...current, needs_confirmation: !current.needs_confirmation }))}
-                    />
-                  </div>
                 </div>
 
                 {form.schedule_mode === 'cron' ? (
@@ -2146,6 +2095,14 @@ export default function TaskPage() {
                   >
                     {isSaving ? 'Salvataggio...' : editingTaskId ? 'Aggiorna task' : 'Crea task'}
                   </button>
+                  <div className="flex min-h-11 items-center gap-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-200">
+                    <span>Notifiche abilitate</span>
+                    <Toggle
+                      label="Notifiche abilitate"
+                      checked={form.notifications_enabled}
+                      onChange={() => setForm((current) => ({ ...current, notifications_enabled: !current.notifications_enabled }))}
+                    />
+                  </div>
                   {editingTaskId ? (
                     <button
                       type="button"

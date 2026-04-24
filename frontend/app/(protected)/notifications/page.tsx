@@ -52,8 +52,6 @@ type InboxItem = {
   chat_id?: string | null;
   is_read: boolean;
   requires_reply: boolean;
-  requires_confirmation: boolean;
-  confirmation_state?: 'pending' | 'approved' | 'rejected' | null;
   created_at: string;
   last_message_at: string;
   messages?: InboxMessage[];
@@ -470,7 +468,6 @@ export default function NotificationsPage() {
                       <div className="mt-1 flex flex-wrap gap-2 text-xs uppercase tracking-wide text-gray-400">
                         <span>{item.status}</span>
                         <span>{normalizeCategoryLabel(item.category)}</span>
-                        {item.requires_confirmation ? <span>conferma</span> : null}
                       </div>
                     </div>
                     {!item.is_read ? <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-cyan-400" /> : null}
@@ -525,7 +522,6 @@ export default function NotificationsPage() {
                   <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-400">
                     <span>{selectedItem.status}</span>
                     <span>{normalizeCategoryLabel(selectedItem.category)}</span>
-                    {selectedItem.requires_confirmation ? <span>richiede conferma</span> : null}
                     <span>priorità {selectedItem.priority}</span>
                     {selectedItem.task_id ? <span>task #{selectedItem.task_id}</span> : null}
                     <span>{formatDate(selectedItem.created_at)}</span>
@@ -543,24 +539,6 @@ export default function NotificationsPage() {
                 ) : null}
               </div>
 
-              {selectedItem.requires_confirmation && selectedItem.confirmation_state === 'pending' ? (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => runItemAction('confirm', { decision: 'approve', content: replyText || 'Conferma approvata.' })}
-                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
-                  >
-                    Approva
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runItemAction('confirm', { decision: 'reject', content: replyText || 'Conferma rifiutata.' })}
-                    className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500"
-                  >
-                    Rifiuta
-                  </button>
-                </div>
-              ) : null}
             </div>
 
             <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-6 sm:px-6">
