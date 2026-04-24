@@ -33,6 +33,33 @@ type Message = {
 
 const PENDING_CHAT_STORAGE_PREFIX = 'pending-agent-chat:';
 
+function createClientUuid(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 type Agent = {
   id: number;
   name: string;
@@ -629,7 +656,7 @@ export default function AgentChatPage() {
     setMessages((current) => [...current, userMessage]);
     setInput('');
     setIsLoading(true);
-    const requestChatId = isNewChat ? crypto.randomUUID() : chatId;
+    const requestChatId = isNewChat ? createClientUuid() : chatId;
     if (isNewChat) {
       setPendingChatId(requestChatId);
       writePendingMessages(requestChatId, [userMessage]);
