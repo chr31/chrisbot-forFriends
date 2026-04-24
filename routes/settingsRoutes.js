@@ -9,6 +9,7 @@ const {
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
+  revealSettingsSecret,
 } = require('../services/appSettings');
 const { getAiOptionsSnapshot } = require('../services/aiModelCatalog');
 const {
@@ -64,6 +65,23 @@ router.get('/ollama/status', async (_req, res) => {
   } catch (error) {
     console.error('Errore recupero stato Ollama:', error);
     return res.status(500).json({ error: 'Errore del server' });
+  }
+});
+
+router.post('/secrets/reveal', async (req, res) => {
+  try {
+    const value = revealSettingsSecret(req.body || {});
+    console.info('Reveal secret impostazioni', {
+      user: req.user?.name || 'unknown',
+      area: req.body?.area,
+      field: req.body?.field,
+      connection_id: req.body?.connection_id,
+      at: new Date().toISOString(),
+    });
+    return res.json({ value, expires_in_ms: 15000 });
+  } catch (error) {
+    console.error('Errore reveal secret impostazioni:', error);
+    return res.status(400).json({ error: error.message || 'Impossibile rivelare il secret' });
   }
 });
 

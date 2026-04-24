@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type AuthUser = {
   name: string;
@@ -37,6 +37,7 @@ type McpConnection = {
   name_prefix: string;
   enabled: boolean;
   headers_json: Record<string, string>;
+  headers_configured?: Record<string, boolean>;
 };
 
 type McpRuntimeSettings = {
@@ -155,6 +156,14 @@ type SettingsPayload = {
   telegram_runtime: TelegramRuntimeSettings;
 };
 
+type SecretRevealTarget = {
+  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime';
+  field: string;
+  connection_id?: string;
+};
+
+const REDACTED_SECRET_PLACEHOLDER = '********';
+
 function parseCsv(value: string) {
   return value
     .split(',')
@@ -179,6 +188,22 @@ function parsePlainLines(value: string) {
 function safeJsonParse(raw: string) {
   if (!raw.trim()) return {};
   return JSON.parse(raw);
+}
+
+function formatMcpHeadersDraft(connection: McpConnection) {
+  const headers = connection.headers_json || {};
+  const configuredHeaders = connection.headers_configured || {};
+  const keys = Array.from(new Set([...Object.keys(headers), ...Object.keys(configuredHeaders)]));
+  const visibleHeaders = Object.fromEntries(
+    keys.map((key) => {
+      const value = headers[key];
+      return [
+        key,
+        configuredHeaders[key] && !String(value || '').trim() ? REDACTED_SECRET_PLACEHOLDER : value,
+      ];
+    })
+  );
+  return JSON.stringify(visibleHeaders, null, 2);
 }
 
 function Toggle({
@@ -206,6 +231,55 @@ function Toggle({
           checked ? 'translate-x-6' : 'translate-x-1'
         }`}
       />
+    </button>
+  );
+}
+
+function EyeIcon({ crossed = false }: { crossed?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-4 w-4 stroke-current">
+      <path
+        d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {crossed ? (
+        <path d="M4 20 20 4" strokeWidth="1.8" strokeLinecap="round" />
+      ) : null}
+    </svg>
+  );
+}
+
+function SecretRevealButton({
+  isRevealed,
+  isLoading,
+  disabled,
+  onReveal,
+  label = 'Mostra valore reale',
+}: {
+  isRevealed: boolean;
+  isLoading: boolean;
+  disabled?: boolean;
+  onReveal: () => void;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onReveal}
+      disabled={disabled || isLoading || isRevealed}
+      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+      title={isRevealed ? 'Visibile temporaneamente' : label}
+      aria-label={isRevealed ? 'Valore visibile temporaneamente' : label}
+    >
+      <EyeIcon />
     </button>
   );
 }
@@ -279,6 +353,9 @@ export default function SettingsPage() {
   const [isSavingOllama, setIsSavingOllama] = useState(false);
   const [isSavingOpenAi, setIsSavingOpenAi] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
+  const [revealingSecrets, setRevealingSecrets] = useState<Record<string, boolean>>({});
+  const revealTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [error, setError] = useState<string | null>(null);
   const [portalAllowedGroups, setPortalAllowedGroups] = useState('');
   const [portalAllowedUpns, setPortalAllowedUpns] = useState('');
@@ -320,6 +397,44 @@ export default function SettingsPage() {
     const headers = new Headers(init.headers);
     if (token) headers.set('Authorization', `Bearer ${token}`);
     return fetch(input, { ...init, headers });
+  }, []);
+
+  const revealSecret = useCallback(async (
+    key: string,
+    target: SecretRevealTarget,
+    applyValue: (value: string) => void,
+    hideValue: (revealedValue: string) => void,
+  ) => {
+    if (!confirm('Rivelare temporaneamente questo valore segreto?')) return;
+    setRevealingSecrets((current) => ({ ...current, [key]: true }));
+    try {
+      const response = await authFetch('/api/settings/secrets/reveal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(target),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Impossibile rivelare il secret.');
+      const revealedValue = typeof body?.value === 'string'
+        ? body.value
+        : JSON.stringify(body?.value || {}, null, 2);
+      applyValue(revealedValue);
+      setRevealedSecrets((current) => ({ ...current, [key]: true }));
+      if (revealTimeoutsRef.current[key]) clearTimeout(revealTimeoutsRef.current[key]);
+      revealTimeoutsRef.current[key] = setTimeout(() => {
+        setRevealedSecrets((current) => ({ ...current, [key]: false }));
+        hideValue(revealedValue);
+        delete revealTimeoutsRef.current[key];
+      }, Number(body?.expires_in_ms) || 15000);
+    } catch (err: any) {
+      alert(err?.message || 'Errore reveal secret.');
+    } finally {
+      setRevealingSecrets((current) => ({ ...current, [key]: false }));
+    }
+  }, [authFetch]);
+
+  useEffect(() => () => {
+    Object.values(revealTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
   }, []);
 
   const loadMcpStatuses = useCallback(async () => {
@@ -387,7 +502,7 @@ export default function SettingsPage() {
       setTelegramRuntime(payload.telegram_runtime || null);
       const nextHeaders: Record<string, string> = {};
       for (const connection of payload.mcp_runtime?.connections || []) {
-        nextHeaders[connection.id] = JSON.stringify(connection.headers_json || {}, null, 2);
+        nextHeaders[connection.id] = formatMcpHeadersDraft(connection);
       }
       setConnectionHeadersDraft(nextHeaders);
       setOllamaModelsDraft((payload.ollama_runtime?.models || []).join('\n'));
@@ -692,7 +807,11 @@ export default function SettingsPage() {
     { id: 'telegram' as const, label: 'Telegram' },
   ];
 
-  const azureConfigured = Boolean(azureClientId.trim() && azureClientSecret.trim() && azureRedirectUri.trim());
+  const azureConfigured = Boolean(
+    azureClientId.trim()
+    && (azureClientSecret.trim() || azureClientSecretConfigured)
+    && azureRedirectUri.trim()
+  );
   const editingMcpConnection = editingMcpConnectionId && mcpRuntime
     ? mcpRuntime.connections.find((connection) => connection.id === editingMcpConnectionId) || null
     : null;
@@ -762,13 +881,26 @@ export default function SettingsPage() {
               </label>
               <label className="text-sm text-gray-200">
                 <span className="mb-1 block">Password</span>
-                <input
-                  type="password"
-                  value={localAdminPassword}
-                  onChange={(event) => setLocalAdminPassword(event.target.value)}
-                  className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder={localAdminPasswordConfigured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password account locale'}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type={revealedSecrets['portal.local_admin_password'] ? 'text' : 'password'}
+                    value={localAdminPassword}
+                    onChange={(event) => setLocalAdminPassword(event.target.value)}
+                    className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    placeholder={localAdminPasswordConfigured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password account locale'}
+                  />
+                  <SecretRevealButton
+                    isRevealed={Boolean(revealedSecrets['portal.local_admin_password'])}
+                    isLoading={Boolean(revealingSecrets['portal.local_admin_password'])}
+                    disabled={!localAdminPasswordConfigured}
+                    onReveal={() => revealSecret(
+                      'portal.local_admin_password',
+                      { area: 'portal_access', field: 'local_admin_password' },
+                      setLocalAdminPassword,
+                      (revealedValue) => setLocalAdminPassword((current) => current === revealedValue ? '' : current),
+                    )}
+                  />
+                </div>
               </label>
             </div>
           </div>
@@ -806,13 +938,26 @@ export default function SettingsPage() {
               </label>
               <label className="text-sm text-gray-200">
                 <span className="mb-1 block">Client Secret</span>
-                <input
-                  type="password"
-                  value={azureClientSecret}
-                  onChange={(event) => setAzureClientSecret(event.target.value)}
-                  className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder={azureClientSecretConfigured ? 'Gia configurato; lascia vuoto per mantenerlo' : 'Client secret'}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type={revealedSecrets['portal.azure_client_secret'] ? 'text' : 'password'}
+                    value={azureClientSecret}
+                    onChange={(event) => setAzureClientSecret(event.target.value)}
+                    className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    placeholder={azureClientSecretConfigured ? 'Gia configurato; lascia vuoto per mantenerlo' : 'Client secret'}
+                  />
+                  <SecretRevealButton
+                    isRevealed={Boolean(revealedSecrets['portal.azure_client_secret'])}
+                    isLoading={Boolean(revealingSecrets['portal.azure_client_secret'])}
+                    disabled={!azureClientSecretConfigured}
+                    onReveal={() => revealSecret(
+                      'portal.azure_client_secret',
+                      { area: 'portal_access', field: 'azure_client_secret' },
+                      setAzureClientSecret,
+                      (revealedValue) => setAzureClientSecret((current) => current === revealedValue ? '' : current),
+                    )}
+                  />
+                </div>
               </label>
               <label className="text-sm text-gray-200">
                 <span className="mb-1 block">Redirect URI</span>
@@ -959,13 +1104,26 @@ export default function SettingsPage() {
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="text-sm text-gray-200">
                 <span className="mb-1 block">API Key</span>
-                <input
-                  type="password"
-                  value={openAiRuntime.api_key}
-                  onChange={(event) => setOpenAiRuntime((current) => current ? { ...current, api_key: event.target.value } : current)}
-                  className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                  placeholder={openAiRuntime.api_key_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'sk-...'}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type={revealedSecrets['openai.api_key'] ? 'text' : 'password'}
+                    value={openAiRuntime.api_key}
+                    onChange={(event) => setOpenAiRuntime((current) => current ? { ...current, api_key: event.target.value } : current)}
+                    className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    placeholder={openAiRuntime.api_key_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'sk-...'}
+                  />
+                  <SecretRevealButton
+                    isRevealed={Boolean(revealedSecrets['openai.api_key'])}
+                    isLoading={Boolean(revealingSecrets['openai.api_key'])}
+                    disabled={!openAiRuntime.api_key_configured}
+                    onReveal={() => revealSecret(
+                      'openai.api_key',
+                      { area: 'openai_runtime', field: 'api_key' },
+                      (value) => setOpenAiRuntime((current) => current ? { ...current, api_key: value } : current),
+                      (revealedValue) => setOpenAiRuntime((current) => current?.api_key === revealedValue ? { ...current, api_key: '' } : current),
+                    )}
+                  />
+                </div>
               </label>
               <label className="text-sm text-gray-200">
                 <span className="mb-1 block">Chat Model</span>
@@ -1251,12 +1409,26 @@ export default function SettingsPage() {
               <div className="mt-6 grid gap-4 lg:max-w-[720px]">
                 <label className="text-sm text-gray-200">
                   <span className="mb-1 block">Bot token</span>
-                  <input
-                    value={telegramRuntime.bot_token}
-                    onChange={(event) => setTelegramRuntime((current) => current ? { ...current, bot_token: event.target.value } : current)}
-                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                    placeholder={telegramRuntime.bot_token_configured ? 'Gia configurato; lascia vuoto per mantenerlo' : '123456:ABC...'}
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type={revealedSecrets['telegram.bot_token'] ? 'text' : 'password'}
+                      value={telegramRuntime.bot_token}
+                      onChange={(event) => setTelegramRuntime((current) => current ? { ...current, bot_token: event.target.value } : current)}
+                      className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                      placeholder={telegramRuntime.bot_token_configured ? 'Gia configurato; lascia vuoto per mantenerlo' : '123456:ABC...'}
+                    />
+                    <SecretRevealButton
+                      isRevealed={Boolean(revealedSecrets['telegram.bot_token'])}
+                      isLoading={Boolean(revealingSecrets['telegram.bot_token'])}
+                      disabled={!telegramRuntime.bot_token_configured}
+                      onReveal={() => revealSecret(
+                        'telegram.bot_token',
+                        { area: 'telegram_runtime', field: 'bot_token' },
+                        (value) => setTelegramRuntime((current) => current ? { ...current, bot_token: value } : current),
+                        (revealedValue) => setTelegramRuntime((current) => current?.bot_token === revealedValue ? { ...current, bot_token: '' } : current),
+                      )}
+                    />
+                  </div>
                 </label>
               </div>
 
@@ -1742,7 +1914,29 @@ export default function SettingsPage() {
               </label>
 
               <label className="block text-sm text-gray-200">
-                <span className="mb-1 block">Headers JSON</span>
+                <span className="mb-1 flex items-center justify-between gap-2">
+                  <span>Headers JSON</span>
+                  <SecretRevealButton
+                    isRevealed={Boolean(revealedSecrets[`mcp.headers.${editingMcpConnection.id}`])}
+                    isLoading={Boolean(revealingSecrets[`mcp.headers.${editingMcpConnection.id}`])}
+                    disabled={!Object.values(editingMcpConnection.headers_configured || {}).some(Boolean)}
+                    label="Mostra header reali"
+                    onReveal={() => revealSecret(
+                      `mcp.headers.${editingMcpConnection.id}`,
+                      { area: 'mcp_runtime', field: 'headers_json', connection_id: editingMcpConnection.id },
+                      (value) => setConnectionHeadersDraft((current) => ({
+                        ...current,
+                        [editingMcpConnection.id]: value,
+                      })),
+                      (revealedValue) => setConnectionHeadersDraft((current) => ({
+                        ...current,
+                        [editingMcpConnection.id]: current[editingMcpConnection.id] === revealedValue
+                          ? formatMcpHeadersDraft(editingMcpConnection)
+                          : current[editingMcpConnection.id],
+                      })),
+                    )}
+                  />
+                </span>
                 <textarea
                   value={connectionHeadersDraft[editingMcpConnection.id] || '{}'}
                   onChange={(event) => setConnectionHeadersDraft((current) => ({

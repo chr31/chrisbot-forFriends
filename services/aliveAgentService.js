@@ -77,7 +77,7 @@ function getResolvedAliveModelConfig(agent, chat, requestModelConfig = null) {
 async function persistAliveSystemPromptIfNeeded(agent, chatId) {
   const existing = await getAliveAgentMessages(chatId);
   if (existing.length > 0) return;
-  const history = await buildInitialAgentHistory(agent, [], { includeGoals: agent.alive_include_goals });
+  const history = await buildInitialAgentHistory(agent, []);
   await insertAliveAgentMessages([{
     chat_id: chatId,
     agent_id: agent.id,
@@ -100,7 +100,6 @@ async function appendAliveUserMessage(chatId, agentId, content, eventType = 'mes
 async function buildAliveHistory(agent, chatId) {
   const existingMessages = await getAliveAgentMessages(chatId);
   return buildInitialAgentHistory(agent, existingMessages, {
-    includeGoals: agent.alive_include_goals,
     visibleOnly: true,
     visibleLimit: agent.alive_context_messages,
   });

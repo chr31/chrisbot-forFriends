@@ -570,6 +570,34 @@ function getSettingsSnapshot(options = {}) {
   };
 }
 
+function revealSettingsSecret(target = {}) {
+  const area = String(target.area || '').trim();
+  const field = String(target.field || '').trim();
+
+  if (area === 'portal_access' && PORTAL_ACCESS_SENSITIVE_FIELDS.includes(field)) {
+    return String(getPortalAccessSettingsSync()?.[field] || '');
+  }
+
+  if (area === 'openai_runtime' && field === 'api_key') {
+    return String(getOpenAiRuntimeSettingsSync()?.api_key || '');
+  }
+
+  if (area === 'telegram_runtime' && field === 'bot_token') {
+    return String(getTelegramRuntimeSettingsSync()?.bot_token || '');
+  }
+
+  if (area === 'mcp_runtime' && field === 'headers_json') {
+    const connectionId = String(target.connection_id || '').trim();
+    if (!connectionId) throw new Error('connection_id obbligatorio per gli header MCP.');
+    const connection = (getMcpRuntimeSettingsSync()?.connections || [])
+      .find((entry) => entry.id === connectionId);
+    if (!connection) throw new Error('Connessione MCP non trovata.');
+    return connection.headers_json || {};
+  }
+
+  throw new Error('Campo segreto non rivelabile.');
+}
+
 module.exports = {
   initializeAppSettings,
   getPortalAccessSettingsSync,
@@ -582,5 +610,6 @@ module.exports = {
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
+  revealSettingsSecret,
   getSettingsSnapshot,
 };

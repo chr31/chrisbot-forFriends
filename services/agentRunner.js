@@ -611,10 +611,9 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
 
   return fallbackText;
 }
-function buildAgentSystemPrompt(agent, options = {}) {
-  const includeGoals = options.includeGoals === true;
+function buildAgentSystemPrompt(agent) {
   const promptParts = [String(agent?.system_prompt || '').trim()];
-  if (includeGoals && String(agent?.goals || '').trim()) {
+  if (String(agent?.goals || '').trim()) {
     promptParts.push(`Goals:\n${String(agent.goals).trim()}`);
   }
   return `${promptParts.filter(Boolean).join('\n\n')} Oggi e il ${new Date().toISOString()}`.trim();
@@ -649,7 +648,6 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
 }
 
 async function buildInitialAgentHistory(agent, rows, options = {}) {
-  const includeGoals = options.includeGoals === true;
   if (Array.isArray(rows) && rows.length > 0) {
     const mapped = rows.map((row) => {
       return mapStoredRowToHistoryEntry(row, options);
@@ -659,14 +657,24 @@ async function buildInitialAgentHistory(agent, rows, options = {}) {
         ? Math.max(1, Math.trunc(Number(options.visibleLimit)))
         : mapped.length;
       return [
-        { role: 'system', content: buildAgentSystemPrompt(agent, { includeGoals }) },
+        { role: 'system', content: buildAgentSystemPrompt(agent) },
         ...mapped.slice(-visibleLimit),
       ];
     }
-    return mapped;
+    const currentSystemPrompt = buildAgentSystemPrompt(agent);
+    if (mapped[0]?.role === 'system') {
+      return [
+        { ...mapped[0], content: currentSystemPrompt },
+        ...mapped.slice(1),
+      ];
+    }
+    return [
+      { role: 'system', content: currentSystemPrompt },
+      ...mapped,
+    ];
   }
   return [
-    { role: 'system', content: buildAgentSystemPrompt(agent, { includeGoals }) },
+    { role: 'system', content: buildAgentSystemPrompt(agent) },
   ];
 }
 

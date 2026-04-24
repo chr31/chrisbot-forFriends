@@ -16,5 +16,9 @@ frontend/tsconfig.tsbuildinfo
 # Databases: keep directory, exclude db files
 database/*.db
 
+# Runtime data generated from the portal
+runtime/routines/*
+!runtime/routines/.gitkeep
+
 # Tests/artifacts
 coverage
