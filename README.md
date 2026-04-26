@@ -1,4 +1,4 @@
-# <p align="center"><img src="frontend/public/logo.png" alt="Chrisbot" width="96" /></p>
+# <p align="center"><img src="frontend/public/logo-white.png" alt="Chrisbot" width="96" /></p>
 # <p align="center">Chrisbot</p>
 
 <p align="center">Una piattaforma sperimentale per creare, governare e far collaborare agenti AI in un ambiente operativo completo.</p>
