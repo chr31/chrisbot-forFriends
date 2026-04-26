@@ -1,7 +1,21 @@
 # <p align="center"><img src="frontend/public/logo.png" alt="Chrisbot" width="96" /></p>
 # <p align="center">Chrisbot</p>
 
-<p align="center">Laboratorio di agenti AI con backend Node.js/Express, frontend Next.js, MySQL, task scheduler e integrazioni OpenAI, Ollama, MCP e Telegram.</p>
+<p align="center">Una piattaforma sperimentale per creare, governare e far collaborare agenti AI in un ambiente operativo completo.</p>
+
+Chrisbot nasce come laboratorio pratico per trasformare gli agenti AI da semplici chatbot a strumenti di lavoro configurabili: ogni agente può avere modelli, permessi, strumenti MCP, memoria conversazionale, routine pianificate e canali di notifica. L'obiettivo è offrire una base concreta per costruire assistenti personali, worker automatizzati e orchestratori capaci di muoversi tra chat, task, integrazioni esterne e flussi ricorrenti.
+
+Il progetto include un backend Node.js/Express, un frontend Next.js, persistenza MySQL, scheduler, gestione degli accessi, integrazioni OpenAI/Ollama, supporto MCP, notifiche web push e Telegram.
+
+## Cosa puoi farci
+
+- Creare agenti AI con ruoli, obiettivi e permessi distinti.
+- Collegare modelli OpenAI o runtime locali Ollama.
+- Esporre tool MCP agli agenti in modo controllato.
+- Gestire chat dirette, task pianificati e routine ricorrenti.
+- Attivare agenti persistenti con la modalità Alive agents.
+- Ricevere notifiche via portale, web push o Telegram.
+- Avviare tutto in locale con Docker Compose.
 
 ## Avvio rapido con Docker Compose
 
@@ -59,6 +73,10 @@ npm run dev:all
 
 - [Struttura env](docs/struttura-env.md)
 - [Funzioni](docs/funzioni.md)
+
+## Licenza
+
+MIT. Vedi [LICENSE](LICENSE).
 
 ## Last updates
 
