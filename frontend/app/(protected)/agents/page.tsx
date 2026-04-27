@@ -707,7 +707,7 @@ export default function AgentsPage() {
         user_description: agent.user_description,
         system_prompt: agent.system_prompt,
         allowed_group_names_csv: agent.allowed_group_names_csv || '',
-        model_config: updates.model_config ?? agent.default_model_config,
+        default_model_config: updates.model_config ?? agent.default_model_config,
         visibility_scope: updates.visibility_scope ?? agent.visibility_scope,
         direct_chat_enabled: updates.direct_chat_enabled ?? agent.direct_chat_enabled,
         is_active: updates.is_active ?? agent.is_active,
