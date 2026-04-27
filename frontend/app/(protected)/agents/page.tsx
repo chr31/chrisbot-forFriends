@@ -1293,7 +1293,7 @@ export default function AgentsPage() {
                                   </label>
                                 </div>
                                 <label className="block text-sm text-gray-200">
-                                  <span className="mb-1 flex items-center gap-2">Prompt alive <InfoHint label="Prompt alive" description="Prompt utente riutilizzato dal loop automatico quando la chat resta in play." /></span>
+                                  <span className="mb-1 flex items-center gap-2">Prompt alive <InfoHint label="Prompt alive" description="Prompt automatico dell'agente riutilizzato dal loop quando la chat resta in play." /></span>
                                   <textarea
                                     value={form.alive_prompt}
                                     onChange={(e) => setForm((current) => ({ ...current, alive_prompt: e.target.value }))}

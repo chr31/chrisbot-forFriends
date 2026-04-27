@@ -93,37 +93,11 @@ function stringifyForModel(value) {
   }
 }
 
-function normalizeDelegatedWorkerStatus(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return ['completed', 'blocked', 'error'].includes(normalized) ? normalized : 'completed';
-}
-
-function normalizeDelegatedWorkerMissingInfo(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => String(entry || '').trim())
-    .filter(Boolean);
-}
-
-function buildDelegatedWorkerResultPayload(value, fallbackStatus = 'completed') {
-  const parsed = parseJsonIfPossible(value);
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    return {
-      status: normalizeDelegatedWorkerStatus(parsed.status || fallbackStatus),
-      result: String(parsed.result ?? '').trim(),
-      missing_info: normalizeDelegatedWorkerMissingInfo(parsed.missing_info),
-    };
-  }
-
-  return {
-    status: normalizeDelegatedWorkerStatus(fallbackStatus),
-    result: String(value || '').trim(),
-    missing_info: [],
-  };
-}
-
-function stringifyDelegatedWorkerResult(value, fallbackStatus = 'completed') {
-  return JSON.stringify(buildDelegatedWorkerResultPayload(value, fallbackStatus));
+function buildDelegatedWorkerErrorText(childAgent, error) {
+  return [
+    `Non sono riuscito a completare il lavoro assegnato a ${childAgent.name}.`,
+    `Errore: ${error?.message || error}`,
+  ].join('\n');
 }
 
 function extractToolFallbackText(content) {
@@ -331,11 +305,11 @@ function buildDelegatedWorkerSystemPrompt(agent) {
     `${agent.system_prompt}\nOggi e il ${new Date().toISOString()}`,
     [
       'Modalita delega interna:',
-      'Rispondi solo con un oggetto JSON valido, senza testo fuori dal JSON.',
-      'Formato obbligatorio: {"status":"completed|blocked|error","result":"descrizione sintetica dell\'esito dell\'azione","missing_info":[]}.',
-      'Usa status "completed" quando il compito e stato svolto.',
-      'Usa status "blocked" quando mancano informazioni indispensabili e inseriscile in missing_info.',
-      'Usa status "error" quando il compito non e stato completato per errore operativo, descrivendo l\'errore in result.',
+      'Riceverai un messaggio testuale dall\'orchestratore, come se fosse un manager che ti assegna un lavoro.',
+      'Esegui il compito richiesto e rispondi solo con un messaggio di testo chiaro per l\'orchestratore.',
+      'Ricapitola brevemente le operazioni eseguite e il risultato ottenuto.',
+      'Non inventare risultati: se un output non e disponibile, incompleto o troncato, dichiaralo esplicitamente.',
+      'Se sei bloccato, spiega in modo sintetico cosa manca per procedere.',
     ].join('\n'),
   ].join('\n\n');
 }
@@ -362,7 +336,11 @@ async function buildDelegationTools(orchestratorAgent) {
           properties: {
             task: {
               type: 'string',
-              description: `Istruzioni complete da passare a ${childAgent.name}.`,
+              description: [
+                `Messaggio testuale naturale da inviare a ${childAgent.name}.`,
+                'Riassumi la richiesta dell\'utente e il risultato atteso come farebbe un manager con un collaboratore esperto.',
+                'Non passare solo un comando o una nota tecnica isolata.',
+              ].join(' '),
             },
           },
           required: ['task'],
@@ -424,15 +402,15 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
 
   if (responseMessage.role === 'assistant') {
     const assistantContent = toAssistantContentString(responseMessage.content);
-    const hasVisibleAssistantPayload = Boolean(assistantContent.trim())
-      || Boolean(String(responseMessage.reasoning || '').trim())
+    const hasAssistantContent = Boolean(assistantContent.trim());
+    const hasModelDebugPayload = Boolean(String(responseMessage.reasoning || '').trim())
       || Number.isFinite(responseMessage.total_tokens);
-    if ((context.depth || 0) === 0 && hasVisibleAssistantPayload) {
+    if ((context.depth || 0) === 0 && (hasAssistantContent || hasModelDebugPayload)) {
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: agent.id,
         role: 'assistant',
-        event_type: 'message',
+        event_type: hasAssistantContent ? 'message' : 'model_debug',
         content: assistantContent,
         reasoning: responseMessage.reasoning || null,
         total_tokens: responseMessage.total_tokens || null,
@@ -532,7 +510,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         agent_id: childAgent.id,
         role: 'assistant',
         event_type: 'delegation',
-        content: `Delega verso ${childAgent.name}: ${delegatedTask}`,
+        content: delegatedTask,
         metadata_json: {
           run_id: context.runId || null,
           parent_run_id: context.parentRunId || null,
@@ -585,13 +563,10 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           finished_at: new Date(),
           last_error: String(error?.message || error),
         }, 'running');
-        childResult = stringifyDelegatedWorkerResult(
-          `Il worker ${childAgent.name} non ha completato il compito: ${error?.message || error}`,
-          'error'
-        );
+        childResult = buildDelegatedWorkerErrorText(childAgent, error);
       }
 
-      const childContent = stringifyDelegatedWorkerResult(childResult);
+      const childContent = String(childResult || '').trim();
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: childAgent.id,
@@ -675,6 +650,9 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
     return null;
   }
   if (row.event_type === 'guardrail') {
+    return null;
+  }
+  if (row.event_type === 'model_debug') {
     return null;
   }
   if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {

@@ -23,6 +23,7 @@ type Message = {
     target_agent_name?: string;
     tool_name?: string;
     tool_call_id?: string | null;
+    arguments?: Record<string, unknown> | null;
     guardrail_type?: string;
     blocked?: boolean;
   } | null;
@@ -85,6 +86,20 @@ type AgentRun = {
   started_at: string;
   finished_at?: string | null;
   last_error?: string | null;
+};
+
+type IndexedMessage = {
+  message: Message;
+  index: number;
+};
+
+type RunDetailItem = {
+  key: string;
+  order: number;
+  label: string;
+  subtitle?: string | null;
+  content: string;
+  tokenCount?: number | null;
 };
 
 function isAxiosTimeoutError(error: unknown): boolean {
@@ -340,22 +355,67 @@ function isStandaloneRunMarkerMessage(msg: Message) {
   return !content && typeof msg.total_tokens === 'number';
 }
 
+function formatTokenCount(value: unknown): string | null {
+  const count = Number(value);
+  if (!Number.isFinite(count)) return null;
+  return `${Math.trunc(count).toLocaleString('it-IT')} token`;
+}
+
+function formatDelegationResultContent(content: string): string {
+  const text = String(content || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return text;
+    const parts = [];
+    if (parsed.result) parts.push(String(parsed.result));
+    if (Array.isArray(parsed.missing_info) && parsed.missing_info.length > 0) {
+      parts.push(`Informazioni mancanti: ${parsed.missing_info.map((entry: unknown) => String(entry)).join(', ')}`);
+    }
+    if (parts.length > 0) {
+      return parsed.status ? `[${String(parsed.status)}] ${parts.join('\n')}` : parts.join('\n');
+    }
+  } catch {}
+  return text;
+}
+
+function formatToolContent(message: Message): string {
+  const toolName = String(message.metadata_json?.tool_name || '').trim();
+  const args = message.metadata_json?.arguments;
+  const sections = [];
+  if (toolName) {
+    sections.push(`Tool: ${toolName}`);
+  }
+  if (args && typeof args === 'object') {
+    sections.push(`Proprieta:\n${JSON.stringify(args, null, 2)}`);
+  }
+  const result = String(message.content || '').trim();
+  if (result) {
+    sections.push(`Risultato:\n${result}`);
+  }
+  return sections.join('\n\n');
+}
+
 function RunEventBlock({
   label,
   subtitle,
   content,
+  tokenCount,
 }: {
   label: string;
   subtitle?: string | null;
   content: string;
+  tokenCount?: number | null;
 }) {
+  const tokenLabel = formatTokenCount(tokenCount);
   return (
     <div className="rounded-lg border border-gray-800 bg-black/20 px-3 py-2">
       <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-gray-400">
         <span>{label}</span>
         {subtitle ? <span>{subtitle}</span> : null}
+        {tokenLabel ? <span className="rounded-full border border-gray-700 px-2 py-0.5 normal-case tracking-normal">{tokenLabel}</span> : null}
       </div>
-      <div className="whitespace-pre-wrap break-all text-sm text-gray-100">{content}</div>
+      <div className="whitespace-pre-wrap break-words text-sm text-gray-100">{content}</div>
     </div>
   );
 }
@@ -792,14 +852,121 @@ export default function AgentChatPage() {
     return items;
   })();
 
+  const buildPromptDetailForRun = (run: AgentRun, indexedMessages: IndexedMessage[], runIndexedMessages: IndexedMessage[]): RunDetailItem | null => {
+    const parentRunId = normalizeParentRunId(run.parent_run_id);
+    if (parentRunId === null) {
+      const firstRunIndex = runIndexedMessages[0]?.index ?? messages.length;
+      const userMessage = [...indexedMessages]
+        .reverse()
+        .find((entry) => entry.index < firstRunIndex && entry.message.role === 'user');
+      if (!userMessage) return null;
+      return {
+        key: `run-${run.id}-user-message-${userMessage.index}`,
+        order: userMessage.index - 0.2,
+        label: 'Messaggio utente',
+        subtitle: run.agent_name || null,
+        content: userMessage.message.content,
+      };
+    }
+
+    const childResult = runIndexedMessages.find((entry) => entry.message.event_type === 'delegation_result');
+    const toolCallId = childResult?.message.metadata_json?.tool_call_id || null;
+    const delegatedPrompt = indexedMessages.find((entry) => (
+      entry.message.event_type === 'delegation'
+      && (
+        (toolCallId && entry.message.metadata_json?.tool_call_id === toolCallId)
+        || (
+          Number(entry.message.metadata_json?.child_agent_id) === Number(run.agent_id)
+          && normalizeParentRunId(entry.message.metadata_json?.run_id) === parentRunId
+        )
+      )
+    ));
+    if (!delegatedPrompt) return null;
+    return {
+      key: `run-${run.id}-orchestrator-prompt-${delegatedPrompt.index}`,
+      order: delegatedPrompt.index - 0.1,
+      label: 'Prompt orchestratore',
+      subtitle: delegatedPrompt.message.metadata_json?.target_agent_name || run.agent_name || null,
+      content: delegatedPrompt.message.content,
+    };
+  };
+
+  const buildRunDetailItems = (run: AgentRun): RunDetailItem[] => {
+    const indexedMessages = messages.map((message, index) => ({ message, index }));
+    const runIndexedMessages = indexedMessages.filter(({ message }) => Number(message.metadata_json?.run_id) === Number(run.id));
+    const detailItems: RunDetailItem[] = [];
+    const promptDetail = buildPromptDetailForRun(run, indexedMessages, runIndexedMessages);
+    if (promptDetail) detailItems.push(promptDetail);
+
+    for (const { message, index } of runIndexedMessages) {
+      const content = String(message.content || '').trim();
+      const hasReasoning = Boolean(String(message.reasoning || '').trim());
+
+      if (hasReasoning) {
+        detailItems.push({
+          key: `run-${run.id}-thinking-${index}`,
+          order: index,
+          label: 'Thinking',
+          subtitle: message.agent_name || null,
+          content: message.reasoning || '',
+          tokenCount: message.event_type === 'model_debug' || !content ? message.total_tokens : null,
+        });
+      }
+
+      if (message.event_type === 'delegation') {
+        detailItems.push({
+          key: `run-${run.id}-delegation-${index}`,
+          order: index + 0.1,
+          label: 'Delega worker',
+          subtitle: message.metadata_json?.target_agent_name || message.agent_name || null,
+          content,
+        });
+        continue;
+      }
+
+      if (message.event_type === 'delegation_result') {
+        detailItems.push({
+          key: `run-${run.id}-delegation-result-${index}`,
+          order: index + 0.1,
+          label: 'Risposta del worker',
+          subtitle: message.agent_name || null,
+          content: formatDelegationResultContent(content),
+        });
+        continue;
+      }
+
+      if (message.role === 'tool') {
+        detailItems.push({
+          key: `run-${run.id}-tool-${index}`,
+          order: index + 0.1,
+          label: 'Tool eseguito',
+          subtitle: message.metadata_json?.tool_name || null,
+          content: formatToolContent(message),
+        });
+        continue;
+      }
+
+      if (message.role === 'assistant' && message.event_type === 'message' && content) {
+        detailItems.push({
+          key: `run-${run.id}-assistant-message-${index}`,
+          order: index + 0.2,
+          label: run.agent_kind === 'worker' ? 'Risposta del worker' : 'Risposta agente',
+          subtitle: message.agent_name || null,
+          content,
+          tokenCount: message.total_tokens,
+        });
+      }
+    }
+
+    return detailItems
+      .filter((item) => String(item.content || '').trim())
+      .sort((a, b) => a.order - b.order);
+  };
+
   const renderRunNode = (run: AgentRun, level = 0): React.ReactNode => {
     const children = activeRunsByParent[String(run.id)] || [];
-    const runMessages = messages.filter((message) => Number(message.metadata_json?.run_id) === Number(run.id));
-    const reasoningMessages = runMessages.filter((message) => Boolean(message.reasoning));
-    const chatMarkerMessages = runMessages.filter((message) => isStandaloneRunMarkerMessage(message));
-    const delegationMessages = runMessages.filter((message) => message.event_type === 'delegation');
-    const toolMessages = runMessages.filter((message) => message.role === 'tool');
-    const hasDetails = reasoningMessages.length > 0 || chatMarkerMessages.length > 0 || delegationMessages.length > 0 || toolMessages.length > 0;
+    const detailItems = buildRunDetailItems(run);
+    const hasDetails = detailItems.length > 0;
     return (
       <div key={run.id}>
         <div className="rounded-xl border border-gray-800 bg-gray-950/70 p-3">
@@ -841,36 +1008,13 @@ export default function AgentChatPage() {
             <div className="mt-3">
               <CollapsibleCard title="Dettagli run" tone="slate">
                 <div className="space-y-3">
-                  {chatMarkerMessages.map((message, index) => (
+                  {detailItems.map((item) => (
                     <RunEventBlock
-                      key={`chat-marker-${run.id}-${index}`}
-                      label="Messaggio chat"
-                      subtitle={message.agent_name || null}
-                      content={`Token totali: ${Number(message.total_tokens || 0).toLocaleString('it-IT')}`}
-                    />
-                  ))}
-                  {reasoningMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`reasoning-${run.id}-${index}`}
-                      label="Ragionamento"
-                      subtitle={message.agent_name || null}
-                      content={message.reasoning || ''}
-                    />
-                  ))}
-                  {delegationMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`delegation-${run.id}-${index}`}
-                      label="Richiesta sotto-agente"
-                      subtitle={message.metadata_json?.target_agent_name || message.agent_name || null}
-                      content={message.content}
-                    />
-                  ))}
-                  {toolMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`tool-${run.id}-${index}`}
-                      label={message.event_type === 'delegation_result' ? 'Risultato delega' : 'Tool'}
-                      subtitle={message.metadata_json?.tool_name || null}
-                      content={message.content}
+                      key={item.key}
+                      label={item.label}
+                      subtitle={item.subtitle}
+                      content={item.content}
+                      tokenCount={item.tokenCount}
                     />
                   ))}
                 </div>
