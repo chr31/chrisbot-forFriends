@@ -686,7 +686,8 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
   if (visibleOnly) {
     if (row.role !== 'user' && row.role !== 'assistant') return null;
     if (row.event_type !== 'message' && row.event_type !== 'alive_prompt') return null;
-    return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+    const role = row.event_type === 'alive_prompt' ? 'assistant' : row.role;
+    return { role, content: row.content, reasoning: row.reasoning || null };
   }
   if (row.role === 'tool' && row.metadata_json?.tool_call_id) {
     return { role: 'tool', content: row.content, tool_call_id: row.metadata_json.tool_call_id };

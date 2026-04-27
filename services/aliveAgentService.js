@@ -87,11 +87,11 @@ async function persistAliveSystemPromptIfNeeded(agent, chatId) {
   }]);
 }
 
-async function appendAliveUserMessage(chatId, agentId, content, eventType = 'message') {
+async function appendAliveMessage(chatId, agentId, content, eventType = 'message', role = 'user') {
   await insertAliveAgentMessages([{
     chat_id: chatId,
     agent_id: agentId,
-    role: 'user',
+    role,
     event_type: eventType,
     content: String(content || ''),
   }]);
@@ -130,13 +130,13 @@ async function runAliveCycle(agentId, options = {}) {
 
     const inputText = String(options.user_message || '').trim();
     if (inputText) {
-      await appendAliveUserMessage(chat.chat_id, agent.id, inputText, 'message');
+      await appendAliveMessage(chat.chat_id, agent.id, inputText, 'message', 'user');
     } else {
       const alivePrompt = String(agent.alive_prompt || '').trim();
       if (!alivePrompt) {
         throw new Error('Prompt alive non configurato.');
       }
-      await appendAliveUserMessage(chat.chat_id, agent.id, alivePrompt, 'alive_prompt');
+      await appendAliveMessage(chat.chat_id, agent.id, alivePrompt, 'alive_prompt', 'assistant');
     }
 
     const history = await buildAliveHistory(agent, chat.chat_id);
