@@ -762,6 +762,12 @@ export default function AgentChatPage() {
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && event.metaKey) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+      return;
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       const form = event.currentTarget.form;
@@ -1142,7 +1148,7 @@ export default function AgentChatPage() {
       </div>
 
       <div className="border-t border-white/10 p-4">
-        <form onSubmit={handleSubmit} className="flex items-end gap-3">
+        <form onSubmit={handleSubmit} className="flex items-stretch gap-3">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -1154,7 +1160,7 @@ export default function AgentChatPage() {
           <button
             type="submit"
             disabled={!input.trim() || isBusy || (isNewChat && !selectedAgent)}
-            className="rounded-xl bg-emerald-600 p-3 text-white disabled:opacity-60"
+            className="rounded-xl bg-emerald-600 px-3 text-white disabled:opacity-60"
           >
             <PaperAirplaneIcon className="h-5 w-5" />
           </button>

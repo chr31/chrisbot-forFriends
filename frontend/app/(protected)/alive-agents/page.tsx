@@ -51,6 +51,11 @@ type Message = {
     parent_run_id?: number | null;
     depth?: number | null;
     delegated_by_agent_id?: number | null;
+    child_agent_id?: number | null;
+    target_agent_name?: string;
+    tool_name?: string;
+    tool_call_id?: string | null;
+    arguments?: Record<string, unknown> | null;
   } | null;
   agent_id?: number | null;
   agent_name?: string | null;
@@ -72,6 +77,20 @@ type AgentRun = {
   started_at: string;
   finished_at?: string | null;
   last_error?: string | null;
+};
+
+type IndexedMessage = {
+  message: Message;
+  index: number;
+};
+
+type RunDetailItem = {
+  key: string;
+  order: number;
+  label: string;
+  subtitle?: string | null;
+  content: string;
+  tokenCount?: number | null;
 };
 
 type AliveDetail = {
@@ -135,6 +154,47 @@ function isStandaloneRunMarkerMessage(msg: Message) {
   return msg.role === 'assistant' && msg.event_type === 'message' && !content && typeof msg.total_tokens === 'number';
 }
 
+function formatTokenCount(value: unknown): string | null {
+  const count = Number(value);
+  if (!Number.isFinite(count)) return null;
+  return `${Math.trunc(count).toLocaleString('it-IT')} token`;
+}
+
+function formatDelegationResultContent(content: string): string {
+  const text = String(content || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return text;
+    const parts = [];
+    if (parsed.result) parts.push(String(parsed.result));
+    if (Array.isArray(parsed.missing_info) && parsed.missing_info.length > 0) {
+      parts.push(`Informazioni mancanti: ${parsed.missing_info.map((entry: unknown) => String(entry)).join(', ')}`);
+    }
+    if (parts.length > 0) {
+      return parsed.status ? `[${String(parsed.status)}] ${parts.join('\n')}` : parts.join('\n');
+    }
+  } catch {}
+  return text;
+}
+
+function formatToolContent(message: Message): string {
+  const toolName = String(message.metadata_json?.tool_name || '').trim();
+  const args = message.metadata_json?.arguments;
+  const sections = [];
+  if (toolName) {
+    sections.push(`Tool: ${toolName}`);
+  }
+  if (args && typeof args === 'object') {
+    sections.push(`Proprieta:\n${JSON.stringify(args, null, 2)}`);
+  }
+  const result = String(message.content || '').trim();
+  if (result) {
+    sections.push(`Risultato:\n${result}`);
+  }
+  return sections.join('\n\n');
+}
+
 function CollapsibleCard({
   title,
   children,
@@ -164,18 +224,22 @@ function RunEventBlock({
   label,
   subtitle,
   content,
+  tokenCount,
 }: {
   label: string;
   subtitle?: string | null;
   content: string;
+  tokenCount?: number | null;
 }) {
+  const tokenLabel = formatTokenCount(tokenCount);
   return (
     <div className="rounded-lg border border-gray-800 bg-black/20 px-3 py-2">
       <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-gray-400">
         <span>{label}</span>
         {subtitle ? <span>{subtitle}</span> : null}
+        {tokenLabel ? <span className="rounded-full border border-gray-700 px-2 py-0.5 normal-case tracking-normal">{tokenLabel}</span> : null}
       </div>
-      <div className="whitespace-pre-wrap break-all text-sm text-gray-100">{content}</div>
+      <div className="whitespace-pre-wrap break-words text-sm text-gray-100">{content}</div>
     </div>
   );
 }
@@ -349,6 +413,7 @@ export default function AliveAgentsPage() {
     forceAutoScrollRef.current = true;
     shouldStickToBottomRef.current = true;
     setOptimisticMessages((current) => [...current, { role: 'user', content: submittedInput }]);
+    setInput('');
     try {
       const token = localStorage.getItem('authToken');
       await axios.post(`/api/alive-agents/${detail.agent.id}/messages`, {
@@ -357,7 +422,6 @@ export default function AliveAgentsPage() {
       }, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setInput('');
       await fetchDetail(detail.agent.id);
       await fetchCatalog();
     } catch (err: any) {
@@ -368,13 +432,26 @@ export default function AliveAgentsPage() {
     }
   };
 
+  const handleMessageKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || !event.metaKey) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  };
+
   const handleTogglePlay = async () => {
     if (!detail?.agent) return;
+    const isPlaying = detail.chat.loop_status === 'play';
+    const confirmed = window.confirm(
+      isPlaying
+        ? `Mettere in pausa l'alive agent ${detail.agent.name}?`
+        : `Avviare l'alive agent ${detail.agent.name}?`
+    );
+    if (!confirmed) return;
     setIsSubmitting(true);
     setError(null);
     try {
       const token = localStorage.getItem('authToken');
-      if (detail.chat.loop_status === 'play') {
+      if (isPlaying) {
         await axios.post(`/api/alive-agents/${detail.agent.id}/pause`, {}, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -435,14 +512,127 @@ export default function AliveAgentsPage() {
     shouldStickToBottomRef.current = distanceFromBottom <= 80;
   }, []);
 
+  const buildPromptDetailForRun = (run: AgentRun, indexedMessages: IndexedMessage[], runIndexedMessages: IndexedMessage[]): RunDetailItem | null => {
+    const parentRunId = normalizeParentRunId(run.parent_run_id);
+    if (parentRunId === null) {
+      const firstRunIndex = runIndexedMessages[0]?.index ?? indexedMessages.length;
+      const promptMessage = [...indexedMessages]
+        .reverse()
+        .find((entry) => (
+          entry.index < firstRunIndex
+          && (
+            entry.message.role === 'user'
+            || entry.message.event_type === 'alive_prompt'
+          )
+        ));
+      if (!promptMessage) return null;
+      return {
+        key: `run-${run.id}-input-message-${promptMessage.index}`,
+        order: promptMessage.index - 0.2,
+        label: promptMessage.message.event_type === 'alive_prompt' ? 'Prompt alive' : 'Messaggio utente',
+        subtitle: run.agent_name || null,
+        content: promptMessage.message.content,
+      };
+    }
+
+    const childResult = runIndexedMessages.find((entry) => entry.message.event_type === 'delegation_result');
+    const toolCallId = childResult?.message.metadata_json?.tool_call_id || null;
+    const delegatedPrompt = indexedMessages.find((entry) => (
+      entry.message.event_type === 'delegation'
+      && (
+        (toolCallId && entry.message.metadata_json?.tool_call_id === toolCallId)
+        || (
+          Number(entry.message.metadata_json?.child_agent_id) === Number(run.agent_id)
+          && normalizeParentRunId(entry.message.metadata_json?.run_id) === parentRunId
+        )
+      )
+    ));
+    if (!delegatedPrompt) return null;
+    return {
+      key: `run-${run.id}-orchestrator-prompt-${delegatedPrompt.index}`,
+      order: delegatedPrompt.index - 0.1,
+      label: 'Prompt orchestratore',
+      subtitle: delegatedPrompt.message.metadata_json?.target_agent_name || run.agent_name || null,
+      content: delegatedPrompt.message.content,
+    };
+  };
+
+  const buildRunDetailItems = (run: AgentRun): RunDetailItem[] => {
+    const indexedMessages = (detail?.messages || []).map((message, index) => ({ message, index }));
+    const runIndexedMessages = indexedMessages.filter(({ message }) => Number(message.metadata_json?.run_id) === Number(run.id));
+    const detailItems: RunDetailItem[] = [];
+    const promptDetail = buildPromptDetailForRun(run, indexedMessages, runIndexedMessages);
+    if (promptDetail) detailItems.push(promptDetail);
+
+    for (const { message, index } of runIndexedMessages) {
+      const content = String(message.content || '').trim();
+      const hasReasoning = Boolean(String(message.reasoning || '').trim());
+
+      if (hasReasoning) {
+        detailItems.push({
+          key: `run-${run.id}-thinking-${index}`,
+          order: index,
+          label: 'Thinking',
+          subtitle: message.agent_name || null,
+          content: message.reasoning || '',
+          tokenCount: message.event_type === 'model_debug' || !content ? message.total_tokens : null,
+        });
+      }
+
+      if (message.event_type === 'delegation') {
+        detailItems.push({
+          key: `run-${run.id}-delegation-${index}`,
+          order: index + 0.1,
+          label: 'Delega worker',
+          subtitle: message.metadata_json?.target_agent_name || message.agent_name || null,
+          content,
+        });
+        continue;
+      }
+
+      if (message.event_type === 'delegation_result') {
+        detailItems.push({
+          key: `run-${run.id}-delegation-result-${index}`,
+          order: index + 0.1,
+          label: 'Risposta del worker',
+          subtitle: message.agent_name || null,
+          content: formatDelegationResultContent(content),
+        });
+        continue;
+      }
+
+      if (message.role === 'tool') {
+        detailItems.push({
+          key: `run-${run.id}-tool-${index}`,
+          order: index + 0.1,
+          label: 'Tool eseguito',
+          subtitle: message.metadata_json?.tool_name || null,
+          content: formatToolContent(message),
+        });
+        continue;
+      }
+
+      if (message.role === 'assistant' && message.event_type === 'message' && content) {
+        detailItems.push({
+          key: `run-${run.id}-assistant-message-${index}`,
+          order: index + 0.2,
+          label: run.agent_kind === 'worker' ? 'Risposta del worker' : 'Risposta agente',
+          subtitle: message.agent_name || null,
+          content,
+          tokenCount: message.total_tokens,
+        });
+      }
+    }
+
+    return detailItems
+      .filter((item) => String(item.content || '').trim())
+      .sort((a, b) => a.order - b.order);
+  };
+
   const renderRunNode = (run: AgentRun): React.ReactNode => {
     const children = activeRunsByParent[String(run.id)] || [];
-    const runMessages = (detail?.messages || []).filter((message) => Number(message.metadata_json?.run_id) === Number(run.id));
-    const reasoningMessages = runMessages.filter((message) => Boolean(message.reasoning));
-    const chatMarkerMessages = runMessages.filter((message) => isStandaloneRunMarkerMessage(message));
-    const delegationMessages = runMessages.filter((message) => message.event_type === 'delegation');
-    const toolMessages = runMessages.filter((message) => message.role === 'tool');
-    const hasDetails = reasoningMessages.length > 0 || chatMarkerMessages.length > 0 || delegationMessages.length > 0 || toolMessages.length > 0;
+    const detailItems = buildRunDetailItems(run);
+    const hasDetails = detailItems.length > 0;
     return (
       <div key={run.id}>
         <div className="rounded-xl border border-gray-800 bg-gray-950/70 p-3">
@@ -475,38 +665,13 @@ export default function AliveAgentsPage() {
             <div className="mt-3">
               <CollapsibleCard title="Dettagli run">
                 <div className="space-y-3">
-                  {chatMarkerMessages.map((message, index) => (
+                  {detailItems.map((item) => (
                     <RunEventBlock
-                      key={`chat-marker-${run.id}-${index}`}
-                      label="Messaggio chat"
-                      subtitle={message.agent_name || null}
-                      content={`Token totali: ${Number(message.total_tokens || 0).toLocaleString('it-IT')}`}
-                    />
-                  ))}
-                  {reasoningMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`reasoning-${run.id}-${index}`}
-                      label="Ragionamento"
-                      subtitle={message.agent_name || null}
-                      content={message.reasoning || ''}
-                    />
-                  ))}
-                  {delegationMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`delegation-${run.id}-${index}`}
-                      label="Richiesta sotto-agente"
-                      subtitle={message.agent_name || null}
-                      content={message.content}
-                    />
-                  ))}
-                  {toolMessages.map((message, index) => (
-                    <RunEventBlock
-                      key={`tool-${run.id}-${index}`}
-                      label={message.event_type === 'delegation_result' ? 'Risultato delega' : 'Tool'}
-                      subtitle={typeof message.metadata_json === 'object' && message.metadata_json && 'tool_name' in message.metadata_json
-                        ? String((message.metadata_json as Record<string, unknown>).tool_name || '') || null
-                        : null}
-                      content={message.content}
+                      key={item.key}
+                      label={item.label}
+                      subtitle={item.subtitle}
+                      content={item.content}
+                      tokenCount={item.tokenCount}
                     />
                   ))}
                 </div>
@@ -586,14 +751,28 @@ export default function AliveAgentsPage() {
               {showRunTree ? 'Nascondi run tree' : 'Mostra run tree'}
             </button>
             {detail?.agent ? (
-              <button
-                type="button"
-                onClick={handleClear}
-                disabled={isSubmitting}
-                className="rounded-lg border border-rose-800 px-3 py-2 text-sm text-rose-300 hover:bg-rose-950/60 disabled:opacity-50"
-              >
-                <TrashIcon className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleTogglePlay}
+                  disabled={isSubmitting}
+                  aria-label={detail.chat.loop_status === 'play' ? 'Metti in pausa alive agent' : 'Avvia alive agent'}
+                  title={detail.chat.loop_status === 'play' ? 'Metti in pausa' : 'Avvia'}
+                  className="rounded-lg border border-emerald-700 bg-emerald-600/10 px-3 py-2 text-emerald-100 hover:bg-emerald-600/20 disabled:opacity-50"
+                >
+                  {detail.chat.loop_status === 'play' ? <PauseIcon className="h-4 w-4" /> : <PlayIcon className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClear}
+                  disabled={isSubmitting}
+                  aria-label="Elimina storico alive agent"
+                  title="Elimina storico"
+                  className="rounded-lg border border-rose-800 px-3 py-2 text-rose-300 hover:bg-rose-950/60 disabled:opacity-50"
+                >
+                  <TrashIcon className="h-4 w-4" />
+                </button>
+              </div>
             ) : null}
           </div>
         </div>
@@ -605,10 +784,10 @@ export default function AliveAgentsPage() {
             <div className="rounded-xl border border-rose-800/50 bg-rose-950/30 px-4 py-3 text-sm text-rose-200">{error}</div>
           ) : null}
           {detail?.agent?.system_prompt ? (
-            <CollapsibleCard title={detail.agent.alive_include_goals && detail.agent.goals ? 'System Prompt + Goals' : 'System Prompt'}>
+            <CollapsibleCard title={detail.agent.goals ? 'System Prompt + Goals' : 'System Prompt'}>
               <div className="space-y-3 text-sm text-gray-100">
                 <div className="whitespace-pre-wrap">{detail.agent.system_prompt}</div>
-                {detail.agent.alive_include_goals && detail.agent.goals ? (
+                {detail.agent.goals ? (
                   <div className="border-t border-gray-700/60 pt-3">
                     <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300">Goals</div>
                     <div className="whitespace-pre-wrap">{detail.agent.goals}</div>
@@ -668,26 +847,19 @@ export default function AliveAgentsPage() {
       </div>
 
       <div className="border-t border-white/10 p-4">
-        <form onSubmit={handleSend} className="flex items-end gap-3">
+        <form onSubmit={handleSend} className="flex items-stretch gap-3">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleMessageKeyDown}
             placeholder={detail?.agent ? 'Scrivi il tuo messaggio...' : 'Seleziona un alive agent.'}
             disabled={!detail?.agent || isSubmitting || detail?.chat?.is_processing}
             className="min-h-12 w-full rounded-xl border border-gray-700 bg-gray-800 px-4 py-3 text-white"
           />
           <button
-            type="button"
-            onClick={handleTogglePlay}
-            disabled={!detail?.agent || isSubmitting}
-            className="rounded-xl border border-emerald-700 bg-emerald-600/10 p-3 text-emerald-100 disabled:opacity-50"
-          >
-            {detail?.chat?.loop_status === 'play' ? <PauseIcon className="h-5 w-5" /> : <PlayIcon className="h-5 w-5" />}
-          </button>
-          <button
             type="submit"
             disabled={!detail?.agent || !input.trim() || isSubmitting || detail?.chat?.is_processing}
-            className="rounded-xl bg-emerald-600 p-3 text-white disabled:opacity-60"
+            className="rounded-xl bg-emerald-600 px-3 text-white disabled:opacity-60"
           >
             <PaperAirplaneIcon className="h-5 w-5" />
           </button>

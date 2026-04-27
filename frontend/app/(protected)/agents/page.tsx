@@ -9,6 +9,7 @@ import {
   XMarkIcon,
   InformationCircleIcon,
   MagnifyingGlassIcon,
+  DocumentDuplicateIcon,
   PencilSquareIcon,
   PlusIcon,
   PlayIcon,
@@ -347,6 +348,7 @@ export default function AgentsPage() {
   const [agentSearch, setAgentSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [cloningAgentId, setCloningAgentId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentKind>('orchestrator');
@@ -745,6 +747,80 @@ export default function AgentsPage() {
     }
   };
 
+  const handleClone = async (agent: Agent) => {
+    const defaultName = `${agent.name} copia`;
+    const requestedName = window.prompt('Nome del nuovo agente', defaultName);
+    if (requestedName === null) return;
+
+    const nextName = requestedName.trim();
+    if (!nextName) {
+      setError('Inserisci un nome per clonare l’agente.');
+      return;
+    }
+
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+
+    setCloningAgentId(agent.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      const payload = {
+        name: nextName,
+        kind: agent.kind,
+        user_description: agent.user_description,
+        system_prompt: agent.system_prompt,
+        allowed_group_names_csv: agent.allowed_group_names_csv || '',
+        default_model_config: agent.default_model_config,
+        visibility_scope: agent.visibility_scope,
+        direct_chat_enabled: agent.direct_chat_enabled,
+        is_alive: agent.direct_chat_enabled ? agent.is_alive : false,
+        alive_loop_seconds: agent.alive_loop_seconds || 60,
+        alive_prompt: agent.alive_prompt || '',
+        alive_context_messages: agent.alive_context_messages || 12,
+        alive_include_goals: agent.alive_include_goals,
+        goals: agent.goals || '',
+        memories: agent.memories || '',
+        is_active: agent.is_active,
+        tool_names: agent.tool_names || [],
+        relations: agent.kind === 'orchestrator'
+          ? (agent.relations || []).map((entry) => ({
+            worker_agent_id: Number(entry.worker_agent_id),
+            routing_hint: String(entry.routing_hint || ''),
+            is_active: entry.is_active !== false,
+          }))
+          : [],
+        permissions: agent.permissions || [],
+        guardrails: agent.guardrails_json || {},
+      };
+
+      const response = await fetch('/api/agents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Clonazione non riuscita.');
+      }
+
+      setSuccess(`Agente "${nextName}" clonato.`);
+      setActiveTab(body.kind || agent.kind);
+      window.dispatchEvent(new CustomEvent('agentCatalogUpdated'));
+      fetchData();
+    } catch (err: any) {
+      setError(err?.message || 'Errore nella clonazione.');
+    } finally {
+      setCloningAgentId(null);
+    }
+  };
+
   const openCreateModal = () => {
     const nextForm = {
       ...EMPTY_FORM,
@@ -843,7 +919,7 @@ export default function AgentsPage() {
             </div>
           </div>
 
-          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_128px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
             <div>Attivo</div>
             <div>Nome</div>
             <div>Modello</div>
@@ -861,7 +937,7 @@ export default function AgentsPage() {
             )}
             {filteredAgents.map((agent) => (
               <div key={agent.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_128px] lg:items-start">
+                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] lg:items-start">
                   <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                     <Toggle
@@ -939,6 +1015,15 @@ export default function AgentsPage() {
                         className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-700 text-gray-100 hover:bg-gray-800"
                       >
                         <PencilSquareIcon className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleClone(agent)}
+                        aria-label={`Clona ${agent.name}`}
+                        disabled={cloningAgentId === agent.id}
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-sky-700/70 text-sky-200 hover:bg-sky-950/60 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <DocumentDuplicateIcon className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
