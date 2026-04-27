@@ -93,6 +93,39 @@ function stringifyForModel(value) {
   }
 }
 
+function normalizeDelegatedWorkerStatus(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['completed', 'blocked', 'error'].includes(normalized) ? normalized : 'completed';
+}
+
+function normalizeDelegatedWorkerMissingInfo(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+}
+
+function buildDelegatedWorkerResultPayload(value, fallbackStatus = 'completed') {
+  const parsed = parseJsonIfPossible(value);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return {
+      status: normalizeDelegatedWorkerStatus(parsed.status || fallbackStatus),
+      result: String(parsed.result ?? '').trim(),
+      missing_info: normalizeDelegatedWorkerMissingInfo(parsed.missing_info),
+    };
+  }
+
+  return {
+    status: normalizeDelegatedWorkerStatus(fallbackStatus),
+    result: String(value || '').trim(),
+    missing_info: [],
+  };
+}
+
+function stringifyDelegatedWorkerResult(value, fallbackStatus = 'completed') {
+  return JSON.stringify(buildDelegatedWorkerResultPayload(value, fallbackStatus));
+}
+
 function extractToolFallbackText(content) {
   const parsed = parseJsonIfPossible(content);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -291,6 +324,20 @@ function buildDelegationToolName(agent) {
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
   return `delegate_to_${base.slice(0, 48) || 'agent'}`;
+}
+
+function buildDelegatedWorkerSystemPrompt(agent) {
+  return [
+    `${agent.system_prompt}\nOggi e il ${new Date().toISOString()}`,
+    [
+      'Modalita delega interna:',
+      'Rispondi solo con un oggetto JSON valido, senza testo fuori dal JSON.',
+      'Formato obbligatorio: {"status":"completed|blocked|error","result":"descrizione sintetica dell\'esito dell\'azione","missing_info":[]}.',
+      'Usa status "completed" quando il compito e stato svolto.',
+      'Usa status "blocked" quando mancano informazioni indispensabili e inseriscile in missing_info.',
+      'Usa status "error" quando il compito non e stato completato per errore operativo, descrivendo l\'errore in result.',
+    ].join('\n'),
+  ].join('\n\n');
 }
 
 async function buildDelegationTools(orchestratorAgent) {
@@ -498,7 +545,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
       }]);
 
       const childMessages = [
-        { role: 'system', content: `${childAgent.system_prompt}\nOggi e il ${new Date().toISOString()}` },
+        { role: 'system', content: buildDelegatedWorkerSystemPrompt(childAgent) },
         { role: 'user', content: delegatedTask },
       ];
       const childRun = await insertAgentRun({
@@ -538,10 +585,13 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           finished_at: new Date(),
           last_error: String(error?.message || error),
         }, 'running');
-        throw error;
+        childResult = stringifyDelegatedWorkerResult(
+          `Il worker ${childAgent.name} non ha completato il compito: ${error?.message || error}`,
+          'error'
+        );
       }
 
-      const childContent = typeof childResult === 'string' ? childResult : JSON.stringify(childResult);
+      const childContent = stringifyDelegatedWorkerResult(childResult);
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: childAgent.id,
