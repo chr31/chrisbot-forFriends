@@ -1008,6 +1008,47 @@ export default function TaskPage() {
     }
   };
 
+  const handleToggleLegacyRoutineActive = async (routine: LegacyRoutine) => {
+    const currentDraft = legacyRoutineForm[routine.name];
+    const nextActive = !(currentDraft?.is_active ?? routine.is_active);
+    const nextDraft = {
+      title: currentDraft?.title ?? routine.title,
+      description: currentDraft?.description ?? routine.description,
+      cron_expression: currentDraft?.cron_expression ?? String(routine.cron_expression || ''),
+      is_active: nextActive,
+    };
+
+    setLegacyRoutineForm((current) => ({
+      ...current,
+      [routine.name]: nextDraft,
+    }));
+    setSavingLegacyRoutineName(routine.name);
+
+    try {
+      const response = await authFetch(`/api/tasks/legacy-routines/${routine.name}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: nextDraft.title.trim(),
+          description: nextDraft.description.trim() || null,
+          template_id: routine.template_id || null,
+          cron_expression: nextDraft.cron_expression.trim(),
+          is_active: nextDraft.is_active,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body?.error || 'Stato routine non aggiornato.');
+      }
+      await fetchLegacyRoutines();
+    } catch (err: any) {
+      await fetchLegacyRoutines().catch(() => {});
+      alert(err?.message || `Errore durante l'aggiornamento della routine ${routine.title}.`);
+    } finally {
+      setSavingLegacyRoutineName(null);
+    }
+  };
+
   const handleOpenRoutineEditor = async (routineName: string) => {
     setEditingRoutineName(routineName);
     if (routineSources[routineName] !== undefined) return;
@@ -1671,15 +1712,8 @@ export default function TaskPage() {
                         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                         <Toggle
                           checked={legacyRoutineForm[routine.name]?.is_active ?? routine.is_active}
-                          onChange={() => setLegacyRoutineForm((current) => ({
-                            ...current,
-                            [routine.name]: {
-                              title: current[routine.name]?.title ?? routine.title,
-                              description: current[routine.name]?.description ?? routine.description,
-                              cron_expression: current[routine.name]?.cron_expression ?? String(routine.cron_expression || ''),
-                              is_active: !(current[routine.name]?.is_active ?? routine.is_active),
-                            },
-                          }))}
+                          onChange={() => handleToggleLegacyRoutineActive(routine)}
+                          disabled={savingLegacyRoutineName === routine.name}
                         />
                       </div>
 
