@@ -38,6 +38,8 @@ MYSQL_ROOT_PASSWORD=change-root-password
 MYSQL_USER=chrisbot
 MYSQL_PASSWORD=change-me
 MYSQL_DATABASE=chrisbot
+MYSQL_HOST=mysql
+COMPOSE_PROFILES=local-mysql
 ```
 
 3. Avvia i servizi:
@@ -54,6 +56,10 @@ Servizi esposti:
 - Backend: `http://127.0.0.1:3000`
 - Frontend: `http://127.0.0.1:3001`
 - MySQL: `127.0.0.1:3307`
+
+Per usare un MySQL esterno, imposta `MYSQL_HOST` all'host del database e lascia
+`COMPOSE_PROFILES` vuoto: in questo modo `docker compose up --build` non crea il
+container `chrisbot-mysql`.
 
 ## Avvio locale senza Docker
 

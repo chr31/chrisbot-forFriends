@@ -7,6 +7,7 @@ Questa guida raccoglie le variabili ambiente usate dal progetto. Per il bootstra
 Con `docker compose` e MySQL incluso:
 
 - `ACCESS_TOKEN_SECRET`: stringa lunga casuale. Obbligatoria per JWT e cifratura impostazioni sensibili.
+- `COMPOSE_PROFILES`: impostare a `local-mysql` per avviare il container MySQL incluso.
 - `MYSQL_ROOT_PASSWORD`: password dell'utente `root` del container MySQL.
 - `MYSQL_USER`: utente applicativo MySQL. Default consigliato: `chrisbot`.
 - `MYSQL_PASSWORD`: password dell'utente applicativo MySQL.
@@ -15,6 +16,7 @@ Con `docker compose` e MySQL incluso:
 Con MySQL esterno:
 
 - `ACCESS_TOKEN_SECRET`
+- `COMPOSE_PROFILES`: lasciare vuoto o non impostare, cosi' Docker Compose non crea il container MySQL incluso.
 - `MYSQL_HOST`
 - `MYSQL_PORT`
 - `MYSQL_USER`
@@ -49,6 +51,7 @@ Con MySQL esterno:
 
 Variabili usate solo da Docker Compose:
 
+- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` solo quando vuoi il container MySQL incluso; lascialo vuoto con MySQL esterno.
 - `MYSQL_ROOT_PASSWORD`: password root del container MySQL.
 - `MYSQL_HOST_PORT`: porta host pubblicata per MySQL. Intero positivo. Default: `3307`.
 
