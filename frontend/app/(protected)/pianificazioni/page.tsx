@@ -1016,6 +1016,33 @@ export default function TaskPage() {
       const response = await authFetch(`/api/tasks/legacy-routines/${routineName}/source`);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (body?.code === 'ROUTINE_SOURCE_MISSING') {
+          const routine = legacyRoutines.find((entry) => entry.name === routineName);
+          const confirmed = window.confirm(
+            `Il file associato alla routine "${routine?.title || routineName}" non è stato trovato. Vuoi ricrearlo dal template per ripristinare la routine?`
+          );
+          if (!confirmed) {
+            setEditingRoutineName(null);
+            return;
+          }
+
+          const templateId = String(body?.definition?.template_id || routine?.template_id || 'basic-node');
+          const resetResponse = await authFetch(`/api/tasks/legacy-routines/${routineName}/reset-template`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ template_id: templateId }),
+          });
+          const resetBody = await resetResponse.json().catch(() => ({}));
+          if (!resetResponse.ok) {
+            throw new Error(resetBody?.error || 'Creazione file routine non riuscita.');
+          }
+          setRoutineSources((current) => ({
+            ...current,
+            [routineName]: String(resetBody?.source || ''),
+          }));
+          await fetchLegacyRoutines();
+          return;
+        }
         throw new Error(body?.error || 'Impossibile caricare il sorgente routine.');
       }
       setRoutineSources((current) => ({

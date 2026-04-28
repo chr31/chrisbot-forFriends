@@ -146,7 +146,8 @@ async function readRoutineManifest(name) {
 }
 
 async function writeRoutineManifest(name, manifest) {
-  const { manifestPath } = buildRoutinePaths(name);
+  const { dirPath, manifestPath } = buildRoutinePaths(name);
+  await fs.mkdir(dirPath, { recursive: true });
   const serialized = `${JSON.stringify({
     name: manifest.name,
     title: manifest.title,
@@ -178,7 +179,20 @@ async function readRoutineSource(name) {
     throw error;
   }
   const sourcePath = resolveEntrypoint(definition);
-  const source = await fs.readFile(sourcePath, 'utf8');
+  let source;
+  try {
+    source = await fs.readFile(sourcePath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      const missingSourceError = new Error('File sorgente routine non trovato.');
+      missingSourceError.statusCode = 404;
+      missingSourceError.code = 'ROUTINE_SOURCE_MISSING';
+      missingSourceError.source_path = sourcePath;
+      missingSourceError.definition = definition;
+      throw missingSourceError;
+    }
+    throw error;
+  }
   return {
     definition,
     source,
@@ -199,6 +213,7 @@ function validateRoutineSource(source) {
 async function writeRoutineSource(definition, source, actorUsername) {
   validateRoutineSource(source);
   const sourcePath = resolveEntrypoint(definition);
+  await fs.mkdir(path.dirname(sourcePath), { recursive: true });
   const tempPath = `${sourcePath}.tmp-${Date.now()}`;
   await fs.writeFile(tempPath, source, 'utf8');
   await fs.rename(tempPath, sourcePath);

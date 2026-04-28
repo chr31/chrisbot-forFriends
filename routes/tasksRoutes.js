@@ -526,7 +526,11 @@ router.get('/legacy-routines/:name/source', requireSuperAdmin, async (req, res) 
     return res.json(source);
   } catch (error) {
     console.error('Errore recupero sorgente routine:', error);
-    return res.status(error.statusCode || 500).json({ error: error.message || 'Errore del server' });
+    return res.status(error.statusCode || 500).json({
+      error: error.message || 'Errore del server',
+      code: error.code || null,
+      definition: error.definition || null,
+    });
   }
 });
 
