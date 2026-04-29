@@ -33,6 +33,32 @@ type Message = {
 };
 
 const PENDING_CHAT_STORAGE_PREFIX = 'pending-agent-chat:';
+const LAST_AGENT_STORAGE_PREFIX = 'last-agent-chat-agent-id:';
+
+function getCurrentUserStorageSuffix(): string {
+  try {
+    const raw = localStorage.getItem('authUser');
+    const user = raw ? JSON.parse(raw) : null;
+    return String(user?.email || user?.name || 'default');
+  } catch {
+    return 'default';
+  }
+}
+
+function readLastAgentId(): string | null {
+  try {
+    return localStorage.getItem(`${LAST_AGENT_STORAGE_PREFIX}${getCurrentUserStorageSuffix()}`);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastAgentId(agentId: string | number | null | undefined) {
+  if (agentId === null || agentId === undefined || agentId === '') return;
+  try {
+    localStorage.setItem(`${LAST_AGENT_STORAGE_PREFIX}${getCurrentUserStorageSuffix()}`, String(agentId));
+  } catch {}
+}
 
 function createClientUuid(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -564,6 +590,7 @@ export default function AgentChatPage() {
     if (!response.ok) return;
     const data = await response.json();
     setSelectedModelConfig((current) => normalizeModelConfig(data?.config_json?.model_config || {}, current));
+    return data;
   }, []);
 
   const fetchExistingChat = useCallback(async (
@@ -626,11 +653,14 @@ export default function AgentChatPage() {
       await fetchAiOptions();
 
       if (isNewChat) {
+        const storedAgentId = readLastAgentId();
         const nextSelected = loadedAgents.find((agent) => String(agent.id) === String(agentId))
+          || loadedAgents.find((agent) => String(agent.id) === String(storedAgentId))
           || selectedAgentRef.current
           || loadedAgents[0]
           || null;
         setSelectedAgent(nextSelected);
+        writeLastAgentId(nextSelected?.id);
         if (nextSelected?.default_model_config) {
           setSelectedModelConfig(normalizeModelConfig(nextSelected.default_model_config, aiDefaultSelectionRef.current));
         }
@@ -650,7 +680,8 @@ export default function AgentChatPage() {
         tolerateNotFound: isPendingRoute,
       });
       if (loaded) {
-        await fetchChatMeta(chatId);
+        const meta = await fetchChatMeta(chatId);
+        writeLastAgentId(meta?.agent_id);
       }
 
       if (!loaded && isPendingRoute) {
@@ -708,6 +739,7 @@ export default function AgentChatPage() {
     if (!input.trim() || isBusy) return;
     const targetAgent = selectedAgent || agents.find((agent) => String(agent.id) === String(agentId)) || null;
     if (isNewChat && !targetAgent) return;
+    writeLastAgentId(targetAgent?.id);
 
     const submittedInput = input;
     const userMessage: Message = { role: 'user', content: submittedInput };
@@ -1056,6 +1088,7 @@ export default function AgentChatPage() {
                     const nextAgent = agents.find((agent) => String(agent.id) === e.target.value);
                     if (!nextAgent) return;
                     setSelectedAgent(nextAgent);
+                    writeLastAgentId(nextAgent.id);
                     if (nextAgent.default_model_config) {
                       setSelectedModelConfig(normalizeModelConfig(nextAgent.default_model_config, aiOptions?.default_selection));
                     }

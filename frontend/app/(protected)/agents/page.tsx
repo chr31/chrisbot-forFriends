@@ -287,12 +287,16 @@ function parsePermissions(text: string): AgentPermission[] {
     .filter(Boolean)
     .map((line) => {
       const parts = line.split(':').map((item) => item.trim()).filter(Boolean);
-      if (parts.length < 2) return null;
-      const role = parts[parts.length - 1] === 'manage' ? 'manage' : 'chat';
-      const subjectType = parts[0] === 'upn' ? 'upn' : 'user';
+      if (parts.length === 0) return null;
+
+      const lastPart = parts[parts.length - 1]?.toLowerCase();
+      const hasExplicitRole = lastPart === 'chat' || lastPart === 'manage';
+      const role = hasExplicitRole && lastPart === 'manage' ? 'manage' : 'chat';
+      const subjectType = parts[0]?.toLowerCase() === 'upn' || (parts.length === 1 && parts[0].includes('@')) ? 'upn' : 'user';
+      const subjectParts = hasExplicitRole ? parts.slice(0, -1) : parts;
       const subjectId = subjectType === 'upn'
-        ? parts.slice(1, -1).join(':')
-        : parts.slice(0, -1).join(':');
+        ? (subjectParts[0]?.toLowerCase() === 'upn' ? subjectParts.slice(1) : subjectParts).join(':')
+        : subjectParts.join(':');
       return {
         subject_type: subjectType,
         subject_id: subjectId,
@@ -1195,8 +1199,8 @@ export default function AgentsPage() {
                         </div>
 
                         <label className="block text-sm text-gray-200">
-                          <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Usa `username:chat` o `username:manage` per l'identificativo interno, oppure `upn:nome.cognome@azienda.it:chat` e `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
-                          <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username:chat`, `username:manage`, `upn:nome.cognome@azienda.it:chat`, `upn:nome.cognome@azienda.it:manage`.</span>
+                          <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Se ometti il ruolo viene usato chat. Usa `username` o `username:manage` per l'identificativo interno, oppure `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it` o `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
+                          <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username`, `username:manage`, `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it:manage`.</span>
                           <textarea
                             value={form.permissions_text}
                             onChange={(e) => setForm((current) => ({ ...current, permissions_text: e.target.value }))}
