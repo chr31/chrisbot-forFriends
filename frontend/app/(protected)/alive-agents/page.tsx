@@ -109,6 +109,33 @@ type AliveDetail = {
   runs: AgentRun[];
 };
 
+const LAST_ALIVE_AGENT_STORAGE_PREFIX = 'last-alive-agent-id:';
+
+function getCurrentUserStorageSuffix(): string {
+  try {
+    const raw = localStorage.getItem('authUser');
+    const user = raw ? JSON.parse(raw) : null;
+    return String(user?.email || user?.name || 'default');
+  } catch {
+    return 'default';
+  }
+}
+
+function readLastAliveAgentId(): string | null {
+  try {
+    return localStorage.getItem(`${LAST_ALIVE_AGENT_STORAGE_PREFIX}${getCurrentUserStorageSuffix()}`);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastAliveAgentId(agentId: string | number | null | undefined) {
+  if (agentId === null || agentId === undefined || agentId === '') return;
+  try {
+    localStorage.setItem(`${LAST_ALIVE_AGENT_STORAGE_PREFIX}${getCurrentUserStorageSuffix()}`, String(agentId));
+  } catch {}
+}
+
 function normalizeParentRunId(value: unknown): number | null {
   if (value === null || value === undefined || value === '' || value === 'null') return null;
   const parsed = Number(value);
@@ -322,9 +349,13 @@ export default function AliveAgentsPage() {
     setError(null);
     try {
       const [catalog] = await Promise.all([fetchCatalog(), fetchAiOptions()]);
-      const fallbackAgentId = selectedAgentId || String(catalog?.[0]?.id || '');
+      const storedAgentId = readLastAliveAgentId();
+      const fallbackAgentId = selectedAgentId
+        || String(catalog?.find((agent) => String(agent.id) === String(storedAgentId))?.id || '')
+        || String(catalog?.[0]?.id || '');
       if (fallbackAgentId) {
         await fetchDetail(fallbackAgentId, { preferAgentDefault: true });
+        writeLastAliveAgentId(fallbackAgentId);
         if (selectedAgentId !== fallbackAgentId) {
           router.replace(`/alive-agents?agentId=${fallbackAgentId}`);
         }
@@ -398,6 +429,7 @@ export default function AliveAgentsPage() {
   );
 
   const handleSelectAgent = (agent: Agent) => {
+    writeLastAliveAgentId(agent.id);
     setSelectedModelConfig(normalizeModelConfig(agent.default_model_config, aiDefaultSelectionRef.current));
     setOptimisticMessages([]);
     router.replace(`/alive-agents?agentId=${agent.id}`);
