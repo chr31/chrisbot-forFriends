@@ -1,11 +1,27 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CircleStackIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { ArrowTopRightOnSquareIcon, CircleStackIcon, SparklesIcon } from '@heroicons/react/24/outline';
 
 type AuthUser = {
   name: string;
   is_super_admin: boolean;
+};
+
+type AgentOption = {
+  id: number;
+  name: string;
+  slug?: string;
+  kind?: string;
+  is_active?: boolean;
+  memory_engine_enabled?: boolean;
+  memory_scope?: 'shared' | 'dedicated';
+};
+
+type SettingsPayload = {
+  memory_engine?: {
+    neo4j_browser_url?: string;
+  };
 };
 
 type MemoryPacket = {
@@ -57,6 +73,15 @@ type MemoryItem = {
   agent: string;
   topic: string;
   information: string;
+  status?: 'added' | 'updated' | 'deleted' | 'unchanged';
+};
+
+type ProcessLogStep = {
+  id: string;
+  title: string;
+  status: 'completed' | 'skipped' | 'warning' | 'error';
+  description: string;
+  details?: unknown;
 };
 
 type MemoryResponse = {
@@ -64,14 +89,15 @@ type MemoryResponse = {
   prompt: string;
   packet: MemoryPacket;
   items: MemoryItem[];
+  process_log?: ProcessLogStep[];
+  generated_answer?: {
+    text?: string;
+    provider?: string | null;
+    model?: string | null;
+    skipped_reason?: string;
+    error?: string;
+  };
 };
-
-function getStatusLabel(packet: MemoryPacket | null) {
-  if (!packet) return 'In attesa';
-  if (packet.enabled === false) return `Non eseguito: ${packet.skipped_reason || 'disabilitato'}`;
-  if (packet.skipped_reason) return `Eseguito: ${packet.skipped_reason}`;
-  return 'Eseguito';
-}
 
 function displayValue(value: unknown) {
   if (value === null || value === undefined) return '';
@@ -114,13 +140,58 @@ function getPacketMetric(packet: MemoryPacket | null) {
   return parts.join(' - ');
 }
 
+function getItemStatusLabel(status?: MemoryItem['status']) {
+  if (status === 'added') return 'aggiunta';
+  if (status === 'updated') return 'modificata';
+  if (status === 'deleted') return 'eliminata';
+  if (status === 'unchanged') return 'immutata';
+  return '';
+}
+
+function getItemStatusClass(status?: MemoryItem['status']) {
+  if (status === 'added') return 'border-emerald-700/70 bg-emerald-950/40 text-emerald-200';
+  if (status === 'updated') return 'border-amber-700/70 bg-amber-950/40 text-amber-200';
+  if (status === 'deleted') return 'border-rose-700/70 bg-rose-950/40 text-rose-200';
+  return 'border-gray-800 bg-gray-900 text-gray-300';
+}
+
+function getLogStatusLabel(status: ProcessLogStep['status']) {
+  if (status === 'completed') return 'ok';
+  if (status === 'skipped') return 'skip';
+  if (status === 'warning') return 'warning';
+  return 'error';
+}
+
+function getLogStatusClass(status: ProcessLogStep['status']) {
+  if (status === 'completed') return 'border-emerald-700/70 bg-emerald-950/40 text-emerald-200';
+  if (status === 'skipped') return 'border-gray-700 bg-gray-900 text-gray-300';
+  if (status === 'warning') return 'border-amber-700/70 bg-amber-950/40 text-amber-200';
+  return 'border-rose-700/70 bg-rose-950/40 text-rose-200';
+}
+
+function formatDetails(details: unknown) {
+  if (!details) return '';
+  if (typeof details === 'string') return details;
+  try {
+    return JSON.stringify(details, null, 2);
+  } catch (_) {
+    return String(details);
+  }
+}
+
 export default function MemoryEnginePage() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [neo4jBrowserUrl, setNeo4jBrowserUrl] = useState('');
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [prompt, setPrompt] = useState('');
+  const [memoryScope, setMemoryScope] = useState<'shared' | 'dedicated'>('shared');
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [lastPacket, setLastPacket] = useState<MemoryPacket | null>(null);
   const [lastAction, setLastAction] = useState<MemoryResponse['action'] | null>(null);
+  const [generatedAnswer, setGeneratedAnswer] = useState<MemoryResponse['generated_answer'] | null>(null);
+  const [processLog, setProcessLog] = useState<ProcessLogStep[]>([]);
   const [isRunning, setIsRunning] = useState<MemoryResponse['action'] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -140,6 +211,22 @@ export default function MemoryEnginePage() {
         const response = await authFetch('/api/auth/me');
         const body = await response.json().catch(() => ({}));
         setAuthUser(body?.user || null);
+        if (body?.user?.is_super_admin) {
+          const [agentsResponse, settingsResponse] = await Promise.all([
+            authFetch('/api/agents'),
+            authFetch('/api/settings'),
+          ]);
+          const agentsBody = await agentsResponse.json().catch(() => []);
+          if (agentsResponse.ok && Array.isArray(agentsBody)) {
+            const activeAgents = agentsBody.filter((agent) => agent?.id && agent?.is_active !== false);
+            setAgents(activeAgents);
+            if (activeAgents[0]?.id) setSelectedAgentId(String(activeAgents[0].id));
+          }
+          if (settingsResponse.ok) {
+            const settingsBody = await settingsResponse.json().catch(() => ({})) as SettingsPayload;
+            setNeo4jBrowserUrl(String(settingsBody.memory_engine?.neo4j_browser_url || '').trim());
+          }
+        }
       } catch (_) {
         setAuthUser(null);
       } finally {
@@ -149,7 +236,10 @@ export default function MemoryEnginePage() {
     fetchAuthUser();
   }, [authFetch]);
 
-  const canRun = useMemo(() => Boolean(prompt.trim()) && !isRunning, [prompt, isRunning]);
+  const canRun = useMemo(
+    () => Boolean(prompt.trim()) && !isRunning && (memoryScope === 'shared' || Boolean(selectedAgentId)),
+    [prompt, isRunning, memoryScope, selectedAgentId]
+  );
 
   const runMemoryAction = async (action: MemoryResponse['action']) => {
     const cleanPrompt = prompt.trim();
@@ -160,7 +250,11 @@ export default function MemoryEnginePage() {
       const endpoint = action === 'getMemories' ? '/api/memory-engine/get' : '/api/memory-engine/set';
       const response = await authFetch(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ prompt: cleanPrompt }),
+        body: JSON.stringify({
+          prompt: cleanPrompt,
+          scope: memoryScope,
+          agent_id: memoryScope === 'dedicated' ? selectedAgentId : null,
+        }),
       });
       const body = await response.json().catch(() => ({})) as Partial<MemoryResponse> & { error?: string };
       if (!response.ok) {
@@ -168,6 +262,8 @@ export default function MemoryEnginePage() {
       }
       setItems(Array.isArray(body.items) ? body.items : []);
       setLastPacket(body.packet || null);
+      setGeneratedAnswer(body.generated_answer || null);
+      setProcessLog(Array.isArray(body.process_log) ? body.process_log : []);
       setLastAction(action);
     } catch (err: any) {
       setError(err?.message || 'Errore durante il test Memory Engine.');
@@ -192,16 +288,59 @@ export default function MemoryEnginePage() {
                 Console admin per verificare utente, agente, argomento e informazione salvata o recuperata.
               </p>
             </div>
-            <div className="rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 text-sm text-gray-300">
-              <div className="flex items-center gap-2">
-                <CircleStackIcon className="h-5 w-5 text-sky-300" />
-                <span>{getStatusLabel(lastPacket)}</span>
-              </div>
-            </div>
+            <a
+              href={neo4jBrowserUrl || '#'}
+              target="_blank"
+              rel="noreferrer"
+              aria-disabled={!neo4jBrowserUrl}
+              className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-semibold ${
+                neo4jBrowserUrl
+                  ? 'border-sky-700/60 bg-sky-600/10 text-sky-100 hover:bg-sky-600/20'
+                  : 'pointer-events-none border-gray-800 bg-gray-950/60 text-gray-500'
+              }`}
+              title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
+            >
+              <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+              Neo4j Browser
+            </a>
           </div>
 
-          <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-start">
-            <div className="min-h-12 flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
+          <div className="mt-5 space-y-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="text-xs font-semibold uppercase tracking-normal text-gray-500">
+                Scope
+                <select
+                  value={memoryScope}
+                  onChange={(event) => setMemoryScope(event.target.value as 'shared' | 'dedicated')}
+                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
+                >
+                  <option value="shared">Memorie condivise</option>
+                  <option value="dedicated">Memorie agente</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold uppercase tracking-normal text-gray-500">
+                Agente
+                <select
+                  value={selectedAgentId}
+                  onChange={(event) => setSelectedAgentId(event.target.value)}
+                  disabled={memoryScope !== 'dedicated' || agents.length === 0}
+                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {agents.length === 0 ? (
+                    <option value="">Nessun agente</option>
+                  ) : (
+                    agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+              <div className="min-h-12 flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
               <textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
@@ -209,8 +348,8 @@ export default function MemoryEnginePage() {
                 placeholder="Scrivi un prompt per cercare o proporre memorie..."
                 className="min-h-16 w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
               />
-            </div>
-            <div className="flex shrink-0 flex-row gap-3 lg:flex-col">
+              </div>
+              <div className="flex shrink-0 flex-col gap-3">
               <button
                 type="button"
                 onClick={() => runMemoryAction('getMemories')}
@@ -229,6 +368,7 @@ export default function MemoryEnginePage() {
                 <SparklesIcon className="h-5 w-5" />
                 {isRunning === 'setMemories' ? 'set...' : 'setMemories'}
               </button>
+              </div>
             </div>
           </div>
 
@@ -264,6 +404,72 @@ export default function MemoryEnginePage() {
                   <p className="mt-1 whitespace-pre-wrap text-gray-200">{String(lastPacket.contextText).trim()}</p>
                 </div>
               ) : null}
+              {lastAction === 'getMemories' ? (
+                <div className="md:col-span-2">
+                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Risposta LLM generata</p>
+                  <div className="mt-1 rounded-xl border border-sky-900/60 bg-sky-950/20 px-4 py-3 text-gray-100">
+                    {generatedAnswer?.text ? (
+                      <p className="whitespace-pre-wrap">{generatedAnswer.text}</p>
+                    ) : (
+                      <p className="text-gray-400">
+                        {generatedAnswer?.error
+                          ? `Generazione non riuscita: ${generatedAnswer.error}`
+                          : generatedAnswer?.skipped_reason === 'no_memory_context'
+                            ? 'Nessuna risposta generata perche non e stato recuperato contextText.'
+                            : 'Nessuna risposta generata.'}
+                      </p>
+                    )}
+                    {generatedAnswer?.provider || generatedAnswer?.model ? (
+                      <p className="mt-2 text-xs text-sky-200/80">
+                        {['provider', generatedAnswer.provider, 'model', generatedAnswer.model].filter(Boolean).join(' ')}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {processLog.length > 0 ? (
+            <div className="mt-6 border-t border-gray-800 pt-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Process log</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">
+                    {lastAction === 'setMemories' ? 'afterMemory' : 'beforeMemory'}
+                  </h2>
+                </div>
+                <p className="text-xs text-gray-400">{processLog.length} step</p>
+              </div>
+              <ol className="mt-4 space-y-3">
+                {processLog.map((step, index) => {
+                  const details = formatDetails(step.details);
+                  return (
+                    <li key={step.id} className="grid gap-3 border-b border-gray-800 pb-3 sm:grid-cols-[2rem_1fr]">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full border border-gray-700 bg-gray-950 text-xs font-semibold text-gray-300">
+                        {index + 1}
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-sm font-semibold text-white">{step.title}</h3>
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-normal ${getLogStatusClass(step.status)}`}>
+                            {getLogStatusLabel(step.status)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-gray-300">{step.description}</p>
+                        {details ? (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer text-xs font-semibold text-sky-300">Dettagli</summary>
+                            <pre className="mt-2 max-h-64 overflow-auto rounded-xl border border-gray-800 bg-gray-950/80 p-3 text-xs leading-relaxed text-gray-300">
+                              {details}
+                            </pre>
+                          </details>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
             </div>
           ) : null}
 
@@ -275,12 +481,13 @@ export default function MemoryEnginePage() {
                   <th className="px-4 py-3 font-semibold">Agente</th>
                   <th className="px-4 py-3 font-semibold">Argomento</th>
                   <th className="px-4 py-3 font-semibold">Informazione</th>
+                  <th className="px-4 py-3 font-semibold">Esito</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-5 text-sm text-gray-400">
+                    <td colSpan={5} className="px-4 py-5 text-sm text-gray-400">
                       Nessuna memoria da mostrare.
                     </td>
                   </tr>
@@ -315,6 +522,15 @@ export default function MemoryEnginePage() {
                           rows={2}
                           className="min-h-12 w-[34rem] resize-y rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-200 outline-none"
                         />
+                      </td>
+                      <td className="px-4 py-3">
+                        {getItemStatusLabel(item.status) ? (
+                          <span className={`inline-flex min-w-24 justify-center rounded-full border px-3 py-1 text-xs font-semibold ${getItemStatusClass(item.status)}`}>
+                            {getItemStatusLabel(item.status)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-500">n/d</span>
+                        )}
                       </td>
                     </tr>
                   ))

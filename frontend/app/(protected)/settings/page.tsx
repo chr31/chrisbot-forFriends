@@ -97,6 +97,7 @@ type MemoryEngineSettings = {
   embedding_model: string;
   embedding_ollama_server_id: string | null;
   neo4j_url: string;
+  neo4j_browser_url: string;
   neo4j_username: string;
   neo4j_password: string;
   neo4j_password_configured?: boolean;
@@ -1648,7 +1649,7 @@ export default function SettingsPage() {
 
                 <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(12rem,42rem)_minmax(12rem,22rem)]">
                   <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
-                    <span className="mb-1 block">URL</span>
+                    <span className="mb-1 block">URL Bolt</span>
                     <input
                       value={memoryEngine.neo4j_url}
                       onChange={(event) => setMemoryEngine((current) => current ? {
@@ -1657,6 +1658,19 @@ export default function SettingsPage() {
                       } : current)}
                       className="w-full max-w-[42rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                       placeholder="bolt://neo4j:7687"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
+                    <span className="mb-1 block">URL pagina web Neo4j</span>
+                    <input
+                      value={memoryEngine.neo4j_browser_url}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        neo4j_browser_url: event.target.value,
+                      } : current)}
+                      className="w-full max-w-[42rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="http://127.0.0.1:7474"
                     />
                   </label>
 

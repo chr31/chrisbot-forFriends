@@ -147,6 +147,7 @@ function buildDefaultMemoryEngineSettings() {
     embedding_model: '',
     embedding_ollama_server_id: null,
     neo4j_url: 'bolt://neo4j:7687',
+    neo4j_browser_url: 'http://127.0.0.1:7474',
     neo4j_username: 'neo4j',
     neo4j_password: '',
   };
@@ -210,6 +211,7 @@ function normalizeMemoryEngineSettings(value) {
       ? (String(value?.embedding_ollama_server_id || value?.ollama_server_id || '').trim() || null)
       : null,
     neo4j_url: String(value?.neo4j_url || defaults.neo4j_url).trim() || defaults.neo4j_url,
+    neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
     neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
     neo4j_password: String(value?.neo4j_password || '').trim(),
   };
