@@ -7,6 +7,7 @@ const SETTINGS_KEYS = Object.freeze({
   ollamaRuntime: 'ollama_runtime',
   openaiRuntime: 'openai_runtime',
   telegramRuntime: 'telegram_runtime',
+  memoryEngine: 'memory_engine',
 });
 
 const settingsCache = {
@@ -15,6 +16,7 @@ const settingsCache = {
   ollamaRuntime: null,
   openaiRuntime: null,
   telegramRuntime: null,
+  memoryEngine: null,
 };
 
 const DEFAULT_ADMIN_GROUP = 'chrisbot.admin';
@@ -135,6 +137,21 @@ function buildDefaultOpenAiRuntimeSettings() {
   };
 }
 
+function buildDefaultMemoryEngineSettings() {
+  return {
+    enabled: false,
+    analysis_model_provider: 'openai',
+    analysis_model: 'gpt-5-mini',
+    ollama_server_id: null,
+    embedding_model_provider: 'ollama',
+    embedding_model: '',
+    embedding_ollama_server_id: null,
+    neo4j_url: 'bolt://neo4j:7687',
+    neo4j_username: 'neo4j',
+    neo4j_password: '',
+  };
+}
+
 function normalizePortalAccessSettings(value) {
   const defaults = buildDefaultPortalAccessSettings();
   return {
@@ -160,6 +177,41 @@ function normalizeOpenAiRuntimeSettings(value) {
   return {
     api_key: String(value?.api_key || '').trim(),
     chat_model: String(value?.chat_model || defaults.chat_model).trim() || defaults.chat_model,
+  };
+}
+
+function normalizeMemoryModelProvider(value, fallback = 'openai') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'ollama') return 'ollama';
+  return fallback;
+}
+
+function normalizeMemoryEngineSettings(value) {
+  const defaults = buildDefaultMemoryEngineSettings();
+  const provider = normalizeMemoryModelProvider(value?.analysis_model_provider, defaults.analysis_model_provider);
+  const embeddingProvider = normalizeMemoryModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider);
+  const fallbackModel = provider === 'openai'
+    ? defaults.analysis_model
+    : String(value?.analysis_model || '').trim();
+  const fallbackEmbeddingModel = embeddingProvider === 'openai'
+    ? 'text-embedding-3-small'
+    : String(value?.embedding_model || defaults.embedding_model || '').trim();
+  return {
+    enabled: parseBoolean(value?.enabled, defaults.enabled),
+    analysis_model_provider: provider,
+    analysis_model: String(value?.analysis_model || fallbackModel).trim() || fallbackModel,
+    ollama_server_id: provider === 'ollama'
+      ? (String(value?.ollama_server_id || '').trim() || null)
+      : null,
+    embedding_model_provider: embeddingProvider,
+    embedding_model: String(value?.embedding_model || fallbackEmbeddingModel).trim() || fallbackEmbeddingModel,
+    embedding_ollama_server_id: embeddingProvider === 'ollama'
+      ? (String(value?.embedding_ollama_server_id || value?.ollama_server_id || '').trim() || null)
+      : null,
+    neo4j_url: String(value?.neo4j_url || defaults.neo4j_url).trim() || defaults.neo4j_url,
+    neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
+    neo4j_password: String(value?.neo4j_password || '').trim(),
   };
 }
 
@@ -194,6 +246,22 @@ function serializeOpenAiRuntimeSettings(value) {
   return {
     ...value,
     api_key: encryptValue(value.api_key),
+  };
+}
+
+function deserializeMemoryEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    neo4j_password: decryptValue(value.neo4j_password),
+  };
+}
+
+function serializeMemoryEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    neo4j_password: encryptValue(value.neo4j_password),
   };
 }
 
@@ -387,6 +455,14 @@ function redactTelegramRuntimeSettings(value) {
   };
 }
 
+function redactMemoryEngineSettings(value) {
+  return {
+    ...value,
+    neo4j_password: '',
+    neo4j_password_configured: Boolean(String(value?.neo4j_password || '').trim()),
+  };
+}
+
 function preserveMcpHeaderSecrets(normalized, incoming, current) {
   const currentById = new Map((current?.connections || []).map((connection) => [connection.id, connection]));
   const incomingById = new Map((incoming?.connections || []).map((connection) => [String(connection?.id || ''), connection]));
@@ -461,6 +537,15 @@ async function initializeAppSettings() {
     buildDefaultTelegramRuntimeSettings,
     normalizeTelegramRuntimeSettings
   );
+  settingsCache.memoryEngine = await loadOrSeedSetting(
+    SETTINGS_KEYS.memoryEngine,
+    buildDefaultMemoryEngineSettings,
+    normalizeMemoryEngineSettings,
+    {
+      deserialize: deserializeMemoryEngineSettings,
+      serialize: serializeMemoryEngineSettings,
+    }
+  );
 }
 
 function getPortalAccessSettingsSync() {
@@ -496,6 +581,13 @@ function getTelegramRuntimeSettingsSync() {
     settingsCache.telegramRuntime = normalizeTelegramRuntimeSettings(buildDefaultTelegramRuntimeSettings());
   }
   return settingsCache.telegramRuntime;
+}
+
+function getMemoryEngineSettingsSync() {
+  if (!settingsCache.memoryEngine) {
+    settingsCache.memoryEngine = normalizeMemoryEngineSettings(buildDefaultMemoryEngineSettings());
+  }
+  return settingsCache.memoryEngine;
 }
 
 async function updatePortalAccessSettings(nextValue) {
@@ -556,17 +648,32 @@ async function updateTelegramRuntimeSettings(nextValue) {
   return normalized;
 }
 
+async function updateMemoryEngineSettings(nextValue) {
+  const current = getMemoryEngineSettingsSync();
+  const normalized = preserveExistingSecrets(
+    normalizeMemoryEngineSettings({ ...current, ...(nextValue || {}) }),
+    nextValue || {},
+    current,
+    ['neo4j_password']
+  );
+  await setSetting(SETTINGS_KEYS.memoryEngine, serializeMemoryEngineSettings(normalized));
+  settingsCache.memoryEngine = normalized;
+  return normalized;
+}
+
 function getSettingsSnapshot(options = {}) {
   const redactSecrets = options.redactSecrets !== false;
   const portalAccess = getPortalAccessSettingsSync();
   const openAiRuntime = getOpenAiRuntimeSettingsSync();
   const telegramRuntime = getTelegramRuntimeSettingsSync();
+  const memoryEngine = getMemoryEngineSettingsSync();
   return {
     portal_access: redactSecrets ? redactPortalAccessSettings(portalAccess) : portalAccess,
     mcp_runtime: redactSecrets ? redactMcpRuntimeSettings(getMcpRuntimeSettingsSync()) : getMcpRuntimeSettingsSync(),
     ollama_runtime: getOllamaRuntimeSettingsSync(),
     openai_runtime: redactSecrets ? redactOpenAiRuntimeSettings(openAiRuntime) : openAiRuntime,
     telegram_runtime: redactSecrets ? redactTelegramRuntimeSettings(telegramRuntime) : telegramRuntime,
+    memory_engine: redactSecrets ? redactMemoryEngineSettings(memoryEngine) : memoryEngine,
   };
 }
 
@@ -584,6 +691,10 @@ function revealSettingsSecret(target = {}) {
 
   if (area === 'telegram_runtime' && field === 'bot_token') {
     return String(getTelegramRuntimeSettingsSync()?.bot_token || '');
+  }
+
+  if (area === 'memory_engine' && field === 'neo4j_password') {
+    return String(getMemoryEngineSettingsSync()?.neo4j_password || '');
   }
 
   if (area === 'mcp_runtime' && field === 'headers_json') {
@@ -605,11 +716,13 @@ module.exports = {
   getOllamaRuntimeSettingsSync,
   getOpenAiRuntimeSettingsSync,
   getTelegramRuntimeSettingsSync,
+  getMemoryEngineSettingsSync,
   updatePortalAccessSettings,
   updateMcpRuntimeSettings,
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
+  updateMemoryEngineSettings,
   revealSettingsSecret,
   getSettingsSnapshot,
 };

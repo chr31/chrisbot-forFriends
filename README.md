@@ -39,7 +39,9 @@ MYSQL_USER=chrisbot
 MYSQL_PASSWORD=change-me
 MYSQL_DATABASE=chrisbot
 MYSQL_HOST=mysql
-COMPOSE_PROFILES=local-mysql
+COMPOSE_PROFILES=local-mysql,local-neo4j
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=change-me-neo4j
 ```
 
 3. Avvia i servizi:
@@ -56,10 +58,12 @@ Servizi esposti:
 - Backend: `http://127.0.0.1:3000`
 - Frontend: `http://127.0.0.1:3001`
 - MySQL: `127.0.0.1:3307`
+- Neo4j HTTP: `http://127.0.0.1:7474`
+- Neo4j Bolt: `bolt://127.0.0.1:7687`
 
 Per usare un MySQL esterno, imposta `MYSQL_HOST` all'host del database e lascia
 `COMPOSE_PROFILES` vuoto: in questo modo `docker compose up --build` non crea il
-container `chrisbot-mysql`.
+container `chrisbot-mysql` e `chrisbot-neo4j`.
 
 ## Avvio locale senza Docker
 

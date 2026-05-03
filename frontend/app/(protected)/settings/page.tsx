@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { TrashIcon } from '@heroicons/react/24/outline';
 
 type AuthUser = {
   name: string;
@@ -87,6 +88,20 @@ type TelegramRuntimeSettings = {
   parse_mode: '' | 'HTML';
 };
 
+type MemoryEngineSettings = {
+  enabled: boolean;
+  analysis_model_provider: 'openai' | 'ollama';
+  analysis_model: string;
+  ollama_server_id: string | null;
+  embedding_model_provider: 'openai' | 'ollama';
+  embedding_model: string;
+  embedding_ollama_server_id: string | null;
+  neo4j_url: string;
+  neo4j_username: string;
+  neo4j_password: string;
+  neo4j_password_configured?: boolean;
+};
+
 type TelegramUserLink = {
   id: number;
   subject_type: 'user' | 'upn';
@@ -154,12 +169,36 @@ type SettingsPayload = {
   ollama_runtime: OllamaRuntimeSettings;
   openai_runtime: OpenAiRuntimeSettings;
   telegram_runtime: TelegramRuntimeSettings;
+  memory_engine: MemoryEngineSettings;
 };
 
 type SecretRevealTarget = {
-  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime';
+  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine';
   field: string;
   connection_id?: string;
+};
+
+type MemoryConnectionStatus = {
+  ok: boolean;
+  status: 'connected' | 'error' | 'not_configured';
+  error?: string;
+  checked_at?: string;
+  neo4j?: {
+    ok?: boolean;
+    status?: string;
+    url?: string;
+    error?: string;
+    checked_at?: string;
+  };
+  embedding?: {
+    ok?: boolean;
+    status?: string;
+    provider?: string;
+    model?: string;
+    dimensions?: number;
+    error?: string;
+    checked_at?: string;
+  };
 };
 
 const REDACTED_SECRET_PLACEHOLDER = '********';
@@ -345,13 +384,15 @@ function toEditableTelegramUser(entry?: Partial<TelegramUserLink> & { id?: numbe
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'portal' | 'ollama' | 'mcp' | 'telegram'>('portal');
+  const [activeTab, setActiveTab] = useState<'portal' | 'ollama' | 'memory' | 'mcp' | 'telegram'>('portal');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingPortal, setIsSavingPortal] = useState(false);
   const [isSavingMcp, setIsSavingMcp] = useState(false);
   const [isSavingOllama, setIsSavingOllama] = useState(false);
   const [isSavingOpenAi, setIsSavingOpenAi] = useState(false);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
+  const [isClearingMemory, setIsClearingMemory] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const [revealingSecrets, setRevealingSecrets] = useState<Record<string, boolean>>({});
@@ -381,6 +422,11 @@ export default function SettingsPage() {
   const [ollamaModelsDraft, setOllamaModelsDraft] = useState('');
   const [ollamaStatuses, setOllamaStatuses] = useState<Record<string, OllamaConnectionStatus>>({});
   const [openAiRuntime, setOpenAiRuntime] = useState<OpenAiRuntimeSettings | null>(null);
+  const [memoryEngine, setMemoryEngine] = useState<MemoryEngineSettings | null>(null);
+  const [memoryConnectionStatus, setMemoryConnectionStatus] = useState<MemoryConnectionStatus>({
+    ok: false,
+    status: 'not_configured',
+  });
   const [telegramRuntime, setTelegramRuntime] = useState<TelegramRuntimeSettings | null>(null);
   const [telegramUserRows, setTelegramUserRows] = useState<EditableTelegramUserLink[]>([]);
   const [deletedTelegramUserIds, setDeletedTelegramUserIds] = useState<number[]>([]);
@@ -499,6 +545,12 @@ export default function SettingsPage() {
       setMcpRuntime(payload.mcp_runtime || null);
       setOllamaRuntime(payload.ollama_runtime || null);
       setOpenAiRuntime(payload.openai_runtime || null);
+      const loadedMemoryEngine = payload.memory_engine || null;
+      setMemoryEngine(loadedMemoryEngine);
+      setMemoryConnectionStatus({
+        ok: false,
+        status: 'not_configured',
+      });
       setTelegramRuntime(payload.telegram_runtime || null);
       const nextHeaders: Record<string, string> = {};
       for (const connection of payload.mcp_runtime?.connections || []) {
@@ -638,6 +690,48 @@ export default function SettingsPage() {
       alert(err?.message || 'Errore salvataggio impostazioni OpenAI.');
     } finally {
       setIsSavingOpenAi(false);
+    }
+  };
+
+  const handleSaveMemory = async () => {
+    if (!memoryEngine) return;
+    setIsSavingMemory(true);
+    try {
+      const response = await authFetch('/api/settings/memory', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(memoryEngine),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni memorie fallito.');
+      await loadSettings();
+    } catch (err: any) {
+      alert(err?.message || 'Errore salvataggio impostazioni memorie.');
+    } finally {
+      setIsSavingMemory(false);
+    }
+  };
+
+  const handleClearMemoryValues = async () => {
+    if (!memoryEngine || isClearingMemory) return;
+    const confirmed = window.confirm('Eliminare tutte le memorie salvate in Neo4j? L\'operazione non puo essere annullata.');
+    if (!confirmed) return;
+    setIsClearingMemory(true);
+    try {
+      const response = await authFetch('/api/settings/memory/values', {
+        method: 'DELETE',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Eliminazione memorie Neo4j fallita.');
+      setMemoryConnectionStatus({
+        ok: false,
+        status: 'not_configured',
+      });
+      alert(`Memorie eliminate: ${Number(body?.deleted || 0).toLocaleString('it-IT')}.`);
+    } catch (err: any) {
+      alert(err?.message || 'Errore eliminazione memorie Neo4j.');
+    } finally {
+      setIsClearingMemory(false);
     }
   };
 
@@ -803,6 +897,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: 'portal' as const, label: 'Accesso Portale' },
     { id: 'ollama' as const, label: 'Modelli AI' },
+    { id: 'memory' as const, label: 'Memorie' },
     { id: 'mcp' as const, label: 'Server MCP' },
     { id: 'telegram' as const, label: 'Telegram' },
   ];
@@ -818,6 +913,28 @@ export default function SettingsPage() {
   const isOpenAiConfigured = Boolean((openAiRuntime?.api_key_configured || openAiRuntime?.api_key.trim()) && openAiRuntime?.chat_model.trim());
   const globalDefaultModelValue = ollamaRuntime?.default_model
     || (isOpenAiConfigured ? '__openai__' : '');
+  const memoryModelOptions = [
+    ...(isOpenAiConfigured || memoryEngine?.analysis_model_provider === 'openai' ? [{
+      value: `openai::${openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini'}`,
+      label: `ChatGPT (${openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini'})`,
+      provider: 'openai' as const,
+      model: openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini',
+    }] : []),
+    ...((ollamaRuntime?.models || []).map((model) => ({
+      value: `ollama::${model}`,
+      label: model,
+      provider: 'ollama' as const,
+      model,
+    }))),
+  ];
+  const memoryModelValue = memoryEngine
+    ? `${memoryEngine.analysis_model_provider}::${memoryEngine.analysis_model}`
+    : '';
+  const memoryStatusMeta = memoryConnectionStatus.status === 'connected'
+    ? { label: 'Connesso', dotClassName: 'bg-emerald-500' }
+    : memoryConnectionStatus.status === 'error'
+      ? { label: 'Errore', dotClassName: 'bg-rose-500' }
+      : { label: 'Non verificato', dotClassName: 'bg-yellow-400' };
 
   return (
     <div className="space-y-6 py-6">
@@ -832,7 +949,7 @@ export default function SettingsPage() {
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id as 'portal' | 'ollama' | 'mcp' | 'telegram')}
+              onClick={() => setActiveTab(tab.id as 'portal' | 'ollama' | 'memory' | 'mcp' | 'telegram')}
               className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
                 activeTab === tab.id
                   ? 'bg-sky-600 text-white'
@@ -1371,6 +1488,237 @@ export default function SettingsPage() {
           </>
         ) : null}
         </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'memory' ? (
+        <section className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold text-white">Memorie</h2>
+              <p className="mt-1 text-sm text-gray-300">Configura il Memory Engine globale, i modelli dedicati e la connessione Neo4j.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {memoryEngine ? (
+                <Toggle
+                  checked={memoryEngine.enabled}
+                  onChange={() => setMemoryEngine((current) => current ? {
+                    ...current,
+                    enabled: !current.enabled,
+                  } : current)}
+                />
+              ) : null}
+              <button
+                type="button"
+                onClick={handleClearMemoryValues}
+                disabled={isClearingMemory || !memoryEngine}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50 disabled:opacity-60"
+                title="Elimina tutte le memorie Neo4j"
+                aria-label="Elimina tutte le memorie Neo4j"
+              >
+                <TrashIcon className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveMemory}
+                disabled={isSavingMemory || !memoryEngine}
+                className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+              >
+                {isSavingMemory ? 'Salvataggio...' : 'Salva memorie'}
+              </button>
+            </div>
+          </div>
+
+          {memoryEngine ? (
+            <div className="mt-6 space-y-6">
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <h3 className="text-sm font-semibold text-white">Modelli memoria</h3>
+                <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(18rem,36rem)_minmax(16rem,28rem)]">
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Modello chat analisi</span>
+                    <select
+                      value={memoryModelValue}
+                      onChange={(event) => {
+                        const [provider, model] = event.target.value.split('::');
+                        setMemoryEngine((current) => current ? {
+                          ...current,
+                          analysis_model_provider: provider === 'ollama' ? 'ollama' : 'openai',
+                          analysis_model: model || current.analysis_model,
+                          ollama_server_id: provider === 'ollama' ? current.ollama_server_id : null,
+                        } : current);
+                      }}
+                      className="w-full max-w-[36rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    >
+                      {memoryModelOptions.length === 0 ? (
+                        <option value="" disabled>Nessun modello disponibile</option>
+                      ) : null}
+                      {memoryModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {memoryEngine.analysis_model_provider === 'ollama' ? (
+                    <label className="min-w-0 text-sm text-gray-200">
+                      <span className="mb-1 block">Server Ollama chat</span>
+                      <select
+                        value={memoryEngine.ollama_server_id || ''}
+                        onChange={(event) => setMemoryEngine((current) => current ? {
+                          ...current,
+                          ollama_server_id: event.target.value || null,
+                        } : current)}
+                        className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      >
+                        <option value="">Seleziona server</option>
+                        {(ollamaRuntime?.connections || []).map((connection) => (
+                          <option key={connection.id} value={connection.id}>{connection.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <div className="hidden sm:block" />
+                  )}
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Provider embedding</span>
+                    <select
+                      value={memoryEngine.embedding_model_provider}
+                      onChange={(event) => {
+                        const provider = event.target.value === 'openai' ? 'openai' : 'ollama';
+                        setMemoryEngine((current) => current ? {
+                          ...current,
+                          embedding_model_provider: provider,
+                          embedding_model: provider === 'openai' && !current.embedding_model
+                            ? 'text-embedding-3-small'
+                            : current.embedding_model,
+                          embedding_ollama_server_id: provider === 'ollama' ? current.embedding_ollama_server_id : null,
+                        } : current);
+                      }}
+                      className="w-full max-w-[18rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    >
+                      <option value="ollama">Ollama</option>
+                      <option value="openai">OpenAI</option>
+                    </select>
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Nome modello embedding</span>
+                    <input
+                      value={memoryEngine.embedding_model}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        embedding_model: event.target.value,
+                      } : current)}
+                      className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder={memoryEngine.embedding_model_provider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
+                    />
+                  </label>
+
+                  {memoryEngine.embedding_model_provider === 'ollama' ? (
+                    <label className="min-w-0 text-sm text-gray-200">
+                      <span className="mb-1 block">Server Ollama embedding</span>
+                      <select
+                        value={memoryEngine.embedding_ollama_server_id || ''}
+                        onChange={(event) => setMemoryEngine((current) => current ? {
+                          ...current,
+                          embedding_ollama_server_id: event.target.value || null,
+                        } : current)}
+                        className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      >
+                        <option value="">Seleziona server</option>
+                        {(ollamaRuntime?.connections || []).map((connection) => (
+                          <option key={connection.id} value={connection.id}>{connection.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Neo4j</h3>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-gray-200">
+                    <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
+                    <span>{memoryStatusMeta.label}</span>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(12rem,42rem)_minmax(12rem,22rem)]">
+                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
+                    <span className="mb-1 block">URL</span>
+                    <input
+                      value={memoryEngine.neo4j_url}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        neo4j_url: event.target.value,
+                      } : current)}
+                      className="w-full max-w-[42rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="bolt://neo4j:7687"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Username</span>
+                    <input
+                      value={memoryEngine.neo4j_username}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        neo4j_username: event.target.value,
+                      } : current)}
+                      className="w-full max-w-[18rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="neo4j"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Password</span>
+                    <div className="flex max-w-[28rem] gap-2">
+                      <input
+                        type={revealedSecrets['memory.neo4j_password'] ? 'text' : 'password'}
+                        value={memoryEngine.neo4j_password}
+                        onChange={(event) => setMemoryEngine((current) => current ? {
+                          ...current,
+                          neo4j_password: event.target.value,
+                        } : current)}
+                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        placeholder={memoryEngine.neo4j_password_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password Neo4j'}
+                      />
+                      <SecretRevealButton
+                        isRevealed={Boolean(revealedSecrets['memory.neo4j_password'])}
+                        isLoading={Boolean(revealingSecrets['memory.neo4j_password'])}
+                        disabled={!memoryEngine.neo4j_password_configured}
+                        onReveal={() => revealSecret(
+                          'memory.neo4j_password',
+                          { area: 'memory_engine', field: 'neo4j_password' },
+                          (value) => setMemoryEngine((current) => current ? { ...current, neo4j_password: value } : current),
+                          (revealedValue) => setMemoryEngine((current) => current?.neo4j_password === revealedValue ? { ...current, neo4j_password: '' } : current),
+                        )}
+                      />
+                    </div>
+                  </label>
+                </div>
+
+                {memoryConnectionStatus.error ? (
+                  <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+                    {memoryConnectionStatus.error}
+                  </div>
+                ) : null}
+                {memoryConnectionStatus.status === 'connected' ? (
+                  <div className="mt-4 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
+                    Neo4j connesso
+                    {memoryConnectionStatus.embedding?.provider && memoryConnectionStatus.embedding?.model
+                      ? ` · embedding ${memoryConnectionStatus.embedding.provider}/${memoryConnectionStatus.embedding.model}${memoryConnectionStatus.embedding.dimensions ? ` (${memoryConnectionStatus.embedding.dimensions} dimensioni)` : ''}`
+                      : ''}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-6 text-sm text-gray-300">Nessuna configurazione Memory Engine disponibile.</div>
+          )}
         </section>
       ) : null}
 

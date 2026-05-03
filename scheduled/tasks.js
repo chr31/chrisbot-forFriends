@@ -18,6 +18,7 @@ const { upsertAdminInboxItem } = require('../utils/adminInbox');
 const { ADMIN_SHARED_OWNER } = require('../utils/adminAccess');
 const { ensureTaskChat } = require('../services/taskChat');
 const { getAgentDefaultModelConfig } = require('../services/aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
 
 const EMPTY_TASK_RESULT_MESSAGE = 'Run completata senza testo finale del modello.';
 
@@ -206,12 +207,21 @@ async function runTask(task, options = {}) {
     ]);
 
     const modelConfig = getAgentDefaultModelConfig(worker);
+    const taskMessages = [
+      { role: 'system', content: `${worker.system_prompt} Oggi e il ${new Date().toISOString()}` },
+      { role: 'user', content: requestText },
+    ];
+    const userMessage = taskMessages[1];
+    const memoryContextPacket = await runBeforeMemory({
+      agent: worker,
+      chatId: taskChatId,
+      messages: taskMessages,
+      userMessage,
+      modelConfig,
+    });
     const result = await runAgentConversation(
       worker,
-      [
-        { role: 'system', content: `${worker.system_prompt} Oggi e il ${new Date().toISOString()}` },
-        { role: 'user', content: requestText },
-      ],
+      taskMessages,
       {
         chatId: taskChatId,
         agentId: worker.id,
@@ -223,6 +233,17 @@ async function runTask(task, options = {}) {
         depth: 0,
       }
     );
+    await runAfterMemory({
+      agent: worker,
+      chatId: taskChatId,
+      messages: taskMessages,
+      userMessage,
+      assistantResponse: result,
+      toolCalls: [],
+      toolResults: [],
+      modelConfig,
+      beforePacket: memoryContextPacket,
+    });
 
     const resultText = serializeTaskResult(result);
     const visibleResultText = normalizeTaskResultMessage(resultText);

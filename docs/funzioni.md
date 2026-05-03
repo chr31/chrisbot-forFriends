@@ -52,6 +52,25 @@ Per collegare il servizio:
 - assicurati che il backend possa raggiungerlo in rete
 - se Ollama gira fuori dal container, esponilo alla rete e usa un `base_url` accessibile dal backend
 
+## Memorie
+
+Pagina: `Impostazioni > Memorie`
+
+Cosa permette:
+
+- abilitare o disabilitare il Memory Engine globale
+- scegliere il modello dedicato all'analisi delle memorie
+- selezionare il server Ollama quando il modello scelto e' locale
+- configurare URL, username e password Neo4j
+- verificare lo stato della connessione Neo4j
+
+Per collegare il servizio:
+
+- per Neo4j locale abilita il profilo `local-neo4j` in `COMPOSE_PROFILES`
+- usa come URL interno predefinito `bolt://neo4j:7687`
+- salva username e password dalla tab `Memorie`
+- usa `Test connessione` per verificare che il backend possa raggiungere Neo4j
+
 ## Telegram
 
 Pagina: `Impostazioni > Telegram`

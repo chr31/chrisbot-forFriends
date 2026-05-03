@@ -19,6 +19,7 @@ import {
 
 type AgentKind = 'worker' | 'orchestrator';
 type VisibilityScope = 'public' | 'restricted' | 'private';
+type MemoryScope = 'shared' | 'dedicated';
 
 type AgentPermission = {
   subject_type: 'user' | 'upn';
@@ -51,7 +52,9 @@ type Agent = {
   alive_context_messages: number;
   alive_include_goals: boolean;
   goals: string;
-  memories: string;
+  memory_engine_enabled: boolean;
+  improve_memories_enabled: boolean;
+  memory_scope: MemoryScope;
   is_active: boolean;
   tool_names: string[];
   permissions: AgentPermission[];
@@ -104,7 +107,9 @@ type FormState = {
   alive_context_messages: number;
   alive_include_goals: boolean;
   goals: string;
-  memories: string;
+  memory_engine_enabled: boolean;
+  improve_memories_enabled: boolean;
+  memory_scope: MemoryScope;
   is_active: boolean;
   tool_names: string[];
   relations: Array<{
@@ -140,7 +145,9 @@ const EMPTY_FORM: FormState = {
   alive_context_messages: 12,
   alive_include_goals: false,
   goals: '',
-  memories: '',
+  memory_engine_enabled: false,
+  improve_memories_enabled: false,
+  memory_scope: 'shared',
   is_active: true,
   tool_names: [],
   relations: [],
@@ -324,7 +331,9 @@ function formFromAgent(agent: Agent): FormState {
     alive_context_messages: agent.alive_context_messages || 12,
     alive_include_goals: agent.alive_include_goals,
     goals: agent.goals || '',
-    memories: agent.memories || '',
+    memory_engine_enabled: Boolean(agent.memory_engine_enabled),
+    improve_memories_enabled: Boolean(agent.improve_memories_enabled),
+    memory_scope: agent.memory_scope === 'dedicated' ? 'dedicated' : 'shared',
     is_active: agent.is_active,
     tool_names: agent.tool_names || [],
     relations: (agent.relations || [])
@@ -630,7 +639,9 @@ export default function AgentsPage() {
         alive_context_messages: normalizedAliveContextMessages,
         alive_include_goals: form.alive_include_goals,
         goals: form.goals,
-        memories: form.memories,
+        memory_engine_enabled: form.memory_engine_enabled,
+        improve_memories_enabled: form.improve_memories_enabled,
+        memory_scope: form.memory_scope,
         is_active: form.is_active,
         tool_names: form.tool_names,
         relations: form.kind === 'orchestrator'
@@ -717,6 +728,9 @@ export default function AgentsPage() {
         visibility_scope: updates.visibility_scope ?? agent.visibility_scope,
         direct_chat_enabled: updates.direct_chat_enabled ?? agent.direct_chat_enabled,
         is_active: updates.is_active ?? agent.is_active,
+        memory_engine_enabled: agent.memory_engine_enabled,
+        improve_memories_enabled: agent.improve_memories_enabled,
+        memory_scope: agent.memory_scope,
         tool_names: agent.tool_names,
         relations: agent.kind === 'orchestrator'
           ? (agent.relations || []).map((entry) => ({
@@ -787,7 +801,9 @@ export default function AgentsPage() {
         alive_context_messages: agent.alive_context_messages || 12,
         alive_include_goals: agent.alive_include_goals,
         goals: agent.goals || '',
-        memories: agent.memories || '',
+        memory_engine_enabled: agent.memory_engine_enabled,
+        improve_memories_enabled: agent.improve_memories_enabled,
+        memory_scope: agent.memory_scope,
         is_active: agent.is_active,
         tool_names: agent.tool_names || [],
         relations: agent.kind === 'orchestrator'
@@ -1198,6 +1214,54 @@ export default function AgentsPage() {
                           </div>
                         </div>
 
+                        <div className={`rounded-2xl border p-4 ${
+                          form.memory_engine_enabled || form.improve_memories_enabled ? 'border-sky-800/50 bg-sky-950/10' : 'border-gray-800 bg-gray-950/60'
+                        }`}>
+                          <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                            Memory Engine
+                            <InfoHint label="Memory Engine" description="Configura le funzioni di memoria dell'agente. Use memories attiva beforeMemory, Improve memories attiva afterMemory." />
+                          </p>
+                          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <label className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Tipo memoria <InfoHint label="Tipo memoria" description="Shared usa memorie condivise tra agenti. Dedicated limita lettura e scrittura allo scope di questo agente." /></span>
+                              <select
+                                value={form.memory_scope}
+                                onChange={(e) => setForm((current) => ({ ...current, memory_scope: e.target.value as MemoryScope }))}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              >
+                                <option value="shared">condivisa</option>
+                                <option value="dedicated">dedicata</option>
+                              </select>
+                            </label>
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <div className="text-sm text-gray-200">
+                                <span className="mb-1 flex items-center gap-2">Use memories <InfoHint label="Use memories" description="Quando e attivo, l'agente esegue beforeMemory per recuperare e usare memorie rilevanti prima della risposta." /></span>
+                                <div className="flex min-h-10 items-center">
+                                  <Toggle
+                                    checked={form.memory_engine_enabled}
+                                    onChange={() => setForm((current) => ({
+                                      ...current,
+                                      memory_engine_enabled: !current.memory_engine_enabled,
+                                    }))}
+                                  />
+                                </div>
+                              </div>
+                              <div className="text-sm text-gray-200">
+                                <span className="mb-1 flex items-center gap-2">Improve memories <InfoHint label="Improve memories" description="Quando e attivo, l'agente esegue afterMemory per aggiornare le memorie dopo le risposte." /></span>
+                                <div className="flex min-h-10 items-center">
+                                  <Toggle
+                                    checked={form.improve_memories_enabled}
+                                    onChange={() => setForm((current) => ({
+                                      ...current,
+                                      improve_memories_enabled: !current.improve_memories_enabled,
+                                    }))}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
                         <label className="block text-sm text-gray-200">
                           <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Se ometti il ruolo viene usato chat. Usa `username` o `username:manage` per l'identificativo interno, oppure `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it` o `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
                           <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username`, `username:manage`, `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it:manage`.</span>
@@ -1426,14 +1490,6 @@ export default function AgentsPage() {
                           />
                         </label>
 
-                        <label className="block text-sm text-gray-200">
-                          <span className="mb-1 flex items-center gap-2">Memories <InfoHint label="Memories" description="Memoria persistente dell'agente. Può essere letta/modificata anche tramite i tool interni get/edit memories." /></span>
-                          <textarea
-                            value={form.memories}
-                            onChange={(e) => setForm((current) => ({ ...current, memories: e.target.value }))}
-                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                          />
-                        </label>
                       </>
                     )}
 

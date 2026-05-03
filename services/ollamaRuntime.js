@@ -61,6 +61,10 @@ function resolveOllamaModelAlias(model, fallbackModel) {
   return String(model || fallbackModel || 'qwen3.5:9b').trim() || 'qwen3.5:9b';
 }
 
+function resolveOllamaEmbeddingModel(model, fallbackModel) {
+  return String(model || fallbackModel || '').trim();
+}
+
 function getEnabledConnections() {
   const settings = getOllamaRuntimeSettingsSync();
   const allConnections = Array.isArray(settings?.connections) ? settings.connections : [];
@@ -157,6 +161,159 @@ async function getRankedConnections(settings, candidates) {
   return ranked.map((entry) => entry.connection);
 }
 
+function normalizeEmbeddingInputs(input) {
+  const source = Array.isArray(input) ? input : [input];
+  const normalized = source
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+  if (normalized.length === 0) {
+    throw new Error('Testo embedding obbligatorio.');
+  }
+  return normalized;
+}
+
+function isValidEmbeddingVector(value) {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.every((entry) => Number.isFinite(Number(entry)));
+}
+
+function normalizeEmbeddingVector(value) {
+  return value.map((entry) => Number(entry));
+}
+
+function normalizeEmbeddingResponse(payload, expectedCount) {
+  if (Array.isArray(payload?.embeddings)) {
+    if (payload.embeddings.length === expectedCount && payload.embeddings.every(isValidEmbeddingVector)) {
+      return payload.embeddings.map(normalizeEmbeddingVector);
+    }
+  }
+
+  if (isValidEmbeddingVector(payload?.embedding) && expectedCount === 1) {
+    return [normalizeEmbeddingVector(payload.embedding)];
+  }
+
+  if (Array.isArray(payload?.data)) {
+    const rawEmbeddings = payload.data
+      .map((entry) => entry?.embedding)
+      .filter(Boolean);
+    if (rawEmbeddings.length === expectedCount && rawEmbeddings.every(isValidEmbeddingVector)) {
+      return rawEmbeddings.map(normalizeEmbeddingVector);
+    }
+  }
+
+  throw new Error('Risposta embedding Ollama non valida.');
+}
+
+async function postOllamaJson(connection, path, body, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${normalizeBaseUrl(connection.base_url)}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.error || payload?.message || `HTTP ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function callOllamaEmbedEndpoint(connection, model, inputs, settings) {
+  const payload = await postOllamaJson(connection, '/api/embed', {
+    model,
+    input: inputs.length === 1 ? inputs[0] : inputs,
+  }, settings.timeout_ms);
+  return normalizeEmbeddingResponse(payload, inputs.length);
+}
+
+async function callOllamaLegacyEmbeddingsEndpoint(connection, model, inputs, settings) {
+  const embeddings = [];
+  for (const input of inputs) {
+    const payload = await postOllamaJson(connection, '/api/embeddings', {
+      model,
+      prompt: input,
+    }, settings.timeout_ms);
+    embeddings.push(...normalizeEmbeddingResponse(payload, 1));
+  }
+  return embeddings;
+}
+
+function shouldTryLegacyEmbeddingsEndpoint(error) {
+  const status = Number(error?.status || 0);
+  const message = String(error?.message || '').toLowerCase();
+  return status === 404
+    || status === 405
+    || message.includes('not found')
+    || message.includes('unknown endpoint')
+    || message.includes('method not allowed');
+}
+
+async function callOllamaEmbeddings(input, model, options = {}) {
+  const settings = getOllamaRuntimeSettingsSync();
+  const inputs = normalizeEmbeddingInputs(input);
+  const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null);
+  const candidates = await getRankedConnections(settings, baseCandidates);
+  const attempts = [];
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const connection = candidates[index];
+    const runtimeDefaultModel = String(settings?.default_model || '').trim();
+    const resolvedModel = resolveOllamaEmbeddingModel(model, connection.default_model || runtimeDefaultModel);
+    if (!resolvedModel) {
+      throw new Error('Modello embedding Ollama obbligatorio.');
+    }
+
+    try {
+      let embeddings;
+      try {
+        embeddings = await callOllamaEmbedEndpoint(connection, resolvedModel, inputs, settings);
+      } catch (error) {
+        if (!shouldTryLegacyEmbeddingsEndpoint(error)) throw error;
+        attempts.push({
+          connection_id: connection.id,
+          endpoint: '/api/embed',
+          message: String(error?.message || error),
+        });
+        embeddings = await callOllamaLegacyEmbeddingsEndpoint(connection, resolvedModel, inputs, settings);
+      }
+
+      return {
+        embeddings,
+        connection: {
+          id: connection.id,
+          name: connection.name,
+          base_url: connection.base_url,
+          model: resolvedModel,
+          fallback_index: index,
+        },
+        attempts,
+      };
+    } catch (error) {
+      attempts.push({
+        connection_id: connection.id,
+        endpoint: 'embeddings',
+        message: String(error?.message || error),
+      });
+      const canFallback = settings.fallback_on_unavailable !== false && index < candidates.length - 1;
+      if (!canFallback || !isLikelyAvailabilityError(error)) {
+        throw new Error(`Ollama Embeddings error su ${connection.name}: ${error?.message || error}`);
+      }
+    }
+  }
+
+  throw new Error('Tutti i server Ollama configurati risultano non disponibili per gli embedding.');
+}
+
 async function callOllamaChatCompletions(messages, tools = null, model, options = {}) {
   const settings = getOllamaRuntimeSettingsSync();
   const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null);
@@ -209,8 +366,10 @@ async function callOllamaChatCompletions(messages, tools = null, model, options 
 
 module.exports = {
   resolveOllamaModelAlias,
+  resolveOllamaEmbeddingModel,
   getOllamaConnectionStatuses,
   getOrderedCandidateConnections,
   callOllamaChatCompletions,
+  callOllamaEmbeddings,
   getLoadLevel,
 };

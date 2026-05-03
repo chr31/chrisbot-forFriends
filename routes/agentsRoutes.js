@@ -29,16 +29,18 @@ router.get('/catalog', async (req, res) => {
         kind: agent.kind,
         user_description: agent.user_description || '',
         default_model_config: agent.default_model_config,
-      direct_chat_enabled: agent.direct_chat_enabled,
-      is_active: agent.is_active,
-      is_alive: agent.is_alive,
-      alive_loop_seconds: agent.alive_loop_seconds,
-      alive_prompt: agent.alive_prompt,
-      alive_context_messages: agent.alive_context_messages,
-      alive_include_goals: agent.alive_include_goals,
-      goals: agent.goals,
-      memories: agent.memories,
-    }));
+        direct_chat_enabled: agent.direct_chat_enabled,
+        is_active: agent.is_active,
+        is_alive: agent.is_alive,
+        alive_loop_seconds: agent.alive_loop_seconds,
+        alive_prompt: agent.alive_prompt,
+        alive_context_messages: agent.alive_context_messages,
+        alive_include_goals: agent.alive_include_goals,
+        goals: agent.goals,
+        memory_engine_enabled: agent.memory_engine_enabled,
+        improve_memories_enabled: agent.improve_memories_enabled,
+        memory_scope: agent.memory_scope,
+      }));
     return res.json(catalog);
   } catch (error) {
     console.error('Errore nel recupero catalogo agenti:', error);
@@ -66,7 +68,9 @@ function normalizeCreatePayload(body, username) {
     alive_context_messages: body?.alive_context_messages,
     alive_include_goals: body?.alive_include_goals,
     goals: body?.goals,
-    memories: body?.memories,
+    memory_engine_enabled: body?.memory_engine_enabled,
+    improve_memories_enabled: body?.improve_memories_enabled,
+    memory_scope: body?.memory_scope,
     is_active: body?.is_active,
     created_by: username,
   };

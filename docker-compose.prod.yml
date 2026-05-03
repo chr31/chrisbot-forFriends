@@ -18,6 +18,26 @@ services:
       retries: 12
     restart: unless-stopped
 
+  neo4j:
+    image: neo4j:5-community
+    container_name: chrisbot-neo4j
+    profiles:
+      - local-neo4j
+    environment:
+      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-change-me-neo4j}"
+    ports:
+      - "${NEO4J_HTTP_HOST_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_HOST_PORT:-7687}:7687"
+    volumes:
+      - chrisbot-neo4j-data:/data
+      - chrisbot-neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u \"$${NEO4J_AUTH%%/*}\" -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   chrisbot:
     image: ghcr.io/${OWNER:-owner}/${REPO:-chrisbot}-backend:${TAG:-latest}
     container_name: chrisbot
@@ -53,4 +73,6 @@ services:
 
 volumes:
   chrisbot-mysql-data:
+  chrisbot-neo4j-data:
+  chrisbot-neo4j-logs:
   chrisbot-routines-data:

@@ -12,8 +12,10 @@ const {
   deleteAliveAgentChatHistory,
 } = require('../database/db_alive_agent_chats');
 const { insertAgentRun, updateAgentRunIfStatus, getAgentRunsByChatId } = require('../database/db_agent_runs');
-const { runAgentConversation, buildInitialAgentHistory } = require('./agentRunner');
+const { runAgentConversation, buildInitialAgentHistory, sanitizeMessages } = require('./agentRunner');
 const { normalizeModelConfig, getAgentDefaultModelConfig, getDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
 
 const LOOP_POLL_MS = 1500;
 let loopTimer = null;
@@ -149,6 +151,20 @@ async function runAliveCycle(agentId, options = {}) {
       depth: 0,
       started_at: new Date(),
     });
+    const userMessage = history.slice().reverse().find((message) => message?.role === 'user') || null;
+    const memoryContextPacket = await runBeforeMemory({
+      agent,
+      chat: {
+        chatId: chat.chat_id,
+        messages: sanitizeMessages(history),
+        sourceMessages: history,
+        userMessage,
+        runId: run.id,
+        userKey: null,
+      },
+      runId: run.id,
+      modelConfig: effectiveModelConfig,
+    });
 
     try {
       const response = await runAgentConversation(agent, history, {
@@ -158,14 +174,32 @@ async function runAliveCycle(agentId, options = {}) {
         parentRunId: null,
         runId: run.id,
         parentAgentId: null,
-      modelConfig: effectiveModelConfig,
-      depth: 0,
-      messageWriter: insertAliveAgentMessages,
-    });
+        modelConfig: effectiveModelConfig,
+        depth: 0,
+        userKey: null,
+        messageWriter: insertAliveAgentMessages,
+      });
+      const afterMemoryPacket = await runAfterMemory({
+        agent,
+        chat: {
+          chatId: chat.chat_id,
+          runId: run.id,
+          messages: sanitizeMessages(history),
+          sourceMessages: history,
+          userMessage,
+          assistantResponse: response,
+          userKey: null,
+        },
+        modelConfig: effectiveModelConfig,
+        beforePacket: memoryContextPacket,
+        runId: run.id,
+        processStatus: 'completed',
+      });
 
       await updateAgentRunIfStatus(run.id, {
         status: 'completed',
         finished_at: new Date(),
+        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket),
       }, 'running');
 
       const refreshedChat = await getAliveAgentChatByAgentId(agent.id);
@@ -186,10 +220,40 @@ async function runAliveCycle(agentId, options = {}) {
         agent_id: agent.id,
       };
     } catch (error) {
+      let memoryTrace = null;
+      try {
+        const afterMemoryPacket = await runAfterMemory({
+          agent,
+          chat: {
+            chatId: chat.chat_id,
+            runId: run.id,
+            messages: sanitizeMessages(history),
+            sourceMessages: history,
+            userMessage,
+            assistantResponse: '',
+            error,
+            userKey: null,
+          },
+          modelConfig: effectiveModelConfig,
+          beforePacket: memoryContextPacket,
+          runId: run.id,
+          processStatus: 'failed',
+          error,
+        });
+        memoryTrace = buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket);
+      } catch (memoryError) {
+        memoryTrace = buildMemoryRunTrace(memoryContextPacket, {
+          enabled: false,
+          scope: agent?.memory_scope || 'shared',
+          warnings: [String(memoryError?.message || memoryError)],
+          skipped_reason: 'error',
+        });
+      }
       await updateAgentRunIfStatus(run.id, {
         status: 'failed',
         finished_at: new Date(),
         last_error: String(error?.message || error),
+        guardrail_result_json: memoryTrace,
       }, 'running');
       throw error;
     }

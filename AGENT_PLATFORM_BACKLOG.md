@@ -39,9 +39,14 @@ Il repository ha gia' in produzione i domini principali:
 - [ ] rimuovere documentazione e componenti residuali non piu' utili
 - [ ] ridurre ulteriormente il perimetro legacy dopo verifica di parity
 
+### 6. Memory Engine
+
+- [ ] valutare un reranking futuro delle memorie candidate solo dopo test sul comportamento attuale; non applicarlo ora. Il modello strutturale resta "versione corrente": le memorie non piu' utili devono essere sovrascritte, disattivate o eliminate, senza mantenere uno storico recuperabile delle versioni obsolete.
+
 ## Decisioni gia' prese
 
 - La chat agente e' il canale primario.
 - L'inbox serve per casi operativi e asincroni, non per duplicare la chat diretta.
 - I permessi devono essere enforced lato backend.
 - Nuove capability applicative devono nascere nei domini `agents`, `tasks` o `inbox`.
+- Il Memory Engine deve mantenere solo memorie operative aggiornate come stato corrente; gli episodi restano audit di run, non storico di versioni obsolete da recuperare.

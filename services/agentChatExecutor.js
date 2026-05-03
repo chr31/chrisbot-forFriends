@@ -6,11 +6,13 @@ const {
   getMessagesByAgentChatId,
   insertAgentMessages,
 } = require('../database/db_agent_chats');
-const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
+const { insertAgentRun, updateAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
 const { canUserAccessAgent } = require('./agentAccess');
-const { runAgentConversation, buildInitialAgentHistory, createChatId } = require('./agentRunner');
+const { runAgentConversation, buildInitialAgentHistory, createChatId, sanitizeMessages } = require('./agentRunner');
 const { ADMIN_SHARED_OWNER, isSuperAdminUser } = require('../utils/adminAccess');
 const { normalizeModelConfig, getAgentDefaultModelConfig, getDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
 
 function normalizeUserMessage(messages) {
   const userMessage = Array.isArray(messages) ? messages[messages.length - 1] : null;
@@ -125,18 +127,84 @@ async function prepareAgentChatExecution(input = {}) {
     started_at: new Date(),
   });
 
+  const memoryContextPacket = await runBeforeMemory({
+    agent,
+    chat: {
+      chatId: currentChatId,
+      messages: sanitizeMessages(history),
+      sourceMessages: history,
+      userMessage,
+      runId: run.id,
+      userKey: owner_username,
+      owner_username,
+    },
+    runId: run.id,
+    userKey: owner_username,
+    modelConfig: resolvedModelConfig,
+  });
+
+  await updateAgentRun(run.id, {
+    guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
+  });
+
   return {
     agent,
     run,
     chatId: currentChatId,
     history,
     modelConfig: resolvedModelConfig,
+    userMessage,
+    userKey: owner_username,
+    memoryContextPacket,
   };
 }
 
+function runAfterMemoryInBackground(prepared, response, processStatus, error = null) {
+  setImmediate(async () => {
+    let afterMemoryPacket = null;
+    try {
+      afterMemoryPacket = await runAfterMemory({
+        agent: prepared.agent,
+        chat: {
+          chatId: prepared.chatId,
+          runId: prepared.run.id,
+          messages: sanitizeMessages(prepared.history),
+          sourceMessages: prepared.history,
+          userMessage: prepared.userMessage,
+          assistantResponse: response || '',
+          error,
+          userKey: prepared.userKey || null,
+        },
+        modelConfig: prepared.modelConfig,
+        beforePacket: prepared.memoryContextPacket,
+        runId: prepared.run.id,
+        userKey: prepared.userKey || null,
+        processStatus,
+        error,
+      });
+    } catch (memoryError) {
+      afterMemoryPacket = {
+        enabled: false,
+        scope: prepared.agent?.memory_scope || 'shared',
+        warnings: [String(memoryError?.message || memoryError)],
+        skipped_reason: 'error',
+      };
+    }
+
+    try {
+      await updateAgentRun(prepared.run.id, {
+        guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, afterMemoryPacket),
+      });
+    } catch (traceError) {
+      console.error('Errore aggiornamento traccia afterMemory:', traceError);
+    }
+  });
+}
+
 async function finalizeAgentChatExecution(prepared) {
+  let response = '';
   try {
-    const response = await runAgentConversation(prepared.agent, prepared.history, {
+    response = await runAgentConversation(prepared.agent, prepared.history, {
       chatId: prepared.chatId,
       agentId: prepared.agent.id,
       ollamaServerId: prepared.modelConfig.ollama_server_id,
@@ -145,11 +213,14 @@ async function finalizeAgentChatExecution(prepared) {
       parentAgentId: null,
       modelConfig: prepared.modelConfig,
       depth: 0,
+      userKey: prepared.userKey || null,
     });
     await updateAgentRunIfStatus(prepared.run.id, {
       status: 'completed',
       finished_at: new Date(),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null, { includePendingAfter: true }),
     }, 'running');
+    runAfterMemoryInBackground(prepared, response, 'completed');
     return {
       response,
       chat_id: prepared.chatId,
@@ -161,7 +232,9 @@ async function finalizeAgentChatExecution(prepared) {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null, { includePendingAfter: true }),
     }, 'running');
+    runAfterMemoryInBackground(prepared, response, 'failed', error);
     throw error;
   }
 }

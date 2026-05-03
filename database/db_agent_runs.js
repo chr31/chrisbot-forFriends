@@ -120,6 +120,34 @@ async function updateAgentRunIfStatus(id, updates, expectedStatus) {
   return { changes: result.affectedRows };
 }
 
+async function updateAgentRun(id, updates) {
+  const entries = [];
+  const values = [];
+  if (updates.status !== undefined) {
+    entries.push('status = ?');
+    values.push(normalizeStatus(updates.status));
+  }
+  if (updates.finished_at !== undefined) {
+    entries.push('finished_at = ?');
+    values.push(updates.finished_at);
+  }
+  if (updates.last_error !== undefined) {
+    entries.push('last_error = ?');
+    values.push(String(updates.last_error || ''));
+  }
+  if (updates.guardrail_result_json !== undefined) {
+    entries.push('guardrail_result_json = ?');
+    values.push(JSON.stringify(updates.guardrail_result_json || {}));
+  }
+  if (entries.length === 0) return { changes: 0 };
+  values.push(id);
+  const [result] = await pool.query(
+    `UPDATE agent_runs SET ${entries.join(', ')} WHERE id = ?`,
+    values
+  );
+  return { changes: result.affectedRows };
+}
+
 async function getLatestAgentRunByChatId(chatId) {
   const [rows] = await pool.query('SELECT * FROM agent_runs WHERE chat_id = ? ORDER BY id DESC LIMIT 1', [chatId]);
   return rows?.[0] || null;
@@ -143,6 +171,7 @@ async function getAgentRunsByChatId(chatId) {
 module.exports = {
   initAgentRunsTable,
   insertAgentRun,
+  updateAgentRun,
   updateAgentRunIfStatus,
   getLatestAgentRunByChatId,
   getAgentRunsByChatId,

@@ -19,8 +19,10 @@ const {
 const { insertTaskEvent } = require('../database/db_tasks');
 const { getAgentChatByChatId, getMessagesByAgentChatId, insertAgentMessages } = require('../database/db_agent_chats');
 const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
-const { buildInitialAgentHistory, runAgentConversation } = require('../services/agentRunner');
+const { buildInitialAgentHistory, runAgentConversation, sanitizeMessages } = require('../services/agentRunner');
 const { getAgentDefaultModelConfig, normalizeModelConfig } = require('../services/aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('../services/memory/memoryRunTrace');
 
 router.use(authenticateToken);
 
@@ -84,21 +86,57 @@ async function continueInboxConversation(item, username, content) {
     depth: 0,
     started_at: new Date(),
   });
+  const modelConfig = normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent));
+  const userMessage = { role: 'user', content };
+  const memoryContextPacket = await runBeforeMemory({
+    agent,
+    chat: {
+      chatId: chat.chat_id,
+      messages: sanitizeMessages(history),
+      sourceMessages: history,
+      userMessage,
+      runId: run.id,
+      userKey: item.owner_username || username || null,
+      owner_username: item.owner_username || username || null,
+    },
+    runId: run.id,
+    userKey: item.owner_username || username || null,
+    modelConfig,
+  });
 
   try {
     const response = await runAgentConversation(agent, history, {
       chatId: chat.chat_id,
       agentId: agent.id,
-      ollamaServerId: normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent)).ollama_server_id,
+      ollamaServerId: modelConfig.ollama_server_id,
       parentRunId: null,
       runId: run.id,
       parentAgentId: null,
-      modelConfig: normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent)),
+      modelConfig,
       depth: 0,
+      userKey: item.owner_username || username || null,
+    });
+    const afterMemoryPacket = await runAfterMemory({
+      agent,
+      chat: {
+        chatId: chat.chat_id,
+        runId: run.id,
+        messages: sanitizeMessages(history),
+        sourceMessages: history,
+        userMessage,
+        assistantResponse: response,
+        userKey: item.owner_username || username || null,
+      },
+      modelConfig,
+      beforePacket: memoryContextPacket,
+      runId: run.id,
+      userKey: item.owner_username || username || null,
+      processStatus: 'completed',
     });
     await updateAgentRunIfStatus(run.id, {
       status: 'completed',
       finished_at: new Date(),
+      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket),
     }, 'running');
 
     const responseText = String(typeof response === 'string' ? response : JSON.stringify(response)).trim();
@@ -119,10 +157,41 @@ async function continueInboxConversation(item, username, content) {
     }
     return { runId: run.id, response: responseText };
   } catch (error) {
+    let memoryTrace = null;
+    try {
+      const afterMemoryPacket = await runAfterMemory({
+        agent,
+        chat: {
+          chatId: chat.chat_id,
+          runId: run.id,
+          messages: sanitizeMessages(history),
+          sourceMessages: history,
+          userMessage,
+          assistantResponse: '',
+          error,
+          userKey: item.owner_username || username || null,
+        },
+        modelConfig,
+        beforePacket: memoryContextPacket,
+        runId: run.id,
+        userKey: item.owner_username || username || null,
+        processStatus: 'failed',
+        error,
+      });
+      memoryTrace = buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket);
+    } catch (memoryError) {
+      memoryTrace = buildMemoryRunTrace(memoryContextPacket, {
+        enabled: false,
+        scope: agent?.memory_scope || 'shared',
+        warnings: [String(memoryError?.message || memoryError)],
+        skipped_reason: 'error',
+      });
+    }
     await updateAgentRunIfStatus(run.id, {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
+      guardrail_result_json: memoryTrace,
     }, 'running');
     await insertInboxMessage({
       inbox_item_id: item.id,

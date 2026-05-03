@@ -3,9 +3,11 @@ const { askOllamaChatCompletions } = require('../utils/askGpt');
 const { getMcpTools, callMcpTool } = require('../utils/mcpClient');
 const { getAgentById, getAgentToolNames, getAgentRelations } = require('../database/db_agents');
 const { insertAgentMessages } = require('../database/db_agent_chats');
-const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
+const { insertAgentRun, updateAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
 const { createOpenAiClient, getDefaultOpenAiModel } = require('./openaiRuntime');
 const { MODEL_PROVIDERS, normalizeModelConfig, getAgentDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
 
 function toToolContentString(value) {
   if (typeof value === 'string') return value;
@@ -314,6 +316,48 @@ function buildDelegatedWorkerSystemPrompt(agent) {
   ].join('\n\n');
 }
 
+function runChildAfterMemoryInBackground({ childAgent, childRun, childMessages, childModelConfig, childMemoryContextPacket, context, userMessage, assistantResponse, processStatus, error = null }) {
+  setImmediate(async () => {
+    let afterMemoryPacket = null;
+    try {
+      afterMemoryPacket = await runAfterMemory({
+        agent: childAgent,
+        chat: {
+          chatId: context.chatId,
+          messages: sanitizeMessages(childMessages),
+          sourceMessages: childMessages,
+          userMessage,
+          assistantResponse: assistantResponse || '',
+          runId: childRun.id,
+          error,
+          userKey: context.userKey || null,
+        },
+        modelConfig: childModelConfig,
+        beforePacket: childMemoryContextPacket,
+        runId: childRun.id,
+        userKey: context.userKey || null,
+        processStatus,
+        error,
+      });
+    } catch (memoryError) {
+      afterMemoryPacket = {
+        enabled: false,
+        scope: childAgent?.memory_scope || 'shared',
+        warnings: [String(memoryError?.message || memoryError)],
+        skipped_reason: 'error',
+      };
+    }
+
+    try {
+      await updateAgentRun(childRun.id, {
+        guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, afterMemoryPacket),
+      });
+    } catch (traceError) {
+      console.error('Errore aggiornamento traccia afterMemory worker:', traceError);
+    }
+  });
+}
+
 async function buildDelegationTools(orchestratorAgent) {
   if (orchestratorAgent.kind !== 'orchestrator') return { tools: [], childByToolName: new Map() };
   const relations = await getAgentRelations(orchestratorAgent.id);
@@ -526,15 +570,33 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         { role: 'system', content: buildDelegatedWorkerSystemPrompt(childAgent) },
         { role: 'user', content: delegatedTask },
       ];
+      const childModelConfig = getAgentDefaultModelConfig(childAgent);
       const childRun = await insertAgentRun({
         chat_id: context.chatId,
         agent_id: childAgent.id,
         parent_run_id: context.runId || null,
         status: 'running',
-        model_name: getAgentDefaultModelConfig(childAgent).model,
-        model_provider: getAgentDefaultModelConfig(childAgent).provider,
+        model_name: childModelConfig.model,
+        model_provider: childModelConfig.provider,
         depth: (context.depth || 0) + 1,
         started_at: new Date(),
+      });
+      const childMemoryContextPacket = await runBeforeMemory({
+        agent: childAgent,
+        chat: {
+          chatId: context.chatId,
+          messages: sanitizeMessages(childMessages),
+          sourceMessages: childMessages,
+          userMessage: childMessages[1],
+          runId: childRun.id,
+          userKey: context.userKey || null,
+        },
+        runId: childRun.id,
+        userKey: context.userKey || null,
+        modelConfig: childModelConfig,
+      });
+      await updateAgentRun(childRun.id, {
+        guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
       });
       let childResult;
       try {
@@ -544,8 +606,8 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           parentAgentId: agent.id,
           parentRunId: context.runId || null,
           runId: childRun.id,
-          modelConfig: getAgentDefaultModelConfig(childAgent),
-          ollamaServerId: getAgentDefaultModelConfig(childAgent).ollama_server_id || null,
+          modelConfig: childModelConfig,
+          ollamaServerId: childModelConfig.ollama_server_id || null,
           depth: context.depth + 1,
           messageWriter: context.messageWriter,
         }, 0, {
@@ -556,13 +618,38 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         await updateAgentRunIfStatus(childRun.id, {
           status: 'completed',
           finished_at: new Date(),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null, { includePendingAfter: true }),
         }, 'running');
+        runChildAfterMemoryInBackground({
+          childAgent,
+          childRun,
+          childMessages,
+          childModelConfig,
+          childMemoryContextPacket,
+          context,
+          userMessage: childMessages[1],
+          assistantResponse: childResult,
+          processStatus: 'completed',
+        });
       } catch (error) {
         await updateAgentRunIfStatus(childRun.id, {
           status: 'failed',
           finished_at: new Date(),
           last_error: String(error?.message || error),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null, { includePendingAfter: true }),
         }, 'running');
+        runChildAfterMemoryInBackground({
+          childAgent,
+          childRun,
+          childMessages,
+          childModelConfig,
+          childMemoryContextPacket,
+          context,
+          userMessage: childMessages[1],
+          assistantResponse: '',
+          processStatus: 'failed',
+          error,
+        });
         childResult = buildDelegatedWorkerErrorText(childAgent, error);
       }
 
@@ -715,5 +802,6 @@ module.exports = {
   runAgentConversation,
   buildAgentSystemPrompt,
   buildInitialAgentHistory,
+  sanitizeMessages,
   createChatId,
 };
