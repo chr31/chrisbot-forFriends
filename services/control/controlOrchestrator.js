@@ -29,6 +29,86 @@ function requireEnabled() {
   return settings;
 }
 
+function compactAliases(value = [], limit = 6) {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function compactLocation(entry = {}) {
+  const building = entry.building || {};
+  return {
+    building_id: building.id || null,
+    building: building.name || null,
+    aliases: compactAliases(building.aliases),
+    rooms: (Array.isArray(entry.rooms) ? entry.rooms : [])
+      .map((room) => ({
+        room_id: room.id || null,
+        room: room.name || null,
+        aliases: compactAliases(room.aliases),
+      }))
+      .filter((room) => room.room)
+      .sort((left, right) => left.room.localeCompare(right.room, 'it')),
+  };
+}
+
+function compactActionMatch(entry = {}) {
+  return {
+    device_id: entry.device?.id || null,
+    device: entry.device?.name || null,
+    device_type: entry.device?.device_type || null,
+    ip: entry.device?.ip || null,
+    location: {
+      building: entry.building?.name || null,
+      room: entry.room?.name || null,
+    },
+    action_id: entry.action?.id || null,
+    action: entry.action?.name || null,
+    intent: entry.action?.intent || null,
+    action_type: entry.action?.action_type || null,
+    risk_level: entry.action?.risk_level || null,
+    requires_confirmation: Boolean(entry.action?.requires_confirmation),
+    description: entry.action?.description || null,
+    execute_target: {
+      device_id: entry.device?.id || null,
+      action_id: entry.action?.id || null,
+    },
+  };
+}
+
+function shouldIncludeLocations(args = {}) {
+  if (args.include_locations === true) return true;
+  if (args.include_locations === false) return false;
+
+  const hasDeviceOrActionFilter = Boolean(
+    String(args.device_type || args.deviceType || args.action_type || args.intent || '').trim()
+  );
+  const hasExplicitLocationFilter = Boolean(String(args.building || args.room || '').trim());
+  const query = String(args.query || args.instruction || args.prompt || '').trim().toLowerCase();
+  const asksInventory = /\b(che|quali|elenca|lista|mostra|dimmi)\b/.test(query);
+  const locationTopic = /\b(sale|sala|room|rooms|stanze|stanza|aule|aula|edifici|edificio|building|buildings)\b/.test(query);
+
+  if (hasDeviceOrActionFilter) return false;
+  if (asksInventory && locationTopic) return true;
+  if (hasExplicitLocationFilter && !query) return true;
+  return false;
+}
+
+function withInferredLocationFilters(args = {}) {
+  const nextArgs = { ...args };
+  const query = String(args.query || args.instruction || args.prompt || '').trim().toLowerCase();
+  if (!String(nextArgs.building || '').trim()) {
+    if (/\b(?:college|collegio)\b/.test(query)) {
+      nextArgs.building = 'College';
+    } else {
+      const buildingMatch = query.match(/\b(?:in|nel|nello|nell'|edificio|building)\s+([a-z0-9_.-]+)\b/i);
+      if (buildingMatch?.[1]) nextArgs.building = buildingMatch[1];
+    }
+  }
+  return nextArgs;
+}
+
 function buildPromptSchemaPreview(args = {}) {
   const instruction = String(args.instruction || args.prompt || '').trim();
   if (!instruction) return null;
@@ -82,29 +162,19 @@ async function retrieveControlInfo(args = {}) {
   const tool = 'chrisbot_ControlEngine_retrieveInfo';
   try {
     requireEnabled();
-    const matches = await getRepository().search(args);
+    const repository = getRepository();
+    const includeLocations = shouldIncludeLocations(args);
+    const matches = await repository.search(args);
+    const locations = includeLocations ? await repository.listLocations(withInferredLocationFilters(args)) : [];
     return toolString({
       ok: true,
       tool,
       result: {
-        count: matches.length,
-        matches: matches.map((entry) => ({
-          device_id: entry.device?.id,
-          device_name: entry.device?.name,
-          device_type: entry.device?.device_type,
-          ip: entry.device?.ip || null,
-          location: {
-            building: entry.building?.name || null,
-            room: entry.room?.name || null,
-          },
-          action_id: entry.action?.id,
-          action_name: entry.action?.name,
-          intent: entry.action?.intent,
-          action_type: entry.action?.action_type,
-          risk_level: entry.action?.risk_level,
-          requires_confirmation: Boolean(entry.action?.requires_confirmation),
-          description: entry.action?.description || null,
-        })),
+        count: matches.length + locations.length,
+        match_count: matches.length,
+        location_count: locations.length,
+        locations: locations.map(compactLocation),
+        matches: matches.map(compactActionMatch),
       },
     });
   } catch (error) {

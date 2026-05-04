@@ -1,9 +1,7 @@
-const { execFile } = require('child_process');
+const { exec, execFile } = require('child_process');
 const net = require('net');
-const path = require('path');
 
 const DEFAULT_TIMEOUT_MS = 15000;
-const SCRIPT_ROOT = path.resolve(process.cwd(), 'runtime/control-actions');
 
 function runProcess(command, args = [], options = {}) {
   return new Promise((resolve) => {
@@ -23,20 +21,6 @@ function runProcess(command, args = [], options = {}) {
   });
 }
 
-function splitCommand(command) {
-  return String(command || '')
-    .match(/(?:[^\s"]+|"[^"]*")+/g)
-    ?.map((part) => part.replace(/^"|"$/g, '')) || [];
-}
-
-function resolveScriptCommand(command) {
-  const parts = splitCommand(command);
-  if (parts.length === 0) return null;
-  const scriptPath = path.resolve(SCRIPT_ROOT, parts[0]);
-  if (!scriptPath.startsWith(`${SCRIPT_ROOT}${path.sep}`) && scriptPath !== SCRIPT_ROOT) return null;
-  return { command: scriptPath, args: parts.slice(1) };
-}
-
 async function executePing(device, action) {
   const host = String(device?.ip || '').trim();
   if (!host) {
@@ -53,14 +37,29 @@ async function executePing(device, action) {
 }
 
 async function executeBash(device, action) {
-  const resolved = resolveScriptCommand(action?.command);
-  if (!resolved) {
+  const command = String(action?.command || '').trim();
+  if (!command) {
     return {
       status: 'failed',
-      error: 'Comando bash non consentito. Usa script sotto runtime/control-actions.',
+      error: 'Comando bash mancante nell azione.',
     };
   }
-  return runProcess(resolved.command, resolved.args, { timeout_ms: DEFAULT_TIMEOUT_MS });
+  return new Promise((resolve) => {
+    exec(command, {
+      timeout: DEFAULT_TIMEOUT_MS,
+      cwd: process.cwd(),
+      shell: '/bin/bash',
+      maxBuffer: 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      resolve({
+        status: error ? 'failed' : 'success',
+        exit_code: Number.isFinite(error?.code) ? error.code : 0,
+        stdout: String(stdout || '').slice(0, 8000),
+        stderr: String(stderr || '').slice(0, 8000),
+        error: error ? String(error.message || error) : null,
+      });
+    });
+  });
 }
 
 function executeTelnetLike(device, action, params = {}) {

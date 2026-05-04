@@ -13,6 +13,12 @@ const {
 } = require('../controlSchema');
 
 const schemaCache = new Set();
+const SEARCH_ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ping']);
+const SEARCH_INTENTS = new Set(['control', 'monitoring']);
+const QUERY_STOPWORDS = new Set([
+  'the', 'and', 'with', 'for', 'status', 'check', 'controllare', 'controlla',
+  'verifica', 'verificare', 'stato', 'online', 'college', 'edificio', 'building',
+]);
 
 const SCHEMA_STATEMENTS = [
   'CREATE CONSTRAINT control_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
@@ -53,6 +59,27 @@ function buildAliasesSearchClause(aliasParam) {
     OR toLower(n.name) CONTAINS $${aliasParam}
     OR any(alias IN coalesce(n.aliases, []) WHERE toLower(alias) CONTAINS $${aliasParam})
   )`;
+}
+
+function normalizeOptionalSearchEnum(value, allowedValues) {
+  const normalized = normalizeText(value, 80).toLowerCase();
+  return allowedValues.has(normalized) ? normalized : null;
+}
+
+function buildQueryTokens(value) {
+  const normalized = normalizeText(value, 600)
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, ' ');
+  const seen = new Set();
+  const tokens = [];
+  for (const token of normalized.split(/[^a-z0-9_]+/)) {
+    if (token.length < 3 || QUERY_STOPWORDS.has(token) || seen.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+    if (tokens.length >= 8) break;
+  }
+  return tokens;
 }
 
 function normalizeBuilding(input = {}) {
@@ -284,14 +311,16 @@ class Neo4jControlRepository {
 
   async search(input = {}) {
     const query = normalizeText(input.query, 600).toLowerCase();
+    const queryTokens = buildQueryTokens(query);
     const building = normalizeText(input.building, 120).toLowerCase() || null;
     const room = normalizeText(input.room, 120).toLowerCase() || null;
     const deviceType = normalizeKey(input.device_type || input.deviceType) || null;
-    const intent = input.intent ? normalizeIntent(input.intent) : null;
-    const actionType = input.action_type ? normalizeActionType(input.action_type) : null;
+    const intent = normalizeOptionalSearchEnum(input.intent, SEARCH_INTENTS);
+    const actionType = normalizeOptionalSearchEnum(input.action_type, SEARCH_ACTION_TYPES);
     const limit = Math.min(Math.max(Number.parseInt(String(input.limit || 30), 10) || 30, 1), 100);
 
     return this.withSession('read', async (session) => {
+      const neo4j = loadNeo4jDriver();
       const result = await session.run(
         `
         MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(d:ControlDevice)
@@ -300,18 +329,31 @@ class Neo4jControlRepository {
         WITH d, coalesce(b, b2) AS building, r
         WHERE d.enabled <> false
           AND ($deviceType IS NULL OR d.device_type = $deviceType OR $deviceType IN coalesce(d.tags, []))
-          AND ($query = '' OR toLower(d.name) CONTAINS $query OR any(alias IN coalesce(d.aliases, []) WHERE toLower(alias) CONTAINS $query) OR any(tag IN coalesce(d.tags, []) WHERE toLower(tag) CONTAINS $query))
+          AND (
+            $query = ''
+            OR toLower(d.name) CONTAINS $query
+            OR any(alias IN coalesce(d.aliases, []) WHERE toLower(alias) CONTAINS $query)
+            OR any(tag IN coalesce(d.tags, []) WHERE toLower(tag) CONTAINS $query)
+            OR any(token IN $queryTokens WHERE toLower(d.name) CONTAINS token OR d.device_type CONTAINS token OR any(alias IN coalesce(d.aliases, []) WHERE toLower(alias) CONTAINS token) OR any(tag IN coalesce(d.tags, []) WHERE toLower(tag) CONTAINS token))
+          )
           AND ($building IS NULL OR (building IS NOT NULL AND (toLower(building.name) CONTAINS $building OR any(alias IN coalesce(building.aliases, []) WHERE toLower(alias) CONTAINS $building))))
           AND ($room IS NULL OR (r IS NOT NULL AND (toLower(r.name) CONTAINS $room OR any(alias IN coalesce(r.aliases, []) WHERE toLower(alias) CONTAINS $room))))
         MATCH (d)-[:CAN_EXECUTE]->(a:ControlAction)
         WHERE a.enabled <> false
           AND ($intent IS NULL OR a.intent = $intent)
           AND ($actionType IS NULL OR a.action_type = $actionType)
-          AND ($query = '' OR toLower(a.name) CONTAINS $query OR toLower(coalesce(a.description, '')) CONTAINS $query OR any(alias IN coalesce(a.aliases, []) WHERE toLower(alias) CONTAINS $query) OR toLower(d.name) CONTAINS $query)
+          AND (
+            $query = ''
+            OR toLower(a.name) CONTAINS $query
+            OR toLower(coalesce(a.description, '')) CONTAINS $query
+            OR any(alias IN coalesce(a.aliases, []) WHERE toLower(alias) CONTAINS $query)
+            OR toLower(d.name) CONTAINS $query
+            OR any(token IN $queryTokens WHERE toLower(a.name) CONTAINS token OR toLower(coalesce(a.description, '')) CONTAINS token OR a.action_type CONTAINS token OR a.intent CONTAINS token OR toLower(d.name) CONTAINS token OR d.device_type CONTAINS token OR any(alias IN coalesce(a.aliases, []) WHERE toLower(alias) CONTAINS token))
+          )
         RETURN d, a, building, r
         LIMIT $limit
         `,
-        { graphId: CONTROL_GRAPH_ID, query, building, room, deviceType, intent, actionType, limit }
+        { graphId: CONTROL_GRAPH_ID, query, queryTokens, building, room, deviceType, intent, actionType, limit: neo4j.int(limit) }
       );
       return result.records.map((record) => ({
         device: mapNodeProperties(record.get('d')),
@@ -322,12 +364,64 @@ class Neo4jControlRepository {
     });
   }
 
+  async listLocations(input = {}) {
+    const query = normalizeText(input.query, 600).toLowerCase();
+    const building = normalizeText(input.building, 120).toLowerCase() || null;
+    const room = normalizeText(input.room, 120).toLowerCase() || null;
+    const limit = Math.min(Math.max(Number.parseInt(String(input.limit || 50), 10) || 50, 1), 200);
+
+    return this.withSession('read', async (session) => {
+      const neo4j = loadNeo4jDriver();
+      const result = await session.run(
+        `
+        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(b:ControlBuilding)
+        WHERE (
+          $building IS NULL
+          OR toLower(b.name) CONTAINS $building
+          OR any(alias IN coalesce(b.aliases, []) WHERE toLower(alias) CONTAINS $building)
+        )
+        AND (
+          $query = ''
+          OR $query CONTAINS toLower(b.name)
+          OR toLower(b.name) CONTAINS $query
+          OR any(alias IN coalesce(b.aliases, []) WHERE $query CONTAINS toLower(alias) OR toLower(alias) CONTAINS $query)
+          OR $query CONTAINS 'sala'
+          OR $query CONTAINS 'sale'
+          OR $query CONTAINS 'stanza'
+          OR $query CONTAINS 'stanze'
+          OR $query CONTAINS 'room'
+          OR $query CONTAINS 'aula'
+        )
+        OPTIONAL MATCH (b)-[:HAS_ROOM]->(r:ControlRoom)
+        WHERE (
+          $room IS NULL
+          OR r IS NULL
+          OR toLower(r.name) CONTAINS $room
+          OR any(alias IN coalesce(r.aliases, []) WHERE toLower(alias) CONTAINS $room)
+        )
+        RETURN b, collect(r)[0..$limit] AS rooms
+        LIMIT $limit
+        `,
+        { graphId: CONTROL_GRAPH_ID, query, building, room, limit: neo4j.int(limit) }
+      );
+      return result.records.map((record) => ({
+        building: mapNodeProperties(record.get('b')),
+        rooms: (record.get('rooms') || []).filter(Boolean).map(mapNodeProperties),
+      }));
+    });
+  }
+
   async getActionTargets(targets = []) {
     const normalizedTargets = (Array.isArray(targets) ? targets : [])
-      .map((target) => ({
-        device_id: normalizeText(target.device_id || target.deviceId, 240),
-        action_id: normalizeText(target.action_id || target.actionId, 240),
-      }))
+      .flatMap((target) => {
+        const source = target?.execute_target && typeof target.execute_target === 'object'
+          ? target.execute_target
+          : target;
+        return [{
+          device_id: normalizeText(source?.device_id || source?.deviceId || source?.device?.id, 240),
+          action_id: normalizeText(source?.action_id || source?.actionId || source?.action?.id, 240),
+        }];
+      })
       .filter((target) => target.device_id && target.action_id);
     if (normalizedTargets.length === 0) return [];
 
