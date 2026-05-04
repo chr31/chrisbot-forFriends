@@ -316,6 +316,21 @@ function hasToolLessonShape(text) {
   return /\b(tool|api|endpoint|comando|parametr[oi]|errore|fallback|timeout|richiede|restituisce|fallisce)\b/i.test(text);
 }
 
+function hasStableOperationalEvidence(text) {
+  return /\b(asset|device|dispositivo|servizio|service|endpoint|stream|id|identificativ[oi]|sensore|sensor|media_player|switch|relay|controller|host|url|fallback|parametr[oi])\b/i.test(text);
+}
+
+function isGenericToolRunStatus(candidate = {}) {
+  const text = normalizeText([
+    candidate.topic,
+    candidate.information,
+  ].filter(Boolean).join(' '), 1400);
+  if (!/\b(tool|api|endpoint|comando|funzione|function)\b/i.test(text)) return false;
+  const reportsOnlyRunOutcome = /\b(riuscit[oaie]|successo|success|completed|completat[oaie]|fallit[oaie]|failed|errore|error|funzionat[oaie]|eseguit[oaie])\b/i.test(text);
+  if (!reportsOnlyRunOutcome) return false;
+  return !hasStableOperationalEvidence(text);
+}
+
 function normalizeTopicKey(candidate = {}) {
   const subject = normalizeText(candidate.topic || '', 180)
     .toLowerCase()
@@ -403,6 +418,7 @@ function isValidOperationalCandidate(candidate = {}) {
   if (candidate.memory_type === 'action_history') return false;
   if (candidate.memory_type === 'procedure' && !hasWorkflowShape(information)) return false;
   if (candidate.memory_type === 'tool_lesson' && !hasToolLessonShape(information)) return false;
+  if (isGenericToolRunStatus(candidate)) return false;
   if (isProbablyPersonalMemory(information)) return false;
   if (isProbablyGenericOrTransient(information)) return false;
   if (candidate.category === 'goal') return false;
