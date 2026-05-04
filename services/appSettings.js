@@ -8,6 +8,7 @@ const SETTINGS_KEYS = Object.freeze({
   openaiRuntime: 'openai_runtime',
   telegramRuntime: 'telegram_runtime',
   memoryEngine: 'memory_engine',
+  controlEngine: 'control_engine',
 });
 
 const settingsCache = {
@@ -17,6 +18,7 @@ const settingsCache = {
   openaiRuntime: null,
   telegramRuntime: null,
   memoryEngine: null,
+  controlEngine: null,
 };
 
 const DEFAULT_ADMIN_GROUP = 'chrisbot.admin';
@@ -153,6 +155,13 @@ function buildDefaultMemoryEngineSettings() {
   };
 }
 
+function buildDefaultControlEngineSettings() {
+  return {
+    enabled: false,
+    execution_enabled: false,
+  };
+}
+
 function normalizePortalAccessSettings(value) {
   const defaults = buildDefaultPortalAccessSettings();
   return {
@@ -214,6 +223,14 @@ function normalizeMemoryEngineSettings(value) {
     neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
     neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
     neo4j_password: String(value?.neo4j_password || '').trim(),
+  };
+}
+
+function normalizeControlEngineSettings(value) {
+  const defaults = buildDefaultControlEngineSettings();
+  return {
+    enabled: parseBoolean(value?.enabled, defaults.enabled),
+    execution_enabled: parseBoolean(value?.execution_enabled, defaults.execution_enabled),
   };
 }
 
@@ -465,6 +482,10 @@ function redactMemoryEngineSettings(value) {
   };
 }
 
+function redactControlEngineSettings(value) {
+  return { ...value };
+}
+
 function preserveMcpHeaderSecrets(normalized, incoming, current) {
   const currentById = new Map((current?.connections || []).map((connection) => [connection.id, connection]));
   const incomingById = new Map((incoming?.connections || []).map((connection) => [String(connection?.id || ''), connection]));
@@ -548,6 +569,11 @@ async function initializeAppSettings() {
       serialize: serializeMemoryEngineSettings,
     }
   );
+  settingsCache.controlEngine = await loadOrSeedSetting(
+    SETTINGS_KEYS.controlEngine,
+    buildDefaultControlEngineSettings,
+    normalizeControlEngineSettings
+  );
 }
 
 function getPortalAccessSettingsSync() {
@@ -590,6 +616,13 @@ function getMemoryEngineSettingsSync() {
     settingsCache.memoryEngine = normalizeMemoryEngineSettings(buildDefaultMemoryEngineSettings());
   }
   return settingsCache.memoryEngine;
+}
+
+function getControlEngineSettingsSync() {
+  if (!settingsCache.controlEngine) {
+    settingsCache.controlEngine = normalizeControlEngineSettings(buildDefaultControlEngineSettings());
+  }
+  return settingsCache.controlEngine;
 }
 
 async function updatePortalAccessSettings(nextValue) {
@@ -663,12 +696,21 @@ async function updateMemoryEngineSettings(nextValue) {
   return normalized;
 }
 
+async function updateControlEngineSettings(nextValue) {
+  const current = getControlEngineSettingsSync();
+  const normalized = normalizeControlEngineSettings({ ...current, ...(nextValue || {}) });
+  await setSetting(SETTINGS_KEYS.controlEngine, normalized);
+  settingsCache.controlEngine = normalized;
+  return normalized;
+}
+
 function getSettingsSnapshot(options = {}) {
   const redactSecrets = options.redactSecrets !== false;
   const portalAccess = getPortalAccessSettingsSync();
   const openAiRuntime = getOpenAiRuntimeSettingsSync();
   const telegramRuntime = getTelegramRuntimeSettingsSync();
   const memoryEngine = getMemoryEngineSettingsSync();
+  const controlEngine = getControlEngineSettingsSync();
   return {
     portal_access: redactSecrets ? redactPortalAccessSettings(portalAccess) : portalAccess,
     mcp_runtime: redactSecrets ? redactMcpRuntimeSettings(getMcpRuntimeSettingsSync()) : getMcpRuntimeSettingsSync(),
@@ -676,6 +718,7 @@ function getSettingsSnapshot(options = {}) {
     openai_runtime: redactSecrets ? redactOpenAiRuntimeSettings(openAiRuntime) : openAiRuntime,
     telegram_runtime: redactSecrets ? redactTelegramRuntimeSettings(telegramRuntime) : telegramRuntime,
     memory_engine: redactSecrets ? redactMemoryEngineSettings(memoryEngine) : memoryEngine,
+    control_engine: redactSecrets ? redactControlEngineSettings(controlEngine) : controlEngine,
   };
 }
 
@@ -719,12 +762,14 @@ module.exports = {
   getOpenAiRuntimeSettingsSync,
   getTelegramRuntimeSettingsSync,
   getMemoryEngineSettingsSync,
+  getControlEngineSettingsSync,
   updatePortalAccessSettings,
   updateMcpRuntimeSettings,
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
   updateMemoryEngineSettings,
+  updateControlEngineSettings,
   revealSettingsSecret,
   getSettingsSnapshot,
 };

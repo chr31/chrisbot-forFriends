@@ -22,6 +22,10 @@ type SettingsPayload = {
   memory_engine?: {
     neo4j_browser_url?: string;
   };
+  control_engine?: {
+    enabled?: boolean;
+    execution_enabled?: boolean;
+  };
 };
 
 type MemoryPacket = {
@@ -97,6 +101,15 @@ type MemoryResponse = {
     skipped_reason?: string;
     error?: string;
   };
+};
+
+type EngineTab = 'memory' | 'control';
+type ControlAction = 'retrieveInfo' | 'updateSchema' | 'executeAction';
+type ControlResult = {
+  ok?: boolean;
+  tool?: string;
+  result?: any;
+  error?: string;
 };
 
 function displayValue(value: unknown) {
@@ -183,8 +196,14 @@ export default function MemoryEnginePage() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [neo4jBrowserUrl, setNeo4jBrowserUrl] = useState('');
+  const [activeEngineTab, setActiveEngineTab] = useState<EngineTab>('memory');
+  const [controlEnabled, setControlEnabled] = useState(false);
+  const [controlExecutionEnabled, setControlExecutionEnabled] = useState(false);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [prompt, setPrompt] = useState('');
+  const [controlPayload, setControlPayload] = useState('');
+  const [controlResult, setControlResult] = useState<ControlResult | null>(null);
+  const [controlAction, setControlAction] = useState<ControlAction | null>(null);
   const [memoryScope, setMemoryScope] = useState<'shared' | 'dedicated'>('shared');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [items, setItems] = useState<MemoryItem[]>([]);
@@ -193,6 +212,7 @@ export default function MemoryEnginePage() {
   const [generatedAnswer, setGeneratedAnswer] = useState<MemoryResponse['generated_answer'] | null>(null);
   const [processLog, setProcessLog] = useState<ProcessLogStep[]>([]);
   const [isRunning, setIsRunning] = useState<MemoryResponse['action'] | null>(null);
+  const [isControlRunning, setIsControlRunning] = useState<ControlAction | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const authFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -225,6 +245,8 @@ export default function MemoryEnginePage() {
           if (settingsResponse.ok) {
             const settingsBody = await settingsResponse.json().catch(() => ({})) as SettingsPayload;
             setNeo4jBrowserUrl(String(settingsBody.memory_engine?.neo4j_browser_url || '').trim());
+            setControlEnabled(Boolean(settingsBody.control_engine?.enabled));
+            setControlExecutionEnabled(Boolean(settingsBody.control_engine?.execution_enabled));
           }
         }
       } catch (_) {
@@ -239,6 +261,10 @@ export default function MemoryEnginePage() {
   const canRun = useMemo(
     () => Boolean(prompt.trim()) && !isRunning && (memoryScope === 'shared' || Boolean(selectedAgentId)),
     [prompt, isRunning, memoryScope, selectedAgentId]
+  );
+  const canRunControl = useMemo(
+    () => Boolean(prompt.trim() || controlPayload.trim()) && !isControlRunning && controlEnabled,
+    [prompt, controlPayload, isControlRunning, controlEnabled]
   );
 
   const runMemoryAction = async (action: MemoryResponse['action']) => {
@@ -272,6 +298,47 @@ export default function MemoryEnginePage() {
     }
   };
 
+  const parseControlPayload = () => {
+    const cleanPayload = controlPayload.trim();
+    if (!cleanPayload) return {};
+    try {
+      return JSON.parse(cleanPayload);
+    } catch (error: any) {
+      throw new Error(`JSON Control Engine non valido: ${error?.message || error}`);
+    }
+  };
+
+  const runControlAction = async (action: ControlAction) => {
+    setIsControlRunning(action);
+    setError(null);
+    setControlResult(null);
+    try {
+      const extraPayload = parseControlPayload();
+      const endpoint = action === 'retrieveInfo'
+        ? '/api/control-engine/retrieve'
+        : action === 'updateSchema'
+          ? '/api/control-engine/schema'
+          : '/api/control-engine/execute';
+      const response = await authFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          query: prompt.trim(),
+          instruction: prompt.trim(),
+          dry_run: false,
+          ...extraPayload,
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as ControlResult;
+      if (!response.ok) throw new Error(body?.error || 'Operazione Control Engine non riuscita.');
+      setControlResult(body);
+      setControlAction(action);
+    } catch (err: any) {
+      setError(err?.message || 'Errore durante il test Control Engine.');
+    } finally {
+      setIsControlRunning(null);
+    }
+  };
+
   if (!isLoadingUser && authUser && !authUser.is_super_admin) {
     return <div className="p-8 text-white">Accesso riservato agli amministratori.</div>;
   }
@@ -282,10 +349,10 @@ export default function MemoryEnginePage() {
         <section className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Memory Engine</p>
-              <h1 className="mt-2 text-3xl font-bold text-white">Memory engine access</h1>
+              <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Engine monitor</p>
+              <h1 className="mt-2 text-3xl font-bold text-white">Graph engine access</h1>
               <p className="mt-2 max-w-3xl text-sm text-gray-300">
-                Console admin per verificare utente, agente, argomento e informazione salvata o recuperata.
+                Console admin per recuperare, aggiornare e verificare i grafi Memory Engine e Control Engine.
               </p>
             </div>
             <a
@@ -305,8 +372,29 @@ export default function MemoryEnginePage() {
             </a>
           </div>
 
+          <div className="mt-5 inline-flex rounded-xl border border-gray-800 bg-gray-950 p-1">
+            {[
+              { id: 'memory' as const, label: 'Memory Engine' },
+              { id: 'control' as const, label: 'Control Engine' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveEngineTab(tab.id)}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                  activeEngineTab === tab.id
+                    ? 'bg-sky-600 text-white'
+                    : 'text-gray-300 hover:bg-gray-900'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
           <div className="mt-5 space-y-3">
-            <div className="grid gap-3 md:grid-cols-2">
+            {activeEngineTab === 'memory' ? (
+              <div className="grid gap-3 md:grid-cols-2">
               <label className="text-xs font-semibold uppercase tracking-normal text-gray-500">
                 Scope
                 <select
@@ -337,7 +425,17 @@ export default function MemoryEnginePage() {
                   )}
                 </select>
               </label>
-            </div>
+              </div>
+            ) : (
+              <div className="grid gap-3 text-sm md:grid-cols-2">
+                <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-gray-300">
+                  Control Engine: {controlEnabled ? 'attivo' : 'disattivo'}
+                </div>
+                <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-gray-300">
+                  Esecuzione azioni: {controlExecutionEnabled ? 'attiva' : 'disattiva'}
+                </div>
+              </div>
+            )}
 
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
               <div className="min-h-12 flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
@@ -345,38 +443,110 @@ export default function MemoryEnginePage() {
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 rows={3}
-                placeholder="Scrivi un prompt per cercare o proporre memorie..."
+                placeholder={activeEngineTab === 'memory'
+                  ? 'Scrivi un prompt per cercare o proporre memorie...'
+                  : 'Scrivi un prompt per interrogare o aggiornare il grafo control...'}
                 className="min-h-16 w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
               />
               </div>
               <div className="flex shrink-0 flex-col gap-3">
-              <button
-                type="button"
-                onClick={() => runMemoryAction('getMemories')}
-                disabled={!canRun}
-                className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <CircleStackIcon className="h-5 w-5" />
-                {isRunning === 'getMemories' ? 'get...' : 'getMemories'}
-              </button>
-              <button
-                type="button"
-                onClick={() => runMemoryAction('setMemories')}
-                disabled={!canRun}
-                className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <SparklesIcon className="h-5 w-5" />
-                {isRunning === 'setMemories' ? 'set...' : 'setMemories'}
-              </button>
+              {activeEngineTab === 'memory' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => runMemoryAction('getMemories')}
+                    disabled={!canRun}
+                    className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CircleStackIcon className="h-5 w-5" />
+                    {isRunning === 'getMemories' ? 'get...' : 'getMemories'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runMemoryAction('setMemories')}
+                    disabled={!canRun}
+                    className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <SparklesIcon className="h-5 w-5" />
+                    {isRunning === 'setMemories' ? 'set...' : 'setMemories'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => runControlAction('retrieveInfo')}
+                    disabled={!canRunControl}
+                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CircleStackIcon className="h-5 w-5" />
+                    {isControlRunning === 'retrieveInfo' ? 'retrieve...' : 'retrieveInfo'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runControlAction('updateSchema')}
+                    disabled={!canRunControl}
+                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <SparklesIcon className="h-5 w-5" />
+                    {isControlRunning === 'updateSchema' ? 'schema...' : 'updateSchema'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runControlAction('executeAction')}
+                    disabled={!canRunControl || !controlExecutionEnabled}
+                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isControlRunning === 'executeAction' ? 'execute...' : 'executeAction'}
+                  </button>
+                </>
+              )}
               </div>
             </div>
+            {activeEngineTab === 'control' ? (
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
+                <textarea
+                  value={controlPayload}
+                  onChange={(event) => setControlPayload(event.target.value)}
+                  rows={5}
+                  placeholder={'JSON opzionale: {"device_type":"printer","intent":"monitoring"} oppure {"schema":{"building":...}}'}
+                  className="min-h-28 w-full resize-y bg-transparent font-mono text-xs text-white outline-none placeholder:text-gray-500"
+                />
+              </div>
+            ) : null}
           </div>
 
           {error ? (
             <div className="mt-6 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>
           ) : null}
 
-          {lastPacket ? (
+          {activeEngineTab === 'control' && controlResult ? (
+            <div className="mt-6 rounded-2xl border border-gray-800 bg-gray-950/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Control result</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">{controlAction || controlResult.tool || 'Control Engine'}</h2>
+                </div>
+                <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                  controlResult.ok === false
+                    ? 'border-rose-800 bg-rose-950/40 text-rose-200'
+                    : 'border-emerald-800 bg-emerald-950/40 text-emerald-200'
+                }`}>
+                  {controlResult.ok === false ? 'error' : 'ok'}
+                </span>
+              </div>
+              {controlResult.error ? (
+                <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+                  {controlResult.error}
+                </div>
+              ) : null}
+              <pre className="mt-4 max-h-[32rem] overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs leading-relaxed text-gray-200">
+                {formatDetails(controlResult.result || controlResult)}
+              </pre>
+            </div>
+          ) : null}
+
+          {activeEngineTab === 'memory' && lastPacket ? (
             <div className="mt-6 grid gap-3 text-sm md:grid-cols-2">
               <div className="border-b border-gray-800 pb-3">
                 <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Richiesta</p>
@@ -430,7 +600,7 @@ export default function MemoryEnginePage() {
             </div>
           ) : null}
 
-          {processLog.length > 0 ? (
+          {activeEngineTab === 'memory' && processLog.length > 0 ? (
             <div className="mt-6 border-t border-gray-800 pt-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -473,6 +643,7 @@ export default function MemoryEnginePage() {
             </div>
           ) : null}
 
+          {activeEngineTab === 'memory' ? (
           <div className="mt-6 overflow-x-auto rounded-2xl border border-gray-800 bg-gray-950/70">
             <table className="min-w-full divide-y divide-gray-800 text-sm">
               <thead className="bg-gray-950/90 text-left text-xs uppercase tracking-normal text-gray-400">
@@ -538,8 +709,9 @@ export default function MemoryEnginePage() {
               </tbody>
             </table>
           </div>
+          ) : null}
 
-          {lastPacket ? (
+          {activeEngineTab === 'memory' && lastPacket ? (
             <div className="mt-4 grid gap-3 text-xs text-gray-400 sm:grid-cols-3">
               <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2">
                 Enabled: {String(Boolean(lastPacket.enabled))}

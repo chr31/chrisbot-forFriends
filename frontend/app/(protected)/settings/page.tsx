@@ -103,6 +103,11 @@ type MemoryEngineSettings = {
   neo4j_password_configured?: boolean;
 };
 
+type ControlEngineSettings = {
+  enabled: boolean;
+  execution_enabled: boolean;
+};
+
 type TelegramUserLink = {
   id: number;
   subject_type: 'user' | 'upn';
@@ -171,6 +176,7 @@ type SettingsPayload = {
   openai_runtime: OpenAiRuntimeSettings;
   telegram_runtime: TelegramRuntimeSettings;
   memory_engine: MemoryEngineSettings;
+  control_engine: ControlEngineSettings;
 };
 
 type SecretRevealTarget = {
@@ -394,6 +400,8 @@ export default function SettingsPage() {
   const [isSavingOpenAi, setIsSavingOpenAi] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [isClearingMemory, setIsClearingMemory] = useState(false);
+  const [isSavingControl, setIsSavingControl] = useState(false);
+  const [isClearingControl, setIsClearingControl] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const [revealingSecrets, setRevealingSecrets] = useState<Record<string, boolean>>({});
@@ -424,6 +432,7 @@ export default function SettingsPage() {
   const [ollamaStatuses, setOllamaStatuses] = useState<Record<string, OllamaConnectionStatus>>({});
   const [openAiRuntime, setOpenAiRuntime] = useState<OpenAiRuntimeSettings | null>(null);
   const [memoryEngine, setMemoryEngine] = useState<MemoryEngineSettings | null>(null);
+  const [controlEngine, setControlEngine] = useState<ControlEngineSettings | null>(null);
   const [memoryConnectionStatus, setMemoryConnectionStatus] = useState<MemoryConnectionStatus>({
     ok: false,
     status: 'not_configured',
@@ -548,6 +557,7 @@ export default function SettingsPage() {
       setOpenAiRuntime(payload.openai_runtime || null);
       const loadedMemoryEngine = payload.memory_engine || null;
       setMemoryEngine(loadedMemoryEngine);
+      setControlEngine(payload.control_engine || null);
       setMemoryConnectionStatus({
         ok: false,
         status: 'not_configured',
@@ -733,6 +743,44 @@ export default function SettingsPage() {
       alert(err?.message || 'Errore eliminazione memorie Neo4j.');
     } finally {
       setIsClearingMemory(false);
+    }
+  };
+
+  const handleSaveControl = async () => {
+    if (!controlEngine) return;
+    setIsSavingControl(true);
+    try {
+      const response = await authFetch('/api/settings/control', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(controlEngine),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Salvataggio Control Engine fallito.');
+      await loadSettings();
+    } catch (err: any) {
+      alert(err?.message || 'Errore salvataggio Control Engine.');
+    } finally {
+      setIsSavingControl(false);
+    }
+  };
+
+  const handleClearControlValues = async () => {
+    if (!controlEngine || isClearingControl) return;
+    const confirmed = window.confirm('Eliminare tutti i dati Control Engine salvati in Neo4j? L operazione non puo essere annullata.');
+    if (!confirmed) return;
+    setIsClearingControl(true);
+    try {
+      const response = await authFetch('/api/settings/control/values', {
+        method: 'DELETE',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Eliminazione Control Engine Neo4j fallita.');
+      alert(`Dati Control Engine eliminati: ${Number(body?.deleted || 0).toLocaleString('it-IT')}.`);
+    } catch (err: any) {
+      alert(err?.message || 'Errore eliminazione Control Engine Neo4j.');
+    } finally {
+      setIsClearingControl(false);
     }
   };
 
@@ -1532,6 +1580,68 @@ export default function SettingsPage() {
 
           {memoryEngine ? (
             <div className="mt-6 space-y-6">
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Engine globali</h3>
+                    <p className="mt-1 text-sm text-gray-400">Il Control Engine usa la stessa connessione Neo4j, ma salva i dati nel subgraph Control separato.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleClearControlValues}
+                      disabled={isClearingControl || !controlEngine}
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50 disabled:opacity-60"
+                      title="Elimina dati Control Engine Neo4j"
+                      aria-label="Elimina dati Control Engine Neo4j"
+                    >
+                      <TrashIcon className="h-5 w-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveControl}
+                      disabled={isSavingControl || !controlEngine}
+                      className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                    >
+                      {isSavingControl ? 'Salvataggio...' : 'Salva control'}
+                    </button>
+                  </div>
+                </div>
+                {controlEngine ? (
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">Control Engine</p>
+                        <p className="mt-1 text-xs text-gray-400">Mostra retrieveInfo e updateSchema agli agenti.</p>
+                      </div>
+                      <Toggle
+                        checked={controlEngine.enabled}
+                        onChange={() => setControlEngine((current) => current ? {
+                          ...current,
+                          enabled: !current.enabled,
+                          execution_enabled: current.enabled ? false : current.execution_enabled,
+                        } : current)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">Esecuzione azioni</p>
+                        <p className="mt-1 text-xs text-gray-400">Mostra executeAction e abilita azioni reali sui device.</p>
+                      </div>
+                      <Toggle
+                        checked={controlEngine.enabled && controlEngine.execution_enabled}
+                        onChange={() => setControlEngine((current) => current ? {
+                          ...current,
+                          execution_enabled: !current.execution_enabled,
+                        } : current)}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-4 text-sm text-gray-400">Nessuna configurazione Control Engine disponibile.</p>
+                )}
+              </div>
+
               <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
                 <h3 className="text-sm font-semibold text-white">Modelli memoria</h3>
                 <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(18rem,36rem)_minmax(16rem,28rem)]">

@@ -12,6 +12,7 @@ const agentChatRoutes = require('./routes/agentChatRoutes');
 const aliveAgentRoutes = require('./routes/aliveAgentRoutes');
 const tasksRoutes = require('./routes/tasksRoutes');
 const memoryEngineRoutes = require('./routes/memoryEngineRoutes');
+const controlEngineRoutes = require('./routes/controlEngineRoutes');
 const { initWebPushTables } = require('./database/db_web_push');
 const { initAppSettingsTable } = require('./database/db_app_settings');
 const { initTelegramTables } = require('./database/db_telegram');
@@ -50,6 +51,7 @@ app.use('/api/agent-chats', agentChatRoutes);
 app.use('/api/alive-agents', aliveAgentRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/memory-engine', memoryEngineRoutes);
+app.use('/api/control-engine', controlEngineRoutes);
 
 async function bootstrap() {
   try {

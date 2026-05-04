@@ -1,5 +1,11 @@
 const { createInternalNotification } = require('./notifications');
 const { getGoals, editGoals } = require('./agentState');
+const { getControlEngineSettingsSync } = require('../appSettings');
+const {
+  executeControlAction,
+  retrieveControlInfo,
+  updateControlSchema,
+} = require('../control/controlOrchestrator');
 
 const DEFAULT_INTERNAL_PREFIX = 'chrisbot_';
 
@@ -61,6 +67,91 @@ const INTERNAL_TOOL_DEFINITIONS = [
   },
 ];
 
+function getControlEngineToolDefinitions() {
+  const settings = getControlEngineSettingsSync();
+  if (!settings.enabled) return [];
+  const tools = [
+    {
+      key: 'controlEngineRetrieveInfo',
+      name: 'ControlEngine_retriveInfo',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_retriveInfo`,
+      description: 'Interroga il grafo Control Engine per trovare edifici, stanze, device e azioni eseguibili o di monitoring. Restituisce sempre una stringa JSON.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Richiesta naturale o filtro testuale.' },
+          intent: { type: 'string', enum: ['control', 'monitoring'], description: 'Intento azione desiderato.' },
+          building: { type: 'string', description: 'Nome o alias edificio opzionale.' },
+          room: { type: 'string', description: 'Nome o alias stanza opzionale.' },
+          device_type: { type: 'string', description: 'Tipo device, es. projector, printer, audio, computer.' },
+          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ping'], description: 'Tipo tecnico azione opzionale.' },
+          limit: { type: 'number', description: 'Numero massimo risultati.' },
+        },
+        additionalProperties: false,
+      },
+      handler: retrieveControlInfo,
+    },
+    {
+      key: 'controlEngineUpdateSchema',
+      name: 'ControlEngine_updateSchema',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_updateSchema`,
+      description: 'Aggiunge o aggiorna nodi e relazioni del grafo Control Engine. Usa dry_run=true per preview. Restituisce sempre una stringa JSON.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          instruction: { type: 'string', description: 'Istruzione naturale per creare o aggiornare elementi del grafo.' },
+          dry_run: { type: 'boolean', description: 'Se true genera solo una preview.' },
+          schema: {
+            type: 'object',
+            description: 'Payload strutturato con building, room, device, action.',
+            additionalProperties: true,
+          },
+          building: { type: 'object', additionalProperties: true },
+          room: { type: 'object', additionalProperties: true },
+          device: { type: 'object', additionalProperties: true },
+          action: { type: 'object', additionalProperties: true },
+        },
+        additionalProperties: false,
+      },
+      handler: updateControlSchema,
+    },
+  ];
+
+  if (settings.execution_enabled) {
+    tools.push({
+      key: 'controlEngineExecuteAction',
+      name: 'ControlEngine_executeAction',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_executeAction`,
+      description: 'Esegue azioni gia presenti nel grafo Control Engine su device target. Non accetta comandi arbitrari. Restituisce sempre una stringa JSON.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Richiesta originale o motivazione dell esecuzione.' },
+          dry_run: { type: 'boolean', description: 'Se true non esegue realmente.' },
+          params: { type: 'object', description: 'Parametri runtime opzionali, es. username/password per telnet_auth.', additionalProperties: true },
+          targets: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                device_id: { type: 'string' },
+                action_id: { type: 'string' },
+              },
+              required: ['device_id', 'action_id'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['targets'],
+        additionalProperties: false,
+      },
+      handler: executeControlAction,
+    });
+  }
+
+  return tools;
+}
+
 function buildInternalToolRegistry() {
   const tools = [];
   const nameMap = new Map();
@@ -68,7 +159,7 @@ function buildInternalToolRegistry() {
   const handlerMap = new Map();
   const prefixes = new Set();
 
-  for (const definition of INTERNAL_TOOL_DEFINITIONS) {
+  for (const definition of [...INTERNAL_TOOL_DEFINITIONS, ...getControlEngineToolDefinitions()]) {
     const publicName = String(definition.publicName || '').trim();
     if (!publicName) continue;
 

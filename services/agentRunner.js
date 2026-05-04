@@ -254,6 +254,7 @@ async function executeMcpTool(functionName, args, context, toolCall, agent) {
       toolArgs._chatId = context.chatId || null;
       toolArgs._agentId = agent?.id || context.agentId || null;
       toolArgs._runId = context.runId || null;
+      toolArgs._userKey = context.userKey || null;
     }
     if (isNotificationToolName(functionName)) {
       toolArgs._chatId = context.chatId || null;

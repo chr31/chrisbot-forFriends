@@ -10,6 +10,7 @@ const {
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
   updateMemoryEngineSettings,
+  updateControlEngineSettings,
   getMemoryEngineSettingsSync,
   revealSettingsSecret,
 } = require('../services/appSettings');
@@ -26,6 +27,7 @@ const { reconnectAndRefreshToolCache, getMcpConnectionStatuses } = require('../u
 const { getOllamaConnectionStatuses } = require('../services/ollamaRuntime');
 const { refreshTelegramBotRuntime } = require('../services/telegramBot');
 const { createMemoryRepository } = require('../services/memory/repositories/memoryRepository');
+const { createControlRepository } = require('../services/control/repositories/controlRepository');
 
 router.use(authenticateToken);
 
@@ -139,6 +141,16 @@ router.put('/memory', async (req, res) => {
   }
 });
 
+router.put('/control', async (req, res) => {
+  try {
+    await updateControlEngineSettings(req.body || {});
+    return res.json(getSettingsSnapshot().control_engine);
+  } catch (error) {
+    console.error('Errore aggiornamento impostazioni Control Engine:', error);
+    return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni Control Engine' });
+  }
+});
+
 router.delete('/memory/values', async (_req, res) => {
   try {
     const result = await createMemoryRepository(getMemoryEngineSettingsSync()).clearAllMemoryData();
@@ -146,6 +158,16 @@ router.delete('/memory/values', async (_req, res) => {
   } catch (error) {
     console.error('Errore eliminazione memorie Neo4j:', error);
     return res.status(500).json({ error: error.message || 'Impossibile eliminare le memorie Neo4j' });
+  }
+});
+
+router.delete('/control/values', async (_req, res) => {
+  try {
+    const result = await createControlRepository(getMemoryEngineSettingsSync()).clearAllControlData();
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('Errore eliminazione Control Engine Neo4j:', error);
+    return res.status(500).json({ error: error.message || 'Impossibile eliminare i dati Control Engine Neo4j' });
   }
 });
 
