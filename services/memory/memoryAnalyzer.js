@@ -26,7 +26,7 @@ const TYPE_TO_PACKET_KEY = {
 
 const MIN_MEMORY_CONFIDENCE = 0.7;
 const MIN_DETERMINISTIC_CONTEXT_SCORE = 0.34;
-const MAX_AFTER_MEMORY_CANDIDATES = 3;
+const MAX_AFTER_MEMORY_CANDIDATES = 2;
 
 const CATEGORY_BY_MEMORY_TYPE = {
   fact: 'project_context',
@@ -284,6 +284,68 @@ function normalizeGenericCandidate(entry = {}, memoryType) {
   };
 }
 
+function isStatusCheckRequest(text) {
+  return /\b(controll|verific|monitor|check|status|stato|funzionando|funziona|working|operativo)\b/i.test(text)
+    && /\b(se|stato|status|monitor|funzionando|funziona|working|operativo)\b/i.test(text);
+}
+
+function hasCurrentRunStatusShape(text) {
+  return /\b(data corrente|current date|al momento|attual[ei]|ora|adesso|stato:\s*\w+|stato player|brano|artist[ao]|album|in riproduzione|funzionante|funziona correttamente|nessun errore|nessun problema|senza errori|play)\b/i.test(text);
+}
+
+function hasStableMappingShape(text) {
+  return /\b(gestisce|usa|usare|chiamare|delegare|mapping|parametr[oi]|building|room|device|action|monitoring|endpoint|api|url|player|sorgente|servizio|service|stream|identificativ[oi])\b/i.test(text);
+}
+
+function stripTransientStatusDetails(text) {
+  let sanitized = normalizeText(text || '', 1200);
+  sanitized = sanitized
+    .replace(/\s*\((?:stato|status|brano|artist[ao]|album)[^)]+\)/gi, '')
+    .replace(/\b(?:stato|status)\s*:\s*[^,.;|)]+[,.;|)]?/gi, '')
+    .replace(/\bbrano\s*:\s*[^,.;|)]+[,.;|)]?/gi, '')
+    .replace(/\bartist[ao]\s*:\s*[^,.;|)]+[,.;|)]?/gi, '')
+    .replace(/\balbum\s*:\s*[^,.;|)]+[,.;|)]?/gi, '')
+    .replace(/\b(?:attivo|attiva)\s+e\s+in\s+riproduzione\b/gi, '')
+    .replace(/\battiv[oaie]\b/gi, '')
+    .replace(/\bin\s+riproduzione\b/gi, '')
+    .replace(/\bfunzionante(?:\s+a\s+data\s+corrente)?\b/gi, '')
+    .replace(/\s+([,.])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[-–—:]\s*$/g, '')
+    .trim();
+  return sanitized;
+}
+
+function sanitizeOperationalCandidate(candidate = {}, context = {}) {
+  if (!candidate) return null;
+  const requestText = normalizeText(context.requestText || '', 1200);
+  const text = normalizeText(candidate.information || '', 1200);
+  if (!text) return candidate;
+  if (!isStatusCheckRequest(requestText) && !hasCurrentRunStatusShape(text)) return candidate;
+
+  const cleaned = stripTransientStatusDetails(text);
+  if (!cleaned || cleaned.length < 12) return candidate;
+
+  const requestMentionsGreenhouse = /\bserra\b/i.test(requestText);
+  const topicMentionsGreenhouse = /\bserra\b/i.test(candidate.topic || '');
+  const informationMentionsGreenhouse = /\bserra\b/i.test(cleaned);
+  const topic = normalizeText(candidate.topic || '', 180);
+  let information = cleaned;
+  if (requestMentionsGreenhouse && !topicMentionsGreenhouse && !informationMentionsGreenhouse) {
+    information = `${information.replace(/[.;,]\s*$/, '')} nella serra`;
+  }
+  information = information
+    .replace(/\s+([,.])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[-–—:]\s*$/g, '')
+    .trim();
+
+  return {
+    ...candidate,
+    information,
+  };
+}
+
 function hasUserMarker(text) {
   return /\b(utente|user|persona)\b/i.test(text);
 }
@@ -302,6 +364,9 @@ function isProbablyGenericOrTransient(text) {
     return true;
   }
   if (/\b(oggi|domani|ieri|today|tomorrow|yesterday|tra poco|later today|adesso|ora)\b/i.test(normalized)) {
+    return true;
+  }
+  if (/\b(data corrente|current date|a data corrente|brano attuale|artista attuale|album attuale)\b/i.test(normalized)) {
     return true;
   }
   return false;
@@ -329,6 +394,22 @@ function isGenericToolRunStatus(candidate = {}) {
   const reportsOnlyRunOutcome = /\b(riuscit[oaie]|successo|success|completed|completat[oaie]|fallit[oaie]|failed|errore|error|funzionat[oaie]|eseguit[oaie])\b/i.test(text);
   if (!reportsOnlyRunOutcome) return false;
   return !hasStableOperationalEvidence(text);
+}
+
+function isRunOutcomeMemory(candidate = {}, context = {}) {
+  const information = normalizeText(candidate.information || '', 1200);
+  const combined = normalizeText([candidate.topic, information].filter(Boolean).join(' '), 1400);
+  if (!combined) return false;
+
+  if (candidate.memory_type === 'fact' && hasCurrentRunStatusShape(combined) && !hasStableMappingShape(combined)) {
+    return true;
+  }
+
+  if (candidate.memory_type === 'tool_lesson' && hasCurrentRunStatusShape(combined)) {
+    return !/\b(usare|chiamare|delegare|parametr[oi]|building|room|device|action|monitoring|endpoint|fallback|richiede)\b/i.test(combined);
+  }
+
+  return isStatusCheckRequest(context.requestText || '') && hasCurrentRunStatusShape(combined) && !hasStableMappingShape(combined);
 }
 
 function normalizeTopicKey(candidate = {}) {
@@ -377,9 +458,12 @@ function getCandidatePriority(candidate = {}) {
   return 6;
 }
 
-function mergeSameTopicCandidates(candidates = []) {
+function mergeSameTopicCandidates(candidates = [], context = {}) {
   const selected = [];
-  const sorted = [...candidates].sort((left, right) => {
+  const source = isStatusCheckRequest(context.requestText || '')
+    ? collapseStatusCheckCandidates(candidates)
+    : candidates;
+  const sorted = [...source].sort((left, right) => {
     const priorityDelta = getCandidatePriority(left) - getCandidatePriority(right);
     if (priorityDelta !== 0) return priorityDelta;
     const importanceDelta = normalizeImportance(right.importance, 0) - normalizeImportance(left.importance, 0);
@@ -410,7 +494,26 @@ function mergeSameTopicCandidates(candidates = []) {
   return selected.slice(0, MAX_AFTER_MEMORY_CANDIDATES);
 }
 
-function isValidOperationalCandidate(candidate = {}) {
+function getStatusCheckKeepScore(candidate = {}) {
+  let score = 0;
+  if (candidate.memory_type === 'entity') score += 6;
+  if (candidate.memory_type === 'procedure') score += 5;
+  if (candidate.memory_type === 'tool_lesson') score += 4;
+  if (candidate.category === 'asset_context' || candidate.category === 'service_context') score += 3;
+  if (hasStableMappingShape([candidate.topic, candidate.information].filter(Boolean).join(' '))) score += 4;
+  if (hasCurrentRunStatusShape(candidate.information || '')) score -= 4;
+  score += normalizeImportance(candidate.importance, 0) + normalizeConfidence(candidate.confidence, 0);
+  return score;
+}
+
+function collapseStatusCheckCandidates(candidates = []) {
+  const stable = candidates.filter((candidate) => !isRunOutcomeMemory(candidate, { requestText: 'status check' }));
+  const source = stable.length > 0 ? stable : candidates;
+  const sorted = [...source].sort((left, right) => getStatusCheckKeepScore(right) - getStatusCheckKeepScore(left));
+  return sorted.slice(0, 1);
+}
+
+function isValidOperationalCandidate(candidate = {}, context = {}) {
   const information = normalizeText(candidate.information || '', 1200);
   if (!information) return false;
   if (candidate.confidence < MIN_MEMORY_CONFIDENCE) return false;
@@ -419,6 +522,7 @@ function isValidOperationalCandidate(candidate = {}) {
   if (candidate.memory_type === 'procedure' && !hasWorkflowShape(information)) return false;
   if (candidate.memory_type === 'tool_lesson' && !hasToolLessonShape(information)) return false;
   if (isGenericToolRunStatus(candidate)) return false;
+  if (isRunOutcomeMemory(candidate, context)) return false;
   if (isProbablyPersonalMemory(information)) return false;
   if (isProbablyGenericOrTransient(information)) return false;
   if (candidate.category === 'goal') return false;
@@ -426,12 +530,15 @@ function isValidOperationalCandidate(candidate = {}) {
 }
 
 function normalizeMemoryCandidate(entry, memoryType, context = {}) {
-  const normalized = memoryType === 'entity'
+  const rawNormalized = memoryType === 'entity'
     ? normalizeEntityCandidate(entry)
     : normalizeGenericCandidate(entry, memoryType);
+  if (!rawNormalized) return null;
+  if (rawNormalized.memory_type !== 'entity' && isRunOutcomeMemory(rawNormalized, context)) return null;
+  const normalized = sanitizeOperationalCandidate(rawNormalized, context);
   if (!normalized) return null;
   if (!MEMORY_TYPES.includes(normalized.memory_type)) return null;
-  if (!isValidOperationalCandidate(normalized)) return null;
+  if (!isValidOperationalCandidate(normalized, context)) return null;
 
   const searchable = normalizeSearchableText([
     normalized.memory_type,
@@ -479,7 +586,7 @@ function flattenMemoryCandidates(parsed = {}, context = {}) {
     }
   }
 
-  return mergeSameTopicCandidates(candidates);
+  return mergeSameTopicCandidates(candidates, context);
 }
 
 async function extractMemoryUpdates({ settings, chat, agent, scope, agentId, processStatus }) {
@@ -490,7 +597,11 @@ async function extractMemoryUpdates({ settings, chat, agent, scope, agentId, pro
   return {
     request_summary: normalizeText(parsed?.request_summary || parsed?.requestSummary || parsed?.summary || chat?.userMessage?.content || '', 220),
     topics: normalizeTopicEntries(parsed?.topics || parsed?.subjects || [], 'project_context', 6),
-    candidates: flattenMemoryCandidates(parsed, { scope, agentId }),
+    candidates: flattenMemoryCandidates(parsed, {
+      scope,
+      agentId,
+      requestText: chat?.userMessage?.content || '',
+    }),
     warnings: arrayOfStrings(parsed?.warnings, 8),
   };
 }

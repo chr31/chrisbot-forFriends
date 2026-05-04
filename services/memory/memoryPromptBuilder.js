@@ -177,6 +177,7 @@ function buildAfterExtractionMessages({ chat, agent, scope, processStatus }) {
         'L esito grezzo dei tool della run viene gia salvato nel grafo tecnico MemoryRun/USED_TOOL: non creare memorie solo per dire che un tool e riuscito o fallito.',
         'Crea una tool_lesson da un esito tool solo se contiene una lezione riutilizzabile: mapping stabile tra dispositivo/servizio e dominio, input necessario, failure mode, fallback o risultato operativo osservabile.',
         'Per richieste di controllo stato salva al massimo una memoria operativa compatta sul soggetto stabile osservato, includendo nello stesso testo eventuale dispositivo, servizio o stream rilevato.',
+        'Non salvare come MemoryItem stati temporanei: funzionante ora, play/stop, brano corrente, volume corrente, data corrente, nessun errore nella run. Questi restano solo negli episodi di audit.',
         'Se un informazione diventa piu aggiornata, proponi la versione minima corrente, non una cronologia.',
         'Non duplicare informazioni gia espresse nella stessa estrazione.',
         'Non salvare obiettivi/goals dell agente: restano nel campo goals separato.',

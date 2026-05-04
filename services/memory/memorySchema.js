@@ -153,6 +153,17 @@ function parseMaybeJson(value, fallback = null) {
 
 function isLikelyFailureText(value) {
   const text = String(value || '').toLowerCase();
+  if (!text) return false;
+  if (/\b(nessun|nessuna|senza|no)\s+(errore|error|errori|errors|timeout|problema|problemi)\b/i.test(text)) {
+    return false;
+  }
+  if (/\b(non|no)\s+(sono\s+stati\s+)?(riscontrati|rilevati|trovati)\s+(errori|problemi)\b/i.test(text)) {
+    return false;
+  }
+  if (/\b(ok|success|successful|completato|riuscito|funzionante|operativo)\b/i.test(text)
+    && /\b(nessun|nessuna|senza|non\s+sono\s+stati)\b/i.test(text)) {
+    return false;
+  }
   return text.includes('errore')
     || text.includes('error')
     || text.includes('failed')
