@@ -13,6 +13,7 @@ const { ADMIN_SHARED_OWNER, isSuperAdminUser } = require('../utils/adminAccess')
 const { normalizeModelConfig, getAgentDefaultModelConfig, getDefaultModelConfig } = require('./aiModelCatalog');
 const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
 const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('./agentSemanticGuardrails');
 
 function normalizeUserMessage(messages) {
   const userMessage = Array.isArray(messages) ? messages[messages.length - 1] : null;
@@ -127,6 +128,44 @@ async function prepareAgentChatExecution(input = {}) {
     started_at: new Date(),
   });
 
+  const semanticGuardrail = await evaluateAgentSemanticGuardrails(agent, userMessage.content);
+  if (semanticGuardrail.applied && semanticGuardrail.decision !== 'allow') {
+    const response = semanticGuardrail.message || 'Questo agente non puo gestire questa richiesta.';
+    await insertAgentMessages([{
+      chat_id: currentChatId,
+      agent_id: agent.id,
+      role: 'assistant',
+      event_type: 'guardrail',
+      content: response,
+      metadata_json: {
+        run_id: run.id,
+        guardrail_type: 'semantic',
+        blocked: true,
+        decision: semanticGuardrail.decision,
+        reason: semanticGuardrail.reason,
+        allowed_match: semanticGuardrail.allowed_match || null,
+        blocked_match: semanticGuardrail.blocked_match || null,
+      },
+    }]);
+    await updateAgentRunIfStatus(run.id, {
+      status: 'completed',
+      finished_at: new Date(),
+      guardrail_result_json: buildAgentGuardrailRunTrace(semanticGuardrail),
+    }, 'running');
+    return {
+      agent,
+      run,
+      chatId: currentChatId,
+      history,
+      modelConfig: resolvedModelConfig,
+      userMessage,
+      userKey: owner_username,
+      blockedByGuardrail: true,
+      guardrailResult: semanticGuardrail,
+      guardrailResponse: response,
+    };
+  }
+
   const memoryContextPacket = await runBeforeMemory({
     agent,
     chat: {
@@ -202,6 +241,16 @@ function runAfterMemoryInBackground(prepared, response, processStatus, error = n
 }
 
 async function finalizeAgentChatExecution(prepared) {
+  if (prepared.blockedByGuardrail) {
+    return {
+      response: prepared.guardrailResponse,
+      chat_id: prepared.chatId,
+      run_id: prepared.run.id,
+      agent_id: prepared.agent.id,
+      guardrail: prepared.guardrailResult,
+    };
+  }
+
   let response = '';
   try {
     response = await runAgentConversation(prepared.agent, prepared.history, {

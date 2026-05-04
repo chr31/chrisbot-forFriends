@@ -35,6 +35,7 @@ const { initializeAppSettings } = require('./services/appSettings');
 const { initializeWebPushScheduler } = require('./services/webPushScheduler');
 const { initializeTelegramBot } = require('./services/telegramBot');
 const { initializeAliveAgentScheduler } = require('./services/aliveAgentService');
+const { initializeControlPersistentConnections } = require('./services/control/connectionManager');
 
 
 // Middleware per il parsing del body delle richieste
@@ -75,6 +76,7 @@ async function bootstrap() {
     initializeWebPushScheduler();
     initializeTelegramBot();
     initializeAliveAgentScheduler();
+    await initializeControlPersistentConnections();
     
     // Imposta una porta fissa per il backend
     const PORT = process.env.PORT || 3000;

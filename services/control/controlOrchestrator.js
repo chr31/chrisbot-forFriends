@@ -1,6 +1,7 @@
 const { getControlEngineSettingsSync, getMemoryEngineSettingsSync } = require('../appSettings');
 const { createControlRepository } = require('./repositories/controlRepository');
 const { executeControlActionTarget } = require('./actionExecutor');
+const { normalizeKey } = require('./controlSchema');
 
 function toolString(payload) {
   try {
@@ -53,6 +54,8 @@ function compactLocation(entry = {}) {
 }
 
 function compactActionMatch(entry = {}) {
+  const connectionRef = entry.action?.connection_ref || null;
+  const connection = connectionRef ? getPersistentConnectionMap().get(connectionRef) : null;
   return {
     device_id: entry.device?.id || null,
     device: entry.device?.name || null,
@@ -68,6 +71,9 @@ function compactActionMatch(entry = {}) {
     capability: entry.capability?.key || entry.action?.capability_key || null,
     action_type: entry.action?.action_type || null,
     adapter: entry.adapter?.key || entry.action?.adapter_type || entry.action?.action_type || null,
+    connection_ref: connectionRef,
+    connection_label: connection?.label || null,
+    connection_enabled: connection ? connection.enabled !== false : null,
     risk_level: entry.action?.risk_level || null,
     requires_confirmation: Boolean(entry.action?.requires_confirmation),
     description: entry.action?.description || null,
@@ -76,6 +82,119 @@ function compactActionMatch(entry = {}) {
       action_id: entry.action?.id || null,
     },
   };
+}
+
+function compactPersistentConnection(connection = {}) {
+  return {
+    ref: connection.ref,
+    label: connection.label,
+    protocol: connection.protocol,
+    enabled: connection.enabled !== false,
+  };
+}
+
+function getPersistentConnections() {
+  return (getControlEngineSettingsSync()?.persistent_connections || [])
+    .filter((connection) => connection?.ref && connection?.protocol)
+    .map(compactPersistentConnection);
+}
+
+function getPersistentConnectionMap() {
+  return new Map(getPersistentConnections().map((connection) => [connection.ref, connection]));
+}
+
+function collectActionInputs(input = {}) {
+  const source = input.schema && typeof input.schema === 'object' ? input.schema : input;
+  return [
+    ...(Array.isArray(source.actions) ? source.actions : []),
+    ...(source.action ? [source.action] : []),
+  ].filter(Boolean);
+}
+
+function actionHasForbiddenConnectionFields(action = {}) {
+  return ['host', 'port', 'username', 'password', 'user', 'pass', 'ip'].some((field) => {
+    if (field === 'ip' && action.device_ref) return false;
+    return Object.prototype.hasOwnProperty.call(action, field);
+  });
+}
+
+function validateControlActionProposal(args = {}) {
+  const connections = getPersistentConnections();
+  const connectionMap = new Map(connections.map((connection) => [connection.ref, connection]));
+  const actions = collectActionInputs(args);
+  for (let index = 0; index < actions.length; index += 1) {
+    const action = actions[index] || {};
+    const actionType = String(action.action_type || action.adapter_type || action.type || 'bash').trim().toLowerCase();
+    const connectionRef = normalizeKey(action.connection_ref || action.connectionRef || action.connection || '');
+    const command = String(action.command || '').trim();
+    if (actionHasForbiddenConnectionFields(action)) {
+      return {
+        ok: false,
+        message: `Action ${index} non valida: host, porta, username e password non possono essere salvati nel grafo. Usa solo connection_ref per ssh/telnet.`,
+        available_connections: connections,
+      };
+    }
+    if (['telnet', 'telnet_auth', 'ssh'].includes(actionType)) {
+      if (!command) {
+        return {
+          ok: false,
+          message: `Action ${index} ${actionType} non valida: command obbligatorio.`,
+          available_connections: connections,
+        };
+      }
+      if (!connectionRef) {
+        return {
+          ok: false,
+          message: `Action ${index} ${actionType} non valida: connection_ref mancante o non presente tra i valori accettati.`,
+          available_connections: connections,
+        };
+      }
+      const connection = connectionMap.get(connectionRef);
+      const expectedProtocol = actionType === 'ssh' ? 'ssh' : 'telnet';
+      if (!connection || connection.protocol !== expectedProtocol || connection.enabled === false) {
+        return {
+          ok: false,
+          message: `Action ${index} ${actionType} non valida: connection_ref deve esistere, essere enabled e avere protocol=${expectedProtocol}.`,
+          available_connections: connections,
+        };
+      }
+    }
+    if (['bash'].includes(actionType)) {
+      if (!command) {
+        return { ok: false, message: `Action ${index} bash non valida: command obbligatorio.` };
+      }
+      if (connectionRef) {
+        return { ok: false, message: `Action ${index} bash non valida: connection_ref vietato per bash.` };
+      }
+    }
+    if (['ping', 'http', 'http_api'].includes(actionType) && connectionRef) {
+      return { ok: false, message: `Action ${index} ${actionType} non valida: connection_ref vietato per ${actionType}.` };
+    }
+  }
+  return { ok: true };
+}
+
+async function getControlSchemaContext() {
+  const tool = 'chrisbot_ControlEngine_getSchemaContext';
+  try {
+    requireEnabled();
+    return toolString({
+      ok: true,
+      tool,
+      result: {
+        accepted_connections: getPersistentConnections(),
+        accepted_action_types: ['bash', 'ping', 'http', 'http_api', 'telnet', 'ssh'],
+        rules: [
+          'telnet/ssh richiedono command e connection_ref esistente/enabled con protocol coerente.',
+          'bash richiede command e non usa connection_ref.',
+          'ping/http/http_api non usano connection_ref.',
+          'host, port, username e password non vanno mai nel grafo.',
+        ],
+      },
+    });
+  } catch (error) {
+    return toolError(tool, error);
+  }
 }
 
 function shouldIncludeLocations(args = {}) {
@@ -228,6 +347,16 @@ async function updateControlSchema(args = {}) {
     if (!schema) {
       throw new Error('Schema Control Engine mancante. Passa building, room, device, action oppure una instruction riconoscibile.');
     }
+    const validation = validateControlActionProposal({ schema });
+    if (!validation.ok) {
+      return toolString({
+        ok: false,
+        tool,
+        type: 'validation_error',
+        message: validation.message,
+        ...(validation.available_connections ? { available_connections: validation.available_connections } : {}),
+      });
+    }
     if (dryRun) {
       return toolString({
         ok: true,
@@ -303,6 +432,7 @@ async function executeControlAction(args = {}) {
 
 module.exports = {
   executeControlAction,
+  getControlSchemaContext,
   retrieveControlInfo,
   updateControlSchema,
 };

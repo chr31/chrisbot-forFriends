@@ -114,6 +114,7 @@ type AgentRun = {
   last_error?: string | null;
   guardrail_result_json?: {
     memory_events?: MemoryRunEvent[];
+    guardrail_events?: MemoryRunEvent[];
   } | string | null;
 };
 
@@ -515,7 +516,10 @@ function getRunMemoryEvents(run: AgentRun): MemoryRunEvent[] {
         }
       })()
     : raw;
-  return Array.isArray(parsed?.memory_events) ? parsed.memory_events : [];
+  return [
+    ...(Array.isArray(parsed?.guardrail_events) ? parsed.guardrail_events : []),
+    ...(Array.isArray(parsed?.memory_events) ? parsed.memory_events : []),
+  ];
 }
 
 function hasRunningMemoryEvents(chatRuns: AgentRun[]): boolean {
@@ -556,6 +560,9 @@ function getMemoryActivityLabel(run: AgentRun): string | null {
   const lastMemoryEvent = memoryEvents.at(-1);
   if (!lastMemoryEvent) return null;
   const rawType = String(lastMemoryEvent.type || lastMemoryEvent.label || '').toLowerCase();
+  if (rawType.includes('guardrail')) {
+    return 'Verifico guardrail';
+  }
   if (rawType.includes('after') || rawType.includes('salvataggio') || rawType.includes('save')) {
     return 'Salvo memorie';
   }
@@ -1263,9 +1270,10 @@ export default function AgentChatPage() {
       .map((event, index): RunDetailItem => {
         const rawType = String(event.type || event.label || '').toLowerCase();
         const isAfterMemory = rawType.includes('after') || rawType.includes('salvataggio') || rawType.includes('save');
+        const isGuardrail = rawType.includes('guardrail');
         return {
           key: `run-${run.id}-memory-${event.type || index}`,
-          order: isAfterMemory ? lastReplyOrder + 0.3 + index / 100 : firstPromptOrder - 0.3 + index / 100,
+          order: isGuardrail ? firstPromptOrder + 0.15 + index / 100 : (isAfterMemory ? lastReplyOrder + 0.3 + index / 100 : firstPromptOrder - 0.3 + index / 100),
           label: event.label || (isAfterMemory ? 'Memory salvataggio' : 'Memory retrieve'),
           subtitle: [event.scope || null, event.status || null].filter(Boolean).join(' · '),
           content: String(event.content || '').trim(),

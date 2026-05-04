@@ -106,6 +106,23 @@ type MemoryEngineSettings = {
 type ControlEngineSettings = {
   enabled: boolean;
   execution_enabled: boolean;
+  persistent_connections: ControlPersistentConnection[];
+};
+
+type ControlPersistentConnection = {
+  ref: string;
+  label: string;
+  protocol: 'telnet' | 'ssh';
+  host: string;
+  port: number;
+  auth: boolean;
+  username: string;
+  password: string;
+  username_configured?: boolean;
+  password_configured?: boolean;
+  persistent: boolean;
+  ready_message: string;
+  enabled: boolean;
 };
 
 type TelegramUserLink = {
@@ -746,8 +763,61 @@ export default function SettingsPage() {
     }
   };
 
+  const buildConnectionRef = () => `conn_${Date.now().toString(36)}`;
+
+  const addPersistentConnection = () => {
+    setControlEngine((current) => current ? {
+      ...current,
+      persistent_connections: [
+        ...(current.persistent_connections || []),
+        {
+          ref: buildConnectionRef(),
+          label: 'Nuova connessione',
+          protocol: 'telnet',
+          host: '',
+          port: 23,
+          auth: false,
+          username: '',
+          password: '',
+          persistent: true,
+          ready_message: '',
+          enabled: true,
+        },
+      ],
+    } : current);
+  };
+
+  const updatePersistentConnection = (index: number, patch: Partial<ControlPersistentConnection>) => {
+    setControlEngine((current) => current ? {
+      ...current,
+      persistent_connections: (current.persistent_connections || []).map((connection, itemIndex) => (
+        itemIndex === index ? { ...connection, ...patch } : connection
+      )),
+    } : current);
+  };
+
+  const removePersistentConnection = (index: number) => {
+    setControlEngine((current) => current ? {
+      ...current,
+      persistent_connections: (current.persistent_connections || []).filter((_, itemIndex) => itemIndex !== index),
+    } : current);
+  };
+
   const handleSaveControl = async () => {
     if (!controlEngine) return;
+    const invalidConnection = (controlEngine.persistent_connections || []).find((connection) => (
+      connection.enabled && connection.auth
+      && !String(connection.username || '').trim()
+      && !connection.username_configured
+    ) || (
+      connection.enabled && connection.auth
+      && !String(connection.password || '').trim()
+      && !connection.password_configured
+    ));
+    if (invalidConnection) {
+      alert('Username e password sono obbligatori per le connessioni persistenti con auth attivo.');
+      return;
+    }
     setIsSavingControl(true);
     try {
       const response = await authFetch('/api/settings/control', {
@@ -1608,35 +1678,177 @@ export default function SettingsPage() {
                   </div>
                 </div>
                 {controlEngine ? (
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
-                      <div>
-                        <p className="text-sm font-semibold text-white">Control Engine</p>
-                        <p className="mt-1 text-xs text-gray-400">Mostra retrieveInfo e updateSchema agli agenti.</p>
+                  <>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">Control Engine</p>
+                          <p className="mt-1 text-xs text-gray-400">Mostra retrieveInfo e updateSchema agli agenti.</p>
+                        </div>
+                        <Toggle
+                          checked={controlEngine.enabled}
+                          onChange={() => setControlEngine((current) => current ? {
+                            ...current,
+                            enabled: !current.enabled,
+                            execution_enabled: current.enabled ? false : current.execution_enabled,
+                          } : current)}
+                        />
                       </div>
-                      <Toggle
-                        checked={controlEngine.enabled}
-                        onChange={() => setControlEngine((current) => current ? {
-                          ...current,
-                          enabled: !current.enabled,
-                          execution_enabled: current.enabled ? false : current.execution_enabled,
-                        } : current)}
-                      />
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">Esecuzione azioni</p>
+                          <p className="mt-1 text-xs text-gray-400">Mostra executeAction e abilita azioni reali sui device.</p>
+                        </div>
+                        <Toggle
+                          checked={controlEngine.enabled && controlEngine.execution_enabled}
+                          onChange={() => setControlEngine((current) => current ? {
+                            ...current,
+                            execution_enabled: !current.execution_enabled,
+                          } : current)}
+                        />
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+                  <div className="mt-6 border-t border-gray-800 pt-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-white">Esecuzione azioni</p>
-                        <p className="mt-1 text-xs text-gray-400">Mostra executeAction e abilita azioni reali sui device.</p>
+                        <h3 className="text-sm font-semibold text-white">Connessioni persistenti</h3>
+                        <p className="mt-1 text-xs text-gray-400">Riferimenti usabili dalle action ssh/telnet del Control Engine.</p>
                       </div>
-                      <Toggle
-                        checked={controlEngine.enabled && controlEngine.execution_enabled}
-                        onChange={() => setControlEngine((current) => current ? {
-                          ...current,
-                          execution_enabled: !current.execution_enabled,
-                        } : current)}
-                      />
+                      <button
+                        type="button"
+                        onClick={addPersistentConnection}
+                        className="rounded-xl border border-gray-700 px-3 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-800"
+                      >
+                        Aggiungi
+                      </button>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {(controlEngine.persistent_connections || []).length === 0 ? (
+                        <p className="text-sm text-gray-400">Nessuna connessione persistente configurata.</p>
+                      ) : null}
+                      {(controlEngine.persistent_connections || []).map((connection, index) => (
+                        <div key={connection.ref || index} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-white">{connection.label || 'Connessione persistente'}</p>
+                              <p className="mt-1 break-all text-xs text-gray-400">ref: {connection.ref}</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Toggle
+                                checked={connection.enabled}
+                                onChange={() => updatePersistentConnection(index, { enabled: !connection.enabled })}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removePersistentConnection(index)}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50"
+                                title="Rimuovi connessione"
+                                aria-label="Rimuovi connessione"
+                              >
+                                <TrashIcon className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-4 grid gap-3 md:grid-cols-4">
+                            <label className="text-sm text-gray-200 md:col-span-2">
+                              <span className="mb-1 block">Label</span>
+                              <input
+                                value={connection.label || ''}
+                                onChange={(event) => updatePersistentConnection(index, { label: event.target.value })}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              />
+                            </label>
+                            <label className="text-sm text-gray-200">
+                              <span className="mb-1 block">Protocollo</span>
+                              <select
+                                value={connection.protocol}
+                                onChange={(event) => updatePersistentConnection(index, {
+                                  protocol: event.target.value === 'ssh' ? 'ssh' : 'telnet',
+                                  port: event.target.value === 'ssh' ? 22 : 23,
+                                  ready_message: event.target.value === 'ssh' ? '' : connection.ready_message,
+                                })}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              >
+                                <option value="telnet">telnet</option>
+                                <option value="ssh">ssh</option>
+                              </select>
+                            </label>
+                            <label className="text-sm text-gray-200">
+                              <span className="mb-1 block">Porta</span>
+                              <input
+                                type="number"
+                                value={connection.port || ''}
+                                onChange={(event) => updatePersistentConnection(index, { port: Number(event.target.value || 0) })}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              />
+                            </label>
+                            <label className="text-sm text-gray-200 md:col-span-2">
+                              <span className="mb-1 block">Host</span>
+                              <input
+                                value={connection.host || ''}
+                                onChange={(event) => updatePersistentConnection(index, { host: event.target.value })}
+                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              />
+                            </label>
+                            <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-950 px-4 py-3">
+                              <div>
+                                <p className="text-sm font-semibold text-white">Auth</p>
+                                <p className="mt-1 text-xs text-gray-400">Username/password cifrati.</p>
+                              </div>
+                              <Toggle
+                                checked={connection.auth}
+                                onChange={() => updatePersistentConnection(index, { auth: !connection.auth })}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-950 px-4 py-3">
+                              <div>
+                                <p className="text-sm font-semibold text-white">Persistente</p>
+                                <p className="mt-1 text-xs text-gray-400">Warmup e reconnect automatico.</p>
+                              </div>
+                              <Toggle
+                                checked={connection.persistent}
+                                onChange={() => updatePersistentConnection(index, { persistent: !connection.persistent })}
+                              />
+                            </div>
+                            {connection.auth ? (
+                              <>
+                                <label className="text-sm text-gray-200 md:col-span-2">
+                                  <span className="mb-1 block">Username{connection.username_configured ? ' configurato' : ''}</span>
+                                  <input
+                                    value={connection.username || ''}
+                                    onChange={(event) => updatePersistentConnection(index, { username: event.target.value })}
+                                    placeholder={connection.username_configured ? 'Lascia vuoto per mantenere il valore' : ''}
+                                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                  />
+                                </label>
+                                <label className="text-sm text-gray-200 md:col-span-2">
+                                  <span className="mb-1 block">Password{connection.password_configured ? ' configurata' : ''}</span>
+                                  <input
+                                    type="password"
+                                    value={connection.password || ''}
+                                    onChange={(event) => updatePersistentConnection(index, { password: event.target.value })}
+                                    placeholder={connection.password_configured ? 'Lascia vuoto per mantenere il valore' : ''}
+                                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                  />
+                                </label>
+                              </>
+                            ) : null}
+                            {connection.protocol === 'telnet' ? (
+                              <label className="text-sm text-gray-200 md:col-span-4">
+                                <span className="mb-1 block">Ready message</span>
+                                <input
+                                  value={connection.ready_message || ''}
+                                  onChange={(event) => updatePersistentConnection(index, { ready_message: event.target.value })}
+                                  className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                                />
+                              </label>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
+                  </>
                 ) : (
                   <p className="mt-4 text-sm text-gray-400">Nessuna configurazione Control Engine disponibile.</p>
                 )}

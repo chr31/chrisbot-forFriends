@@ -87,7 +87,13 @@ type GuardrailForm = {
   max_tool_rounds: number;
   max_delegations: number;
   max_depth: number;
-  extra_json: string;
+  semantic_guardrails_enabled: boolean;
+  allowed_intents: string;
+  blocked_intents: string;
+  blocked_message: string;
+  unclear_message: string;
+  unclear_action: 'block' | 'clarify';
+  match_threshold: number;
 };
 
 type FormState = {
@@ -125,7 +131,13 @@ const DEFAULT_GUARDRAILS: GuardrailForm = {
   max_tool_rounds: 8,
   max_delegations: 3,
   max_depth: 2,
-  extra_json: '{}',
+  semantic_guardrails_enabled: false,
+  allowed_intents: '',
+  blocked_intents: '',
+  blocked_message: 'Questo agente non si occupa di questo argomento.',
+  unclear_message: 'Puoi chiarire se la richiesta riguarda il dominio di questo agente?',
+  unclear_action: 'block',
+  match_threshold: 0.72,
 };
 
 const EMPTY_FORM: FormState = {
@@ -162,18 +174,29 @@ function toPositiveInteger(value: unknown, fallback: number) {
 
 function splitGuardrails(raw: Record<string, unknown> | null | undefined): GuardrailForm {
   const source = raw && typeof raw === 'object' ? { ...raw } : {};
+  const semantic = source.semantic_guardrails && typeof source.semantic_guardrails === 'object'
+    ? { ...(source.semantic_guardrails as Record<string, unknown>) }
+    : {};
+  const semanticSource = { ...source, ...semantic };
+  const formatList = (value: unknown) => Array.isArray(value)
+    ? value.map((entry) => String(entry || '').trim()).filter(Boolean).join('\n')
+    : String(value || '');
   const known = {
     max_tool_rounds: toPositiveInteger(source.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(source.max_delegations, 3),
     max_depth: toPositiveInteger(source.max_depth, 2),
+    semantic_guardrails_enabled: Boolean(semanticSource.semantic_guardrails_enabled ?? semanticSource.enabled ?? false),
+    allowed_intents: formatList(semanticSource.allowed_intents || semanticSource.allowed_topics),
+    blocked_intents: formatList(semanticSource.blocked_intents || semanticSource.blocked_topics || semanticSource.denied_intents || semanticSource.deny_intents),
+    blocked_message: String(semanticSource.blocked_message || semanticSource.block_message || DEFAULT_GUARDRAILS.blocked_message),
+    unclear_message: String(semanticSource.unclear_message || DEFAULT_GUARDRAILS.unclear_message),
+    unclear_action: String(semanticSource.unclear_action || 'block') === 'clarify' ? 'clarify' as const : 'block' as const,
+    match_threshold: Number.isFinite(Number(semanticSource.match_threshold)) ? Number(semanticSource.match_threshold) : 0.72,
   };
   delete source.max_tool_rounds;
   delete source.max_delegations;
   delete source.max_depth;
-  return {
-    ...known,
-    extra_json: JSON.stringify(source, null, 2),
-  };
+  return known;
 }
 
 function InfoHint({ label, description }: { label: string; description: string }) {
@@ -278,12 +301,21 @@ function CollapsiblePanel({
 }
 
 function buildGuardrailsPayload(guardrails: GuardrailForm) {
-  const extra = JSON.parse(guardrails.extra_json || '{}');
+  const toList = (value: string) => value
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   return {
-    ...extra,
     max_tool_rounds: toPositiveInteger(guardrails.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(guardrails.max_delegations, 3),
     max_depth: toPositiveInteger(guardrails.max_depth, 2),
+    semantic_guardrails_enabled: guardrails.semantic_guardrails_enabled,
+    allowed_intents: toList(guardrails.allowed_intents),
+    blocked_intents: toList(guardrails.blocked_intents),
+    blocked_message: guardrails.blocked_message,
+    unclear_message: guardrails.unclear_message,
+    unclear_action: guardrails.unclear_action,
+    match_threshold: Number.isFinite(Number(guardrails.match_threshold)) ? Number(guardrails.match_threshold) : 0.72,
   };
 }
 
@@ -1274,7 +1306,7 @@ export default function AgentsPage() {
 
                         <CollapsiblePanel
                           title="Guardrail"
-                          subtitle="Limiti strutturati per iterazioni, deleghe e profondita. Il JSON extra resta disponibile per estensioni future."
+                          subtitle="Limiti di esecuzione e policy semantiche per mantenere l'agente nel proprio dominio."
                         >
                           <div className="grid gap-4 sm:grid-cols-2">
                             <label className="text-sm text-gray-200">
@@ -1308,14 +1340,75 @@ export default function AgentsPage() {
                           />
                         </label>
                       </div>
-                      <label className="mt-4 block text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Extra guardrails JSON <InfoHint label="Extra guardrails JSON" description="Campi avanzati non ancora modellati in UI. Restano serializzati insieme ai guardrail principali." /></span>
-                          <textarea
-                            value={form.guardrails.extra_json}
-                            onChange={(e) => setGuardrailField('extra_json', e.target.value)}
-                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 font-mono text-sm text-white"
+                      <div className="mt-5 rounded-xl border border-gray-800 bg-black/20 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="flex items-center gap-2 text-sm font-medium text-gray-200">Guardrail semantici <InfoHint label="Guardrail semantici" description="Se attivi, il backend confronta la richiesta con intent permessi e bloccati prima di chiamare l'agente. Le richieste bloccate non arrivano al modello principale e non generano memorie riutilizzabili." /></p>
+                            <p className="mt-1 text-xs text-gray-500">I blocked intents vincono sempre. Se esistono allowed intents, passa solo ciò che combacia.</p>
+                          </div>
+                          <Toggle
+                            checked={form.guardrails.semantic_guardrails_enabled}
+                            onChange={() => setGuardrailField('semantic_guardrails_enabled', !form.guardrails.semantic_guardrails_enabled)}
                           />
-                        </label>
+                        </div>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Allowed intents <InfoHint label="Allowed intents" description="Uno per riga. Usa capability naturali, per esempio: cercare informazioni su utenti aziendali." /></span>
+                            <textarea
+                              value={form.guardrails.allowed_intents}
+                              onChange={(e) => setGuardrailField('allowed_intents', e.target.value)}
+                              className="min-h-28 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Blocked intents <InfoHint label="Blocked intents" description="Uno per riga. Se una richiesta combacia con uno di questi intent, viene bloccata anche se combacia con un allowed intent." /></span>
+                            <textarea
+                              value={form.guardrails.blocked_intents}
+                              onChange={(e) => setGuardrailField('blocked_intents', e.target.value)}
+                              className="min-h-28 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Messaggio blocco <InfoHint label="Messaggio blocco" description="Risposta assistant usata dal backend quando la richiesta non è permessa. Il prompt originale non viene passato all'agente." /></span>
+                            <textarea
+                              value={form.guardrails.blocked_message}
+                              onChange={(e) => setGuardrailField('blocked_message', e.target.value)}
+                              className="min-h-20 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Messaggio chiarimento <InfoHint label="Messaggio chiarimento" description="Usato se scegli clarify per richieste fuori allowlist o poco chiare." /></span>
+                            <textarea
+                              value={form.guardrails.unclear_message}
+                              onChange={(e) => setGuardrailField('unclear_message', e.target.value)}
+                              className="min-h-20 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Azione se fuori allowlist <InfoHint label="Azione fuori allowlist" description="Block risponde col messaggio di blocco. Clarify chiede chiarimento senza chiamare l'agente." /></span>
+                            <select
+                              value={form.guardrails.unclear_action}
+                              onChange={(e) => setGuardrailField('unclear_action', e.target.value)}
+                              className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-white"
+                            >
+                              <option value="block">Block</option>
+                              <option value="clarify">Clarify</option>
+                            </select>
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Match threshold <InfoHint label="Match threshold" description="Soglia cosine embedding. Valori più alti sono più restrittivi; 0.72 è il default consigliato." /></span>
+                            <input
+                              type="number"
+                              min={0.1}
+                              max={0.98}
+                              step={0.01}
+                              value={form.guardrails.match_threshold}
+                              onChange={(e) => setGuardrailField('match_threshold', e.target.value)}
+                              className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-white"
+                            />
+                          </label>
+                        </div>
+                      </div>
                         </CollapsiblePanel>
 
                         <div>

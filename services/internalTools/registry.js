@@ -3,6 +3,7 @@ const { getGoals, editGoals } = require('./agentState');
 const { getControlEngineSettingsSync } = require('../appSettings');
 const {
   executeControlAction,
+  getControlSchemaContext,
   retrieveControlInfo,
   updateControlSchema,
 } = require('../control/controlOrchestrator');
@@ -72,6 +73,18 @@ function getControlEngineToolDefinitions() {
   if (!settings.enabled) return [];
   const tools = [
     {
+      key: 'controlEngineGetSchemaContext',
+      name: 'ControlEngine_getSchemaContext',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getSchemaContext`,
+      description: 'Restituisce i valori accettati e le regole stringenti per preparare una proposta JSON Control Engine prima di chiamare updateSchema. Usa questo tool prima di creare o modificare action ssh/telnet. Restituisce sempre una stringa JSON.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      handler: getControlSchemaContext,
+    },
+    {
       key: 'controlEngineRetrieveInfo',
       name: 'ControlEngine_retriveInfo',
       publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_retriveInfo`,
@@ -85,7 +98,7 @@ function getControlEngineToolDefinitions() {
           room: { type: 'string', description: 'Nome o alias stanza opzionale.' },
           device_type: { type: 'string', description: 'Tipo device, es. projector, printer, audio, computer.' },
           capability: { type: 'string', description: 'Capability richiesta, es. status_online, power_on, audio_value.' },
-          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ping', 'http', 'http_api'], description: 'Adapter tecnico azione opzionale.' },
+          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ssh', 'ping', 'http', 'http_api'], description: 'Adapter tecnico azione opzionale.' },
           limit: { type: 'number', description: 'Numero massimo risultati.' },
         },
         additionalProperties: false,
@@ -96,7 +109,7 @@ function getControlEngineToolDefinitions() {
       key: 'controlEngineUpdateSchema',
       name: 'ControlEngine_updateSchema',
       publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_updateSchema`,
-      description: 'Aggiunge o aggiorna nodi e relazioni del grafo Control Engine. Usa dry_run=true per preview. Restituisce sempre una stringa JSON.',
+      description: 'Aggiunge o aggiorna nodi e relazioni del grafo Control Engine. Usa prima ControlEngine_getSchemaContext per ottenere connection_ref accettati. Le action telnet/ssh richiedono command e connection_ref esistente/enabled; bash richiede command e vieta connection_ref; host, porta, username e password non vanno mai nel grafo. Usa dry_run=true per preview. Restituisce sempre una stringa JSON.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -127,7 +140,7 @@ function getControlEngineToolDefinitions() {
       key: 'controlEngineExecuteAction',
       name: 'ControlEngine_executeAction',
       publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_executeAction`,
-      description: 'Esegue azioni gia presenti nel grafo Control Engine su device target, incluse azioni bash arbitrarie salvate nel grafo. Restituisce sempre una stringa JSON.',
+          description: 'Esegue azioni gia presenti nel grafo Control Engine su device target. Le action ssh/telnet usano solo connection_ref salvato nel grafo e connessioni persistenti configurate nelle impostazioni. Restituisce sempre una stringa JSON.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -28,6 +28,7 @@ const { getOllamaConnectionStatuses } = require('../services/ollamaRuntime');
 const { refreshTelegramBotRuntime } = require('../services/telegramBot');
 const { createMemoryRepository } = require('../services/memory/repositories/memoryRepository');
 const { createControlRepository } = require('../services/control/repositories/controlRepository');
+const { initializeControlPersistentConnections } = require('../services/control/connectionManager');
 
 router.use(authenticateToken);
 
@@ -144,6 +145,7 @@ router.put('/memory', async (req, res) => {
 router.put('/control', async (req, res) => {
   try {
     await updateControlEngineSettings(req.body || {});
+    await initializeControlPersistentConnections();
     return res.json(getSettingsSnapshot().control_engine);
   } catch (error) {
     console.error('Errore aggiornamento impostazioni Control Engine:', error);

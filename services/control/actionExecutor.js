@@ -1,6 +1,7 @@
 const { exec, execFile } = require('child_process');
 const net = require('net');
 const axios = require('axios');
+const { executePersistentConnectionCommand } = require('./connectionManager');
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
@@ -152,7 +153,13 @@ async function executeControlActionTarget(target) {
   if (actionType === 'ping') return executePing(device, action);
   if (actionType === 'bash') return executeBash(device, action);
   if (actionType === 'http' || actionType === 'http_api') return executeHttpApi(device, action, target?.params || {});
+  if (actionType === 'ssh') {
+    return executePersistentConnectionCommand(String(action?.connection_ref || '').trim(), String(action?.command || '').trim());
+  }
   if (actionType === 'telnet' || actionType === 'telnet_auth') {
+    if (action?.connection_ref) {
+      return executePersistentConnectionCommand(String(action.connection_ref || '').trim(), String(action?.command || '').trim());
+    }
     return executeTelnetLike(device, action, target?.params || {});
   }
   return { status: 'failed', error: `Tipo azione non supportato: ${actionType || 'n/d'}` };

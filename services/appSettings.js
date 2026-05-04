@@ -1,5 +1,6 @@
 const { getSetting, setSetting } = require('../database/db_app_settings');
 const { encryptValue, decryptValue } = require('../utils/settingsCrypto');
+const crypto = require('crypto');
 
 const SETTINGS_KEYS = Object.freeze({
   portalAccess: 'portal_access',
@@ -159,6 +160,7 @@ function buildDefaultControlEngineSettings() {
   return {
     enabled: false,
     execution_enabled: false,
+    persistent_connections: [],
   };
 }
 
@@ -231,6 +233,85 @@ function normalizeControlEngineSettings(value) {
   return {
     enabled: parseBoolean(value?.enabled, defaults.enabled),
     execution_enabled: parseBoolean(value?.execution_enabled, defaults.execution_enabled),
+    persistent_connections: normalizeControlPersistentConnections(value?.persistent_connections),
+  };
+}
+
+function normalizeControlProtocol(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'ssh' ? 'ssh' : 'telnet';
+}
+
+function buildControlConnectionRef(connection, index) {
+  const explicit = String(connection?.ref || connection?.key || '').trim();
+  if (explicit) return explicit.toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
+  const label = String(connection?.label || connection?.name || '').trim().toLowerCase();
+  const host = String(connection?.host || '').trim();
+  const source = [label, host, connection?.port, index + 1].filter(Boolean).join(':');
+  return `conn_${crypto.createHash('sha1').update(source).digest('hex').slice(0, 10)}`;
+}
+
+function normalizeControlPersistentConnection(connection, index) {
+  const ref = buildControlConnectionRef(connection, index);
+  const protocol = normalizeControlProtocol(connection?.protocol);
+  const auth = parseBoolean(connection?.auth, false);
+  const username = String(connection?.username || '').trim();
+  const password = String(connection?.password || '').trim();
+  const normalized = {
+    id: String(connection?.id || ref).trim() || ref,
+    ref,
+    label: String(connection?.label || connection?.name || ref).trim() || ref,
+    protocol,
+    host: String(connection?.host || '').trim(),
+    port: parseInteger(connection?.port, protocol === 'ssh' ? 22 : 23),
+    auth,
+    username: auth ? username : '',
+    password: auth ? password : '',
+    persistent: parseBoolean(connection?.persistent, true),
+    ready_message: protocol === 'telnet' ? String(connection?.ready_message || connection?.readyMessage || '').trim() : '',
+    enabled: connection?.enabled !== false,
+  };
+  if (normalized.enabled && normalized.auth && (!normalized.username || !normalized.password)) {
+    throw new Error(`Connessione persistente ${normalized.label}: username e password obbligatori quando auth=true.`);
+  }
+  return normalized;
+}
+
+function normalizeControlPersistentConnections(input) {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set();
+  const normalized = [];
+  input.forEach((connection, index) => {
+    const item = normalizeControlPersistentConnection(connection, index);
+    if (!item.host) return;
+    if (seen.has(item.ref)) return;
+    seen.add(item.ref);
+    normalized.push(item);
+  });
+  return normalized;
+}
+
+function deserializeControlEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
+      ...connection,
+      username: decryptValue(connection?.username),
+      password: decryptValue(connection?.password),
+    })),
+  };
+}
+
+function serializeControlEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
+      ...connection,
+      username: encryptValue(connection?.username),
+      password: encryptValue(connection?.password),
+    })),
   };
 }
 
@@ -483,7 +564,33 @@ function redactMemoryEngineSettings(value) {
 }
 
 function redactControlEngineSettings(value) {
-  return { ...value };
+  return {
+    ...value,
+    persistent_connections: (value?.persistent_connections || []).map((connection) => ({
+      ...connection,
+      id: undefined,
+      username: '',
+      password: '',
+      username_configured: Boolean(String(connection?.username || '').trim()),
+      password_configured: Boolean(String(connection?.password || '').trim()),
+    })),
+  };
+}
+
+function preserveControlConnectionSecrets(normalized, incoming, current) {
+  const currentByRef = new Map((current?.persistent_connections || []).map((connection) => [connection.ref, connection]));
+  const incomingByRef = new Map((incoming?.persistent_connections || []).map((connection, index) => [
+    buildControlConnectionRef(connection, index),
+    connection,
+  ]));
+  return {
+    ...normalized,
+    persistent_connections: (normalized.persistent_connections || []).map((connection) => {
+      const currentConnection = currentByRef.get(connection.ref);
+      const incomingConnection = incomingByRef.get(connection.ref);
+      return preserveExistingSecrets(connection, incomingConnection || {}, currentConnection || {}, ['username', 'password']);
+    }),
+  };
 }
 
 function preserveMcpHeaderSecrets(normalized, incoming, current) {
@@ -572,7 +679,11 @@ async function initializeAppSettings() {
   settingsCache.controlEngine = await loadOrSeedSetting(
     SETTINGS_KEYS.controlEngine,
     buildDefaultControlEngineSettings,
-    normalizeControlEngineSettings
+    normalizeControlEngineSettings,
+    {
+      deserialize: deserializeControlEngineSettings,
+      serialize: serializeControlEngineSettings,
+    }
   );
 }
 
@@ -698,8 +809,22 @@ async function updateMemoryEngineSettings(nextValue) {
 
 async function updateControlEngineSettings(nextValue) {
   const current = getControlEngineSettingsSync();
-  const normalized = normalizeControlEngineSettings({ ...current, ...(nextValue || {}) });
-  await setSetting(SETTINGS_KEYS.controlEngine, normalized);
+  const incoming = nextValue || {};
+  const currentByRef = new Map((current?.persistent_connections || []).map((connection) => [connection.ref, connection]));
+  const incomingWithSecrets = { ...incoming };
+  if (Array.isArray(incoming.persistent_connections)) {
+    incomingWithSecrets.persistent_connections = incoming.persistent_connections.map((connection, index) => {
+        const ref = buildControlConnectionRef(connection, index);
+        const currentConnection = currentByRef.get(ref);
+        return preserveExistingSecrets({ ...connection }, connection, currentConnection || {}, ['username', 'password']);
+      });
+  }
+  const normalized = preserveControlConnectionSecrets(
+    normalizeControlEngineSettings({ ...current, ...incomingWithSecrets }),
+    incoming,
+    current
+  );
+  await setSetting(SETTINGS_KEYS.controlEngine, serializeControlEngineSettings(normalized));
   settingsCache.controlEngine = normalized;
   return normalized;
 }

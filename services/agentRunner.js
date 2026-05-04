@@ -8,6 +8,7 @@ const { createOpenAiClient, getDefaultOpenAiModel } = require('./openaiRuntime')
 const { MODEL_PROVIDERS, normalizeModelConfig, getAgentDefaultModelConfig } = require('./aiModelCatalog');
 const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
 const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('./agentSemanticGuardrails');
 
 function toToolContentString(value) {
   if (typeof value === 'string') return value;
@@ -582,6 +583,31 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         depth: (context.depth || 0) + 1,
         started_at: new Date(),
       });
+      const childGuardrail = await evaluateAgentSemanticGuardrails(childAgent, delegatedTask);
+      if (childGuardrail.applied && childGuardrail.decision !== 'allow') {
+        const content = childGuardrail.message || `Guardrail: ${childAgent.name} non puo gestire questa richiesta.`;
+        await logAgentEvent(
+          { ...context, runId: childRun.id, parentRunId: context.runId || null, depth: (context.depth || 0) + 1 },
+          childAgent,
+          'guardrail',
+          content,
+          {
+            guardrail_type: 'semantic',
+            blocked: true,
+            decision: childGuardrail.decision,
+            reason: childGuardrail.reason,
+            delegated_by_agent_id: agent.id,
+            tool_call_id: toolCall.id,
+          }
+        );
+        await updateAgentRunIfStatus(childRun.id, {
+          status: 'completed',
+          finished_at: new Date(),
+          guardrail_result_json: buildAgentGuardrailRunTrace(childGuardrail),
+        }, 'running');
+        toolMessages.push({ role: 'tool', tool_call_id: toolCall.id, content });
+        continue;
+      }
       const childMemoryContextPacket = await runBeforeMemory({
         agent: childAgent,
         chat: {

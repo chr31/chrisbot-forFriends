@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const CONTROL_GRAPH_ID = 'control';
 const CONTROL_GRAPH_KEY = 'chrisbot-actions';
 
-const ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ping', 'http', 'http_api']);
+const ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ssh', 'ping', 'http', 'http_api']);
 const ACTION_INTENTS = new Set(['control', 'monitoring']);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const LOCATION_KINDS = new Set(['campus', 'building', 'floor', 'room', 'zone', 'location']);
@@ -51,6 +51,7 @@ function buildCanonicalKey(kind, input = {}) {
     input.device_type || input.type || '',
     input.capability_key || input.capability || '',
     input.adapter_type || input.action_type || '',
+    input.connection_ref || input.connectionRef || '',
     input.ip || '',
     input.mac_address || input.macAddress || '',
     input.command || '',

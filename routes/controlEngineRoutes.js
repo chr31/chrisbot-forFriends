@@ -3,6 +3,7 @@ const router = express.Router();
 const authenticateToken = require('../middleware/authenticateToken');
 const { requireSuperAdmin } = require('../utils/adminAccess');
 const {
+  getControlSchemaContext,
   retrieveControlInfo,
   updateControlSchema,
   executeControlAction,
@@ -19,6 +20,11 @@ function parseToolString(value) {
 
 router.use(authenticateToken);
 router.use(requireSuperAdmin);
+
+router.get('/schema/context', async (_req, res) => {
+  const result = parseToolString(await getControlSchemaContext());
+  return res.status(result?.ok === false ? 400 : 200).json(result);
+});
 
 router.post('/retrieve', async (req, res) => {
   const result = parseToolString(await retrieveControlInfo(req.body || {}));

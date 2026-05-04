@@ -23,6 +23,7 @@ const { buildInitialAgentHistory, runAgentConversation, sanitizeMessages } = req
 const { getAgentDefaultModelConfig, normalizeModelConfig } = require('../services/aiModelCatalog');
 const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
 const { buildMemoryRunTrace } = require('../services/memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('../services/agentSemanticGuardrails');
 
 router.use(authenticateToken);
 
@@ -88,6 +89,34 @@ async function continueInboxConversation(item, username, content) {
   });
   const modelConfig = normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent));
   const userMessage = { role: 'user', content };
+  const semanticGuardrail = await evaluateAgentSemanticGuardrails(agent, content);
+  if (semanticGuardrail.applied && semanticGuardrail.decision !== 'allow') {
+    const responseText = semanticGuardrail.message || 'Questo agente non puo gestire questa richiesta.';
+    await updateAgentRunIfStatus(run.id, {
+      status: 'completed',
+      finished_at: new Date(),
+      guardrail_result_json: buildAgentGuardrailRunTrace(semanticGuardrail),
+    }, 'running');
+    await insertInboxMessage({
+      inbox_item_id: item.id,
+      role: 'agent',
+      message_type: 'message',
+      agent_id: agent.id,
+      content: responseText,
+      metadata_json: {
+        source: 'agent_guardrail',
+        agent_run_id: run.id,
+        decision: semanticGuardrail.decision,
+        reason: semanticGuardrail.reason,
+      },
+    });
+    await updateInboxItem(item.id, {
+      status: 'open',
+      is_read: 0,
+      last_message_at: new Date(),
+    });
+    return { runId: run.id, response: responseText, guardrail: semanticGuardrail };
+  }
   const memoryContextPacket = await runBeforeMemory({
     agent,
     chat: {

@@ -267,12 +267,14 @@ function normalizeAction(input = {}) {
   const capabilityKey = inferCapabilityKey(input);
   const actionKey = normalizeKey(input.action_key || input.key || name) || capabilityKey;
   const command = normalizeText(input.command, 4000) || null;
+  const connectionRef = normalizeKey(input.connection_ref || input.connectionRef || input.connection || '');
   const canonicalKey = buildCanonicalKey('action', {
     name,
     key: actionKey,
     capability_key: capabilityKey,
     adapter_type: adapterType,
     command,
+    connection_ref: connectionRef,
   });
   const node = {
     id: buildControlId('action', { ...input, name, action_key: actionKey, capability_key: capabilityKey }),
@@ -286,6 +288,7 @@ function normalizeAction(input = {}) {
     intent: normalizeIntent(input.intent),
     action_type: adapterType,
     adapter_type: adapterType,
+    connection_ref: connectionRef || null,
     command,
     http_method: normalizeText(input.http_method || input.method, 20).toUpperCase() || null,
     headers_json: input.headers_json && typeof input.headers_json === 'object'
@@ -312,6 +315,7 @@ function normalizeAction(input = {}) {
     node.capability_key,
     node.intent,
     node.action_type,
+    node.connection_ref,
     node.description,
     node.command,
     node.aliases.join(' '),
