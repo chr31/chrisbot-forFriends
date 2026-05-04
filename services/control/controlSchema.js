@@ -3,9 +3,10 @@ const crypto = require('crypto');
 const CONTROL_GRAPH_ID = 'control';
 const CONTROL_GRAPH_KEY = 'chrisbot-actions';
 
-const ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ping']);
+const ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ping', 'http', 'http_api']);
 const ACTION_INTENTS = new Set(['control', 'monitoring']);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
+const LOCATION_KINDS = new Set(['campus', 'building', 'floor', 'room', 'zone', 'location']);
 
 function normalizeText(value, limit = 255) {
   return String(value || '').trim().slice(0, limit);
@@ -41,6 +42,22 @@ function buildControlId(kind, input = {}) {
   return `control:${kind}:${base}`.slice(0, 240);
 }
 
+function buildCanonicalKey(kind, input = {}) {
+  const parts = [
+    kind,
+    input.path || input.location_path || '',
+    input.kind || input.location_kind || '',
+    input.name || input.key || '',
+    input.device_type || input.type || '',
+    input.capability_key || input.capability || '',
+    input.adapter_type || input.action_type || '',
+    input.ip || '',
+    input.mac_address || input.macAddress || '',
+    input.command || '',
+  ].map((part) => normalizeKey(part)).filter(Boolean);
+  return parts.join(':').slice(0, 240) || `${normalizeKey(kind)}:${stableHash(JSON.stringify(input))}`;
+}
+
 function normalizeList(value, limit = 24) {
   const source = Array.isArray(value) ? value : String(value || '').split(/[\n,]+/);
   const seen = new Set();
@@ -60,6 +77,11 @@ function normalizeList(value, limit = 24) {
 function normalizeActionType(value) {
   const normalized = normalizeText(value, 40).toLowerCase();
   return ACTION_TYPES.has(normalized) ? normalized : 'bash';
+}
+
+function normalizeLocationKind(value) {
+  const normalized = normalizeKey(value || 'location');
+  return LOCATION_KINDS.has(normalized) ? normalized : 'location';
 }
 
 function normalizeIntent(value) {
@@ -85,11 +107,14 @@ function parseBoolean(value, fallback = false) {
 module.exports = {
   CONTROL_GRAPH_ID,
   CONTROL_GRAPH_KEY,
+  ACTION_TYPES,
   buildControlId,
+  buildCanonicalKey,
   normalizeActionType,
   normalizeIntent,
   normalizeKey,
   normalizeList,
+  normalizeLocationKind,
   normalizeRiskLevel,
   normalizeText,
   parseBoolean,

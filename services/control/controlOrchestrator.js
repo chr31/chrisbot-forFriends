@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { getControlEngineSettingsSync, getMemoryEngineSettingsSync } = require('../appSettings');
 const { createControlRepository } = require('./repositories/controlRepository');
 const { executeControlActionTarget } = require('./actionExecutor');
@@ -66,7 +65,9 @@ function compactActionMatch(entry = {}) {
     action_id: entry.action?.id || null,
     action: entry.action?.name || null,
     intent: entry.action?.intent || null,
+    capability: entry.capability?.key || entry.action?.capability_key || null,
     action_type: entry.action?.action_type || null,
+    adapter: entry.adapter?.key || entry.action?.adapter_type || entry.action?.action_type || null,
     risk_level: entry.action?.risk_level || null,
     requires_confirmation: Boolean(entry.action?.requires_confirmation),
     description: entry.action?.description || null,
@@ -82,7 +83,7 @@ function shouldIncludeLocations(args = {}) {
   if (args.include_locations === false) return false;
 
   const hasDeviceOrActionFilter = Boolean(
-    String(args.device_type || args.deviceType || args.action_type || args.intent || '').trim()
+    String(args.device_type || args.deviceType || args.action_type || args.intent || args.capability || '').trim()
   );
   const hasExplicitLocationFilter = Boolean(String(args.building || args.room || '').trim());
   const query = String(args.query || args.instruction || args.prompt || '').trim().toLowerCase();
@@ -95,7 +96,7 @@ function shouldIncludeLocations(args = {}) {
   return false;
 }
 
-function withInferredLocationFilters(args = {}) {
+function withInferredControlFilters(args = {}) {
   const nextArgs = { ...args };
   const query = String(args.query || args.instruction || args.prompt || '').trim().toLowerCase();
   if (!String(nextArgs.building || '').trim()) {
@@ -105,6 +106,27 @@ function withInferredLocationFilters(args = {}) {
       const buildingMatch = query.match(/\b(?:in|nel|nello|nell'|edificio|building)\s+([a-z0-9_.-]+)\b/i);
       if (buildingMatch?.[1]) nextArgs.building = buildingMatch[1];
     }
+  }
+  if (!String(nextArgs.room || '').trim()) {
+    const roomMatch = query.match(/\b(?:aula|room|stanza|sala)\s+([a-z0-9_.-]+)\b/i);
+    if (roomMatch?.[1]) nextArgs.room = roomMatch[1];
+  }
+  if (!String(nextArgs.device_type || nextArgs.deviceType || '').trim()) {
+    if (/\b(proiettore|proiettori|projector|projectors|videoproiettore)\b/.test(query)) nextArgs.device_type = 'projector';
+    else if (/\b(stampante|stampanti|printer|printers)\b/.test(query)) nextArgs.device_type = 'printer';
+    else if (/\b(audio|speaker|amplificatore|microfono)\b/.test(query)) nextArgs.device_type = 'audio';
+    else if (/\b(computer|pc|workstation)\b/.test(query)) nextArgs.device_type = 'computer';
+  }
+  if (!String(nextArgs.intent || '').trim()) {
+    if (/\b(controll|verific|monitor|status|stato|online|on line|valore|livello)\b/.test(query)) {
+      nextArgs.intent = 'monitoring';
+    }
+  }
+  if (!String(nextArgs.capability || nextArgs.capability_key || '').trim()) {
+    if (/\b(ping|online|on line|status|stato)\b/.test(query)) nextArgs.capability = 'status_online';
+    else if (/\b(accendi|turn on|power on)\b/.test(query)) nextArgs.capability = 'power_on';
+    else if (/\b(spegni|turn off|power off)\b/.test(query)) nextArgs.capability = 'power_off';
+    else if (/\b(audio|volume|mute|livello|valore)\b/.test(query)) nextArgs.capability = 'audio_value';
   }
   return nextArgs;
 }
@@ -163,9 +185,10 @@ async function retrieveControlInfo(args = {}) {
   try {
     requireEnabled();
     const repository = getRepository();
+    const controlArgs = withInferredControlFilters(args);
     const includeLocations = shouldIncludeLocations(args);
-    const matches = await repository.search(args);
-    const locations = includeLocations ? await repository.listLocations(withInferredLocationFilters(args)) : [];
+    const matches = await repository.search(controlArgs);
+    const locations = includeLocations ? await repository.listLocations(controlArgs) : [];
     return toolString({
       ok: true,
       tool,
@@ -192,6 +215,10 @@ async function updateControlSchema(args = {}) {
       : {
           building: args.building,
           room: args.room,
+          location: args.location,
+          locations: args.locations,
+          capabilities: args.capabilities,
+          capability: args.capability,
           device: args.device,
           action: args.action,
         };
@@ -258,23 +285,12 @@ async function executeControlAction(args = {}) {
     }
 
     const failed = items.filter((item) => item.status === 'failed').length;
-    const runId = `control:run:${crypto.randomUUID()}`;
-    await getRepository().saveActionRun({
-      id: runId,
-      requested_by_agent_id: args._agentId || null,
-      requested_by_user: args._userKey || null,
-      query: args.query || '',
-      status: failed > 0 ? 'completed_with_errors' : 'completed',
-      dry_run: dryRun,
-      targets,
-      output: { items },
-    });
     return toolString({
       ok: true,
       tool,
       result: {
-        run_id: runId,
         status: failed > 0 ? 'completed_with_errors' : 'completed',
+        persisted: false,
         executed: items.length,
         failed,
         items,

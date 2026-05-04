@@ -1,5 +1,6 @@
 const { exec, execFile } = require('child_process');
 const net = require('net');
+const axios = require('axios');
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
@@ -102,11 +103,55 @@ function executeTelnetLike(device, action, params = {}) {
   });
 }
 
+async function executeHttpApi(_device, action, params = {}) {
+  const rawCommand = String(action?.command || '').trim();
+  if (!rawCommand) {
+    return { status: 'failed', error: 'URL/comando HTTP mancante nell azione.' };
+  }
+  const parts = rawCommand.split(/\s+/);
+  const first = String(parts[0] || '').toUpperCase();
+  const hasMethodPrefix = /^(GET|POST|PUT|PATCH|DELETE|HEAD)$/i.test(first);
+  const method = String(params.method || action?.http_method || (hasMethodPrefix ? first : 'GET')).toUpperCase();
+  const url = hasMethodPrefix ? parts.slice(1).join(' ') : rawCommand;
+  if (!/^https?:\/\//i.test(url)) {
+    return { status: 'failed', error: 'URL HTTP non valida.' };
+  }
+
+  let actionHeaders = {};
+  try {
+    actionHeaders = action?.headers_json ? JSON.parse(action.headers_json) : {};
+  } catch (_) {
+    actionHeaders = {};
+  }
+
+  try {
+    const response = await axios({
+      method,
+      url,
+      headers: { ...actionHeaders, ...(params.headers || {}) },
+      data: params.body ?? action?.body_template ?? undefined,
+      timeout: Number(params.timeout_ms || DEFAULT_TIMEOUT_MS),
+      validateStatus: () => true,
+    });
+    const output = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+    return {
+      status: response.status >= 200 && response.status < 400 ? 'success' : 'failed',
+      exit_code: response.status,
+      stdout: String(output || '').slice(0, 8000),
+      stderr: '',
+      output: String(output || '').slice(0, 8000),
+    };
+  } catch (error) {
+    return { status: 'failed', error: String(error?.message || error) };
+  }
+}
+
 async function executeControlActionTarget(target) {
   const { device, action } = target || {};
   const actionType = String(action?.action_type || '').trim().toLowerCase();
   if (actionType === 'ping') return executePing(device, action);
   if (actionType === 'bash') return executeBash(device, action);
+  if (actionType === 'http' || actionType === 'http_api') return executeHttpApi(device, action, target?.params || {});
   if (actionType === 'telnet' || actionType === 'telnet_auth') {
     return executeTelnetLike(device, action, target?.params || {});
   }

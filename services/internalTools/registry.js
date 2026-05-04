@@ -84,7 +84,8 @@ function getControlEngineToolDefinitions() {
           building: { type: 'string', description: 'Nome o alias edificio opzionale.' },
           room: { type: 'string', description: 'Nome o alias stanza opzionale.' },
           device_type: { type: 'string', description: 'Tipo device, es. projector, printer, audio, computer.' },
-          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ping'], description: 'Tipo tecnico azione opzionale.' },
+          capability: { type: 'string', description: 'Capability richiesta, es. status_online, power_on, audio_value.' },
+          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ping', 'http', 'http_api'], description: 'Adapter tecnico azione opzionale.' },
           limit: { type: 'number', description: 'Numero massimo risultati.' },
         },
         additionalProperties: false,
@@ -103,9 +104,13 @@ function getControlEngineToolDefinitions() {
           dry_run: { type: 'boolean', description: 'Se true genera solo una preview.' },
           schema: {
             type: 'object',
-            description: 'Payload strutturato con building, room, device, action.',
+            description: 'Payload strutturato con locations/building/room, devices, capabilities, actions.',
             additionalProperties: true,
           },
+          locations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          location: { type: 'object', additionalProperties: true },
+          capabilities: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          capability: { type: 'object', additionalProperties: true },
           building: { type: 'object', additionalProperties: true },
           room: { type: 'object', additionalProperties: true },
           device: { type: 'object', additionalProperties: true },
@@ -122,7 +127,7 @@ function getControlEngineToolDefinitions() {
       key: 'controlEngineExecuteAction',
       name: 'ControlEngine_executeAction',
       publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_executeAction`,
-      description: 'Esegue azioni gia presenti nel grafo Control Engine su device target. Non accetta comandi arbitrari. Restituisce sempre una stringa JSON.',
+      description: 'Esegue azioni gia presenti nel grafo Control Engine su device target, incluse azioni bash arbitrarie salvate nel grafo. Restituisce sempre una stringa JSON.',
       inputSchema: {
         type: 'object',
         properties: {

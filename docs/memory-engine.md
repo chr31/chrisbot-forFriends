@@ -18,6 +18,22 @@ Neo4j = fonte di verita' della memoria operativa
 Memory Engine = valida, regola, salva, recupera e inietta contesto
 ```
 
+## Relazione con Control Engine
+
+Memory Engine e Control Engine condividono Neo4j, ma restano subgraph separati.
+
+```txt
+Memory Engine
+-> procedure, decisioni, lezioni operative, contesto riutilizzabile
+
+Control Engine
+-> stato operativo corrente: location, device, capability, action, adapter
+```
+
+Il Control Engine non deve salvare storico run, ultimi esiti o log di monitoraggio. Deve contenere solo struttura operativa attuale. Le azioni bash arbitrarie sono una capacita intenzionale quando l'esecuzione e' abilitata: devono restare azioni esplicite del grafo, eseguite dal backend con timeout, dry-run e limiti di output.
+
+Per evitare crescita esponenziale, ogni inserimento Control Engine deve allineare prima di creare: canonical key, alias, vicinato nel grafo e, quando disponibile, embedding similarity. Le procedure restano nel Memory Engine e possono richiamare capability o azioni del Control Engine quando devono eseguire controlli reali.
+
 ## Superamento della memoria semplice
 
 La memoria semplice attuale basata sul campo testuale `agents.memories` viene dismessa completamente.
