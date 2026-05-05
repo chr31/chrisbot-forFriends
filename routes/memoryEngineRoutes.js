@@ -6,6 +6,7 @@ const { getAgentById } = require('../database/db_agents');
 const { getMemoryEngineSettingsSync } = require('../services/appSettings');
 const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
 const { callMemoryChatText } = require('../services/memory/memoryModelRuntime');
+const { getLiveGraphSnapshot } = require('../services/graphLiveService');
 
 router.use(authenticateToken);
 router.use(requireSuperAdmin);
@@ -38,6 +39,19 @@ const TOPIC_LABELS = {
   recent_actions: 'azione recente',
   summaries: 'sintesi',
 };
+
+router.get('/graph/live', async (req, res) => {
+  try {
+    const snapshot = await getLiveGraphSnapshot({
+      engine: req.query.engine,
+      limit: req.query.limit,
+    });
+    return res.json(snapshot);
+  } catch (error) {
+    console.error('Errore recupero grafo live:', error);
+    return res.status(500).json({ error: error.message || 'Errore recupero grafo live' });
+  }
+});
 
 function normalizePrompt(value) {
   return String(value || '').trim();

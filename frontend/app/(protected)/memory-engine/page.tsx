@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowTopRightOnSquareIcon, CircleStackIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { ArrowTopRightOnSquareIcon, BoltIcon, CheckCircleIcon, CircleStackIcon, SparklesIcon, XCircleIcon } from '@heroicons/react/24/outline';
 
 type AuthUser = {
   name: string;
@@ -201,7 +201,6 @@ export default function MemoryEnginePage() {
   const [controlExecutionEnabled, setControlExecutionEnabled] = useState(false);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [prompt, setPrompt] = useState('');
-  const [controlPayload, setControlPayload] = useState('');
   const [controlResult, setControlResult] = useState<ControlResult | null>(null);
   const [controlAction, setControlAction] = useState<ControlAction | null>(null);
   const [memoryScope, setMemoryScope] = useState<'shared' | 'dedicated'>('shared');
@@ -263,9 +262,21 @@ export default function MemoryEnginePage() {
     [prompt, isRunning, memoryScope, selectedAgentId]
   );
   const canRunControl = useMemo(
-    () => Boolean(prompt.trim() || controlPayload.trim()) && !isControlRunning && controlEnabled,
-    [prompt, controlPayload, isControlRunning, controlEnabled]
+    () => Boolean(prompt.trim()) && !isControlRunning && controlEnabled,
+    [prompt, isControlRunning, controlEnabled]
   );
+  const memoryTargetValue = memoryScope === 'shared' ? 'shared' : `agent:${selectedAgentId}`;
+
+  const handleMemoryTargetChange = (value: string) => {
+    if (value === 'shared') {
+      setMemoryScope('shared');
+      return;
+    }
+    if (value.startsWith('agent:')) {
+      setMemoryScope('dedicated');
+      setSelectedAgentId(value.slice('agent:'.length));
+    }
+  };
 
   const runMemoryAction = async (action: MemoryResponse['action']) => {
     const cleanPrompt = prompt.trim();
@@ -299,13 +310,7 @@ export default function MemoryEnginePage() {
   };
 
   const parseControlPayload = () => {
-    const cleanPayload = controlPayload.trim();
-    if (!cleanPayload) return {};
-    try {
-      return JSON.parse(cleanPayload);
-    } catch (error: any) {
-      throw new Error(`JSON Control Engine non valido: ${error?.message || error}`);
-    }
+    return {};
   };
 
   const runControlAction = async (action: ControlAction) => {
@@ -355,21 +360,75 @@ export default function MemoryEnginePage() {
                 Console admin per recuperare, aggiornare e verificare i grafi Memory Engine e Control Engine.
               </p>
             </div>
-            <a
-              href={neo4jBrowserUrl || '#'}
-              target="_blank"
-              rel="noreferrer"
-              aria-disabled={!neo4jBrowserUrl}
-              className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-semibold ${
-                neo4jBrowserUrl
-                  ? 'border-sky-700/60 bg-sky-600/10 text-sky-100 hover:bg-sky-600/20'
-                  : 'pointer-events-none border-gray-800 bg-gray-950/60 text-gray-500'
-              }`}
-              title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
-            >
-              <ArrowTopRightOnSquareIcon className="h-5 w-5" />
-              Neo4j Browser
-            </a>
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                href="/graph-live?engine=memory"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20"
+                title="Apri grafo Memory Engine live"
+              >
+                <CircleStackIcon className="h-5 w-5" />
+                Memory
+              </a>
+              <a
+                href="/graph-live?engine=control"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20"
+                title="Apri grafo Control Engine live"
+              >
+                <BoltIcon className="h-5 w-5" />
+                Control
+              </a>
+              <span className="group relative inline-flex">
+                <span
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${
+                    controlEnabled
+                      ? 'border-emerald-700/60 bg-emerald-600/10 text-emerald-200'
+                      : 'border-gray-800 bg-gray-950/60 text-gray-500'
+                  }`}
+                  title={`Control Engine: ${controlEnabled ? 'attivo' : 'disattivo'}`}
+                  aria-label={`Control Engine: ${controlEnabled ? 'attivo' : 'disattivo'}`}
+                >
+                  {controlEnabled ? <CheckCircleIcon className="h-5 w-5" /> : <XCircleIcon className="h-5 w-5" />}
+                </span>
+                <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+                  Control Engine {controlEnabled ? 'attivo' : 'disattivo'}: {controlEnabled ? 'gli agenti possono vedere retrieveInfo e updateSchema.' : 'retrieveInfo e updateSchema non sono esposti agli agenti.'}
+                </span>
+              </span>
+              <span className="group relative inline-flex">
+                <span
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${
+                    controlExecutionEnabled
+                      ? 'border-amber-700/60 bg-amber-600/10 text-amber-200'
+                      : 'border-gray-800 bg-gray-950/60 text-gray-500'
+                  }`}
+                  title={`Esecuzione azioni: ${controlExecutionEnabled ? 'attiva' : 'disattiva'}`}
+                  aria-label={`Esecuzione azioni: ${controlExecutionEnabled ? 'attiva' : 'disattiva'}`}
+                >
+                  <BoltIcon className="h-5 w-5" />
+                </span>
+                <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+                  Esecuzione azioni {controlExecutionEnabled ? 'attiva' : 'disattiva'}: {controlExecutionEnabled ? 'executeAction e le azioni reali sui device sono abilitate.' : 'executeAction resta bloccato e non esegue comandi sui device.'}
+                </span>
+              </span>
+              <a
+                href={neo4jBrowserUrl || '#'}
+                target="_blank"
+                rel="noreferrer"
+                aria-disabled={!neo4jBrowserUrl}
+                className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-semibold ${
+                  neo4jBrowserUrl
+                    ? 'border-sky-700/60 bg-sky-600/10 text-sky-100 hover:bg-sky-600/20'
+                    : 'pointer-events-none border-gray-800 bg-gray-950/60 text-gray-500'
+                }`}
+                title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
+              >
+                <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+                DB
+              </a>
+            </div>
           </div>
 
           <div className="mt-5 inline-flex rounded-xl border border-gray-800 bg-gray-950 p-1">
@@ -394,59 +453,43 @@ export default function MemoryEnginePage() {
 
           <div className="mt-5 space-y-3">
             {activeEngineTab === 'memory' ? (
-              <div className="grid gap-3 md:grid-cols-2">
-              <label className="text-xs font-semibold uppercase tracking-normal text-gray-500">
+              <label className="block max-w-sm text-xs font-semibold uppercase tracking-normal text-gray-500">
                 Scope
                 <select
-                  value={memoryScope}
-                  onChange={(event) => setMemoryScope(event.target.value as 'shared' | 'dedicated')}
+                  value={memoryTargetValue}
+                  onChange={(event) => handleMemoryTargetChange(event.target.value)}
                   className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
                 >
                   <option value="shared">Memorie condivise</option>
-                  <option value="dedicated">Memorie agente</option>
+                  <optgroup label="Memorie agente">
+                    {agents.length === 0 ? (
+                      <option value="" disabled>Nessun agente</option>
+                    ) : (
+                      agents.map((agent) => (
+                        <option key={agent.id} value={`agent:${agent.id}`}>
+                          {agent.name}
+                        </option>
+                      ))
+                    )}
+                  </optgroup>
                 </select>
               </label>
-              <label className="text-xs font-semibold uppercase tracking-normal text-gray-500">
-                Agente
-                <select
-                  value={selectedAgentId}
-                  onChange={(event) => setSelectedAgentId(event.target.value)}
-                  disabled={memoryScope !== 'dedicated' || agents.length === 0}
-                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {agents.length === 0 ? (
-                    <option value="">Nessun agente</option>
-                  ) : (
-                    agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              </div>
-            ) : (
-              <div className="grid gap-3 text-sm md:grid-cols-2">
-                <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-gray-300">
-                  Control Engine: {controlEnabled ? 'attivo' : 'disattivo'}
-                </div>
-                <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-gray-300">
-                  Esecuzione azioni: {controlExecutionEnabled ? 'attiva' : 'disattiva'}
-                </div>
-              </div>
-            )}
+            ) : null}
 
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-              <div className="min-h-12 flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
+              <div className={`flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600 ${
+                activeEngineTab === 'control' ? 'lg:min-h-[9.75rem]' : 'lg:min-h-[6.25rem]'
+              }`}>
               <textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                rows={3}
+                rows={activeEngineTab === 'control' ? 6 : 4}
                 placeholder={activeEngineTab === 'memory'
                   ? 'Scrivi un prompt per cercare o proporre memorie...'
                   : 'Scrivi un prompt per interrogare o aggiornare il grafo control...'}
-                className="min-h-16 w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+                className={`w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500 ${
+                  activeEngineTab === 'control' ? 'min-h-[8.25rem]' : 'min-h-[4.75rem]'
+                }`}
               />
               </div>
               <div className="flex shrink-0 flex-col gap-3">
@@ -497,23 +540,13 @@ export default function MemoryEnginePage() {
                     disabled={!canRunControl || !controlExecutionEnabled}
                     className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
+                    <BoltIcon className="h-5 w-5" />
                     {isControlRunning === 'executeAction' ? 'execute...' : 'executeAction'}
                   </button>
                 </>
               )}
               </div>
             </div>
-            {activeEngineTab === 'control' ? (
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600">
-                <textarea
-                  value={controlPayload}
-                  onChange={(event) => setControlPayload(event.target.value)}
-                  rows={5}
-                  placeholder={'JSON opzionale: {"device_type":"printer","intent":"monitoring"} oppure {"schema":{"building":...}}'}
-                  className="min-h-28 w-full resize-y bg-transparent font-mono text-xs text-white outline-none placeholder:text-gray-500"
-                />
-              </div>
-            ) : null}
           </div>
 
           {error ? (
