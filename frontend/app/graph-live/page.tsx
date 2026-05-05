@@ -20,6 +20,7 @@ type GraphLink = {
   target: string;
   type: string;
   properties: Record<string, unknown>;
+  relationCount?: number;
 };
 
 type GraphSnapshot = {
@@ -90,6 +91,23 @@ function getNodeRadius(node: GraphNode) {
   return 12;
 }
 
+function getReadableTextScale(zoom: number) {
+  return clamp(1 / Math.max(zoom, 0.01), 0.52, 1.25);
+}
+
+function getNodeLabelOpacity(zoom: number, selected: boolean) {
+  if (selected) return 1;
+  if (zoom < 0.55) return 0;
+  if (zoom < 0.9) return 0.72;
+  return 1;
+}
+
+function getLinkLabelOpacity(zoom: number) {
+  if (zoom < 0.8) return 0;
+  if (zoom < 1.15) return 0.5;
+  return 0.82;
+}
+
 function isTechnicalNode(node: GraphNode, engine: 'memory' | 'control') {
   const technicalLabels = engine === 'memory' ? MEMORY_TECHNICAL_LABELS : CONTROL_TECHNICAL_LABELS;
   return node.labels.some((label) => technicalLabels.has(label));
@@ -97,6 +115,78 @@ function isTechnicalNode(node: GraphNode, engine: 'memory' | 'control') {
 
 function truncate(value: string, limit = 32) {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value;
+}
+
+function splitLabel(value: string, limit = 34) {
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  if (normalized.length <= limit) return [normalized];
+  const words = normalized.split(' ');
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > limit && current) {
+      lines.push(current);
+      current = word;
+      if (lines.length === 2) break;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current && lines.length < 2) lines.push(current);
+  return lines.map((line, index) => (
+    index === 1 && line.length > limit ? truncate(line, limit) : line
+  ));
+}
+
+function getLabelBox(lines: string[], fontSize: number) {
+  const width = Math.max(...lines.map((line) => line.length), 1) * fontSize * 0.58 + 18;
+  return {
+    width,
+    height: lines.length * (fontSize + 2) + 10,
+  };
+}
+
+function getLinkLabel(link: GraphLink) {
+  const count = link.relationCount && link.relationCount > 1 ? ` x${link.relationCount}` : '';
+  return `${truncate(link.type, 18)}${count}`;
+}
+
+function aggregateLinks(links: GraphLink[]) {
+  const aggregated = new Map<string, GraphLink>();
+  for (const link of links) {
+    const key = `${link.source}::${link.target}::${link.type}`;
+    const existing = aggregated.get(key);
+    if (existing) {
+      existing.relationCount = (existing.relationCount || 1) + 1;
+    } else {
+      aggregated.set(key, { ...link, relationCount: 1 });
+    }
+  }
+  return Array.from(aggregated.values());
+}
+
+function getLinkGeometry(source: GraphNode, target: GraphNode, link: GraphLink) {
+  const sx = source.x || 0;
+  const sy = source.y || 0;
+  const tx = target.x || 0;
+  const ty = target.y || 0;
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const distance = Math.max(Math.sqrt((dx * dx) + (dy * dy)), 1);
+  const normalX = -dy / distance;
+  const normalY = dx / distance;
+  const bendDirection = hashText(`${link.source}:${link.target}:${link.type}`) % 2 === 0 ? 1 : -1;
+  const bend = clamp(distance * 0.12, 18, 52) * bendDirection;
+  const cx = ((sx + tx) / 2) + normalX * bend;
+  const cy = ((sy + ty) / 2) + normalY * bend;
+  return {
+    path: `M ${sx} ${sy} Q ${cx} ${cy} ${tx} ${ty}`,
+    labelX: (sx + (2 * cx) + tx) / 4,
+    labelY: (sy + (2 * cy) + ty) / 4,
+  };
 }
 
 function formatValue(value: unknown) {
@@ -152,7 +242,7 @@ function layoutGraph(nodes: GraphNode[], links: GraphLink[]) {
       const dx = (target.x || 0) - (source.x || 0);
       const dy = (target.y || 0) - (source.y || 0);
       const distance = Math.max(Math.sqrt((dx * dx) + (dy * dy)), 1);
-      const desired = 155;
+      const desired = 230;
       const force = (distance - desired) * 0.012;
       const moveX = (dx / distance) * force;
       const moveY = (dy / distance) * force;
@@ -163,8 +253,8 @@ function layoutGraph(nodes: GraphNode[], links: GraphLink[]) {
     }
 
     for (const node of positioned) {
-      node.x = Math.max(-720, Math.min(720, (node.x || 0) * 0.998));
-      node.y = Math.max(-650, Math.min(650, (node.y || 0) * 0.998));
+      node.x = Math.max(-760, Math.min(760, (node.x || 0) * 0.998));
+      node.y = Math.max(-690, Math.min(690, (node.y || 0) * 0.998));
     }
   }
 
@@ -237,7 +327,7 @@ export default function GraphLivePage() {
     ));
     return {
       nodes: visibleNodes,
-      links: visibleLinks,
+      links: aggregateLinks(visibleLinks),
       hiddenNodeCount: Math.max(0, (snapshot?.nodes?.length || 0) - visibleNodes.length),
     };
   }, [engine, snapshot]);
@@ -248,6 +338,8 @@ export default function GraphLivePage() {
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) || null : null;
   const links = visibleGraph.links;
+  const textScale = getReadableTextScale(viewport.zoom);
+  const linkLabelOpacity = getLinkLabelOpacity(viewport.zoom);
 
   const switchEngine = (nextEngine: 'memory' | 'control') => {
     setEngine(nextEngine);
@@ -453,27 +545,46 @@ export default function GraphLivePage() {
             const source = nodeById.get(link.source);
             const target = nodeById.get(link.target);
             if (!source || !target) return null;
+            const geometry = getLinkGeometry(source, target, link);
+            const linkLabel = getLinkLabel(link);
+            const linkLabelWidth = linkLabel.length * 8 + 18;
             return (
               <g key={link.id}>
-                <line
-                  x1={source.x}
-                  y1={source.y}
-                  x2={target.x}
-                  y2={target.y}
+                <path
+                  d={geometry.path}
+                  fill="none"
                   stroke="#334155"
-                  strokeWidth="2"
-                  strokeOpacity="0.75"
+                  strokeWidth={link.relationCount && link.relationCount > 1 ? 3 : 2}
+                  strokeOpacity="0.68"
                 />
-                <text
-                  x={((source.x || 0) + (target.x || 0)) / 2}
-                  y={((source.y || 0) + (target.y || 0)) / 2}
-                  fill="#64748b"
-                  fontSize="14"
-                  textAnchor="middle"
-                  pointerEvents="none"
-                >
-                  {truncate(link.type, 18)}
-                </text>
+                {linkLabelOpacity > 0 ? (
+                  <g
+                    transform={`translate(${geometry.labelX} ${geometry.labelY}) scale(${textScale})`}
+                    opacity={linkLabelOpacity}
+                    pointerEvents="none"
+                  >
+                    <rect
+                      x={-linkLabelWidth / 2}
+                      y={-12}
+                      width={linkLabelWidth}
+                      height="24"
+                      rx="7"
+                      fill="#020617"
+                      fillOpacity="0.84"
+                      stroke="#1e3a5f"
+                      strokeOpacity="0.85"
+                    />
+                    <text
+                      fill="#cbd5e1"
+                      fontSize="13"
+                      fontWeight="700"
+                      dominantBaseline="middle"
+                      textAnchor="middle"
+                    >
+                      {linkLabel}
+                    </text>
+                  </g>
+                ) : null}
               </g>
             );
           })}
@@ -481,6 +592,12 @@ export default function GraphLivePage() {
         <g>
           {nodes.map((node) => {
             const selected = node.id === selectedNodeId;
+            const labelOpacity = getNodeLabelOpacity(viewport.zoom, selected);
+            const labelLimit = selected ? 32 : viewport.zoom < 1 ? 22 : 30;
+            const fontSize = selected ? 18 : 14;
+            const labelLines = splitLabel(node.title, labelLimit);
+            const labelBox = getLabelBox(labelLines, fontSize);
+            const labelY = (getNodeRadius(node) + 20) * textScale;
             return (
               <g
                 key={node.id}
@@ -499,19 +616,42 @@ export default function GraphLivePage() {
                   stroke={selected ? '#ffffff' : '#0f172a'}
                   strokeWidth={selected ? 4 : 2}
                 />
-                <text
-                  y={getNodeRadius(node) + 20}
-                  fill="#e5e7eb"
-                  fontSize="18"
-                  fontWeight={selected ? 700 : 600}
-                  textAnchor="middle"
-                  paintOrder="stroke"
-                  stroke="#020617"
-                  strokeWidth="5"
-                  strokeLinejoin="round"
-                >
-                  {truncate(node.title, 28)}
-                </text>
+                {labelOpacity > 0 ? (
+                  <g
+                    transform={`translate(0 ${labelY}) scale(${textScale})`}
+                    opacity={labelOpacity}
+                    pointerEvents="none"
+                  >
+                    <rect
+                      x={-labelBox.width / 2}
+                      y={-labelBox.height / 2}
+                      width={labelBox.width}
+                      height={labelBox.height}
+                      rx="8"
+                      fill="#020617"
+                      fillOpacity={selected ? 0.94 : 0.82}
+                      stroke={selected ? '#bae6fd' : '#1e3a5f'}
+                      strokeOpacity={selected ? 0.9 : 0.72}
+                    />
+                    <text
+                      fill="#f8fafc"
+                      fontSize={fontSize}
+                      fontWeight={selected ? 800 : 700}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                    >
+                      {labelLines.map((line, index) => (
+                        <tspan
+                          key={`${node.id}-label-${index}`}
+                          x="0"
+                          y={(index - ((labelLines.length - 1) / 2)) * (fontSize + 3)}
+                        >
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  </g>
+                ) : null}
               </g>
             );
           })}
