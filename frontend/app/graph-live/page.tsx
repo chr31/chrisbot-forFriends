@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent, PointerEvent, WheelEvent } from 'react';
 import { ArrowPathIcon, BoltIcon, CircleStackIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 type GraphNode = {
@@ -33,6 +34,22 @@ type GraphSnapshot = {
 const VIEW_SIZE = 1600;
 const VIEW_HALF = VIEW_SIZE / 2;
 const REFRESH_MS = 5000;
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 4;
+const MEMORY_TECHNICAL_LABELS = new Set(['MemoryRun', 'MemoryStatus', 'MemoryTool', 'MemoryEpisode']);
+const CONTROL_TECHNICAL_LABELS = new Set(['EngineGraph']);
+
+type ViewportState = {
+  x: number;
+  y: number;
+  zoom: number;
+};
+
+type DragState = {
+  pointerId: number;
+  lastX: number;
+  lastY: number;
+};
 
 function getInitialEngine() {
   if (typeof window === 'undefined') return 'memory';
@@ -73,6 +90,11 @@ function getNodeRadius(node: GraphNode) {
   return 12;
 }
 
+function isTechnicalNode(node: GraphNode, engine: 'memory' | 'control') {
+  const technicalLabels = engine === 'memory' ? MEMORY_TECHNICAL_LABELS : CONTROL_TECHNICAL_LABELS;
+  return node.labels.some((label) => technicalLabels.has(label));
+}
+
 function truncate(value: string, limit = 32) {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value;
 }
@@ -86,6 +108,10 @@ function formatValue(value: unknown) {
   } catch (_) {
     return String(value);
   }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function layoutGraph(nodes: GraphNode[], links: GraphLink[]) {
@@ -149,11 +175,17 @@ export default function GraphLivePage() {
   const [engine, setEngine] = useState<'memory' | 'control'>(() => getInitialEngine() as 'memory' | 'control');
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
+  const [dashboardPassword, setDashboardPassword] = useState('');
+  const [requiresPassword, setRequiresPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<DragState | null>(null);
 
   const authFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => {
-    const token = localStorage.getItem('authToken');
+    const token = sessionStorage.getItem('graphDashboardToken') || localStorage.getItem('authToken');
     const headers = new Headers(init.headers);
     if (token) headers.set('Authorization', `Bearer ${token}`);
     return fetch(input, { ...init, headers, cache: 'no-store' });
@@ -165,7 +197,14 @@ export default function GraphLivePage() {
     try {
       const response = await authFetch(`/api/memory-engine/graph/live?engine=${nextEngine}&limit=900`);
       const body = await response.json().catch(() => ({}));
+      if (response.status === 401 || response.status === 403) {
+        sessionStorage.removeItem('graphDashboardToken');
+        setRequiresPassword(true);
+        setSnapshot(null);
+        throw new Error(body?.error || 'Password dashboard richiesta.');
+      }
       if (!response.ok) throw new Error(body?.error || 'Impossibile caricare il grafo live.');
+      setRequiresPassword(false);
       setSnapshot(body as GraphSnapshot);
       setSelectedNodeId((current) => {
         if (!current) return null;
@@ -185,25 +224,118 @@ export default function GraphLivePage() {
   }, [loadGraph]);
 
   useEffect(() => {
+    if (requiresPassword) return undefined;
     const timer = window.setInterval(() => loadGraph(engine), REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [engine, loadGraph]);
+  }, [engine, loadGraph, requiresPassword]);
 
+  const visibleGraph = useMemo(() => {
+    const visibleNodes = (snapshot?.nodes || []).filter((node) => !isTechnicalNode(node, engine));
+    const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+    const visibleLinks = (snapshot?.links || []).filter((link) => (
+      visibleNodeIds.has(link.source) && visibleNodeIds.has(link.target)
+    ));
+    return {
+      nodes: visibleNodes,
+      links: visibleLinks,
+      hiddenNodeCount: Math.max(0, (snapshot?.nodes?.length || 0) - visibleNodes.length),
+    };
+  }, [engine, snapshot]);
   const nodes = useMemo(
-    () => layoutGraph(snapshot?.nodes || [], snapshot?.links || []),
-    [snapshot]
+    () => layoutGraph(visibleGraph.nodes, visibleGraph.links),
+    [visibleGraph]
   );
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) || null : null;
-  const links = snapshot?.links || [];
+  const links = visibleGraph.links;
 
   const switchEngine = (nextEngine: 'memory' | 'control') => {
     setEngine(nextEngine);
     setSelectedNodeId(null);
+    setViewport({ x: 0, y: 0, zoom: 1 });
     const url = new URL(window.location.href);
     url.searchParams.set('engine', nextEngine);
     window.history.replaceState(null, '', url.toString());
     loadGraph(nextEngine);
+  };
+
+  const unlockDashboard = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsUnlocking(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/memory-engine/graph/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: dashboardPassword }),
+        cache: 'no-store',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Password dashboard non valida.');
+      sessionStorage.setItem('graphDashboardToken', body.graphDashboardToken);
+      setDashboardPassword('');
+      setRequiresPassword(false);
+      await loadGraph(engine);
+    } catch (err: any) {
+      setError(err?.message || 'Accesso dashboard non riuscito.');
+    } finally {
+      setIsUnlocking(false);
+    }
+  };
+
+  const getSvgPoint = (clientX: number, clientY: number) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: -VIEW_HALF + ((clientX - rect.left) / rect.width) * VIEW_SIZE,
+      y: -VIEW_HALF + ((clientY - rect.top) / rect.height) * VIEW_SIZE,
+    };
+  };
+
+  const handleWheel = (event: WheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    const point = getSvgPoint(event.clientX, event.clientY);
+    setViewport((current) => {
+      const nextZoom = clamp(current.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM);
+      const graphX = (point.x - current.x) / current.zoom;
+      const graphY = (point.y - current.y) / current.zoom;
+      return {
+        zoom: nextZoom,
+        x: point.x - graphX * nextZoom,
+        y: point.y - graphY * nextZoom,
+      };
+    });
+  };
+
+  const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!drag || !rect || drag.pointerId !== event.pointerId) return;
+    const dx = ((event.clientX - drag.lastX) / rect.width) * VIEW_SIZE;
+    const dy = ((event.clientY - drag.lastY) / rect.height) * VIEW_SIZE;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    setViewport((current) => ({
+      ...current,
+      x: current.x + dx,
+      y: current.y + dy,
+    }));
+  };
+
+  const handlePointerEnd = (event: PointerEvent<SVGSVGElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+    }
   };
 
   return (
@@ -229,9 +361,12 @@ export default function GraphLivePage() {
             </button>
           </div>
           <div className="text-sm text-gray-300">
-            <span className="font-semibold text-white">{snapshot?.node_count || 0}</span> nodi
+            <span className="font-semibold text-white">{nodes.length}</span> nodi visibili
             <span className="mx-2 text-gray-600">/</span>
-            <span className="font-semibold text-white">{snapshot?.link_count || 0}</span> relazioni
+            <span className="font-semibold text-white">{links.length}</span> relazioni
+            {visibleGraph.hiddenNodeCount > 0 ? (
+              <span className="ml-3 text-gray-500">{visibleGraph.hiddenNodeCount} tecnici nascosti</span>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -264,12 +399,55 @@ export default function GraphLivePage() {
         </div>
       ) : null}
 
+      {requiresPassword ? (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 px-4">
+          <form
+            onSubmit={unlockDashboard}
+            className="w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-2xl"
+          >
+            <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Graph dashboard</p>
+            <h1 className="mt-2 text-xl font-semibold text-white">Accesso dashboard</h1>
+            <p className="mt-2 text-sm text-gray-400">Inserisci la password dedicata alla vista live del grafo.</p>
+            {error ? (
+              <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
+                {error}
+              </div>
+            ) : null}
+            <label className="mt-5 block text-sm text-gray-200">
+              Password
+              <input
+                type="password"
+                value={dashboardPassword}
+                onChange={(event) => setDashboardPassword(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white outline-none focus:border-sky-600"
+                autoFocus
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={isUnlocking || !dashboardPassword.trim()}
+              className="mt-4 w-full rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isUnlocking ? 'Verifica...' : 'Apri dashboard'}
+            </button>
+          </form>
+        </div>
+      ) : null}
+
       <svg
+        ref={svgRef}
         viewBox={`${-VIEW_HALF} ${-VIEW_HALF} ${VIEW_SIZE} ${VIEW_SIZE}`}
-        className="h-full w-full bg-[radial-gradient(circle_at_center,#111827_0,#030712_55%,#000_100%)] pt-16"
+        className="h-full w-full cursor-grab bg-[radial-gradient(circle_at_center,#111827_0,#030712_55%,#000_100%)] pt-16 active:cursor-grabbing"
         role="img"
         aria-label={`Grafo live ${engine}`}
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onDoubleClick={() => setViewport({ x: 0, y: 0, zoom: 1 })}
       >
+        <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
         <g>
           {links.map((link) => {
             const source = nodeById.get(link.source);
@@ -307,7 +485,11 @@ export default function GraphLivePage() {
               <g
                 key={node.id}
                 transform={`translate(${node.x || 0} ${node.y || 0})`}
-                onClick={() => setSelectedNodeId(node.id)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedNodeId(node.id);
+                }}
                 className="cursor-pointer"
               >
                 <circle
@@ -333,6 +515,7 @@ export default function GraphLivePage() {
               </g>
             );
           })}
+        </g>
         </g>
       </svg>
 

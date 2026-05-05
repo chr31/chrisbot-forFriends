@@ -101,6 +101,8 @@ type MemoryEngineSettings = {
   neo4j_username: string;
   neo4j_password: string;
   neo4j_password_configured?: boolean;
+  graph_dashboard_password?: string;
+  graph_dashboard_password_configured?: boolean;
 };
 
 type ControlEngineSettings = {
@@ -732,6 +734,7 @@ export default function SettingsPage() {
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni memorie fallito.');
+      sessionStorage.removeItem('graphDashboardToken');
       await loadSettings();
     } catch (err: any) {
       alert(err?.message || 'Errore salvataggio impostazioni memorie.');
@@ -1830,6 +1833,23 @@ export default function SettingsPage() {
                         )}
                       />
                     </div>
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
+                    <span className="mb-1 block">Password dashboard grafo</span>
+                    <input
+                      type="password"
+                      value={memoryEngine.graph_dashboard_password || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        graph_dashboard_password: event.target.value,
+                      } : current)}
+                      className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder={memoryEngine.graph_dashboard_password_configured ? 'Gia configurata; cambia per invalidare le sessioni dashboard' : 'Password per aprire /graph-live senza ChrisBot'}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Ogni cambio password invalida le sessioni gia aperte della dashboard grafo.
+                    </p>
                   </label>
                 </div>
 

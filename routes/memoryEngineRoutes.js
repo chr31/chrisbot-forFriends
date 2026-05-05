@@ -6,10 +6,33 @@ const { getAgentById } = require('../database/db_agents');
 const { getMemoryEngineSettingsSync } = require('../services/appSettings');
 const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
 const { callMemoryChatText } = require('../services/memory/memoryModelRuntime');
-const { getLiveGraphSnapshot } = require('../services/graphLiveService');
+const {
+  createGraphDashboardSession,
+  getLiveGraphSnapshot,
+  requireGraphDashboardAccess,
+} = require('../services/graphLiveService');
 
-router.use(authenticateToken);
-router.use(requireSuperAdmin);
+router.post('/graph/session', async (req, res) => {
+  try {
+    const session = createGraphDashboardSession(req.body?.password);
+    return res.json(session);
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || 'Accesso dashboard non riuscito.' });
+  }
+});
+
+router.get('/graph/live', requireGraphDashboardAccess, async (req, res) => {
+  try {
+    const snapshot = await getLiveGraphSnapshot({
+      engine: req.query.engine,
+      limit: req.query.limit,
+    });
+    return res.json(snapshot);
+  } catch (error) {
+    console.error('Errore recupero grafo live:', error);
+    return res.status(500).json({ error: error.message || 'Errore recupero grafo live' });
+  }
+});
 
 const MEMORY_TEST_AGENT = {
   id: null,
@@ -40,18 +63,8 @@ const TOPIC_LABELS = {
   summaries: 'sintesi',
 };
 
-router.get('/graph/live', async (req, res) => {
-  try {
-    const snapshot = await getLiveGraphSnapshot({
-      engine: req.query.engine,
-      limit: req.query.limit,
-    });
-    return res.json(snapshot);
-  } catch (error) {
-    console.error('Errore recupero grafo live:', error);
-    return res.status(500).json({ error: error.message || 'Errore recupero grafo live' });
-  }
-});
+router.use(authenticateToken);
+router.use(requireSuperAdmin);
 
 function normalizePrompt(value) {
   return String(value || '').trim();

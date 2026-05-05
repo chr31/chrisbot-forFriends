@@ -57,6 +57,27 @@ function parseBoolean(value, fallback = false) {
   return fallback;
 }
 
+function hashGraphDashboardPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(String(password || ''), salt, 120000, 32, 'sha256').toString('hex');
+  return `pbkdf2_sha256$120000$${salt}$${hash}`;
+}
+
+function verifyGraphDashboardPassword(password, storedHash) {
+  const parts = String(storedHash || '').split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') return false;
+  const iterations = Number(parts[1]);
+  const salt = parts[2];
+  const hash = parts[3];
+  if (!Number.isFinite(iterations) || !salt || !hash) return false;
+  const candidate = crypto.pbkdf2Sync(String(password || ''), salt, iterations, 32, 'sha256').toString('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(hash, 'hex'));
+  } catch (_) {
+    return false;
+  }
+}
+
 function buildDefaultPortalAccessSettings() {
   const backendBaseUrl = String(
     process.env.PUBLIC_BACKEND_URL || `http://127.0.0.1:${process.env.PORT || 3000}`
@@ -153,6 +174,8 @@ function buildDefaultMemoryEngineSettings() {
     neo4j_browser_url: 'http://127.0.0.1:7474',
     neo4j_username: 'neo4j',
     neo4j_password: '',
+    graph_dashboard_password_hash: '',
+    graph_dashboard_password_version: crypto.randomUUID(),
   };
 }
 
@@ -225,6 +248,8 @@ function normalizeMemoryEngineSettings(value) {
     neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
     neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
     neo4j_password: String(value?.neo4j_password || '').trim(),
+    graph_dashboard_password_hash: String(value?.graph_dashboard_password_hash || '').trim(),
+    graph_dashboard_password_version: String(value?.graph_dashboard_password_version || '').trim() || crypto.randomUUID(),
   };
 }
 
@@ -560,6 +585,9 @@ function redactMemoryEngineSettings(value) {
     ...value,
     neo4j_password: '',
     neo4j_password_configured: Boolean(String(value?.neo4j_password || '').trim()),
+    graph_dashboard_password: '',
+    graph_dashboard_password_hash: undefined,
+    graph_dashboard_password_configured: Boolean(String(value?.graph_dashboard_password_hash || '').trim()),
   };
 }
 
@@ -796,12 +824,22 @@ async function updateTelegramRuntimeSettings(nextValue) {
 
 async function updateMemoryEngineSettings(nextValue) {
   const current = getMemoryEngineSettingsSync();
+  const graphDashboardPassword = String(nextValue?.graph_dashboard_password ?? '').trim();
+  const shouldReplaceGraphPassword = hasReplacementSecret(graphDashboardPassword);
   const normalized = preserveExistingSecrets(
     normalizeMemoryEngineSettings({ ...current, ...(nextValue || {}) }),
     nextValue || {},
     current,
     ['neo4j_password']
   );
+  if (shouldReplaceGraphPassword) {
+    normalized.graph_dashboard_password_hash = hashGraphDashboardPassword(graphDashboardPassword);
+    normalized.graph_dashboard_password_version = crypto.randomUUID();
+  } else {
+    normalized.graph_dashboard_password_hash = current.graph_dashboard_password_hash || normalized.graph_dashboard_password_hash || '';
+    normalized.graph_dashboard_password_version = current.graph_dashboard_password_version || normalized.graph_dashboard_password_version || crypto.randomUUID();
+  }
+  delete normalized.graph_dashboard_password;
   await setSetting(SETTINGS_KEYS.memoryEngine, serializeMemoryEngineSettings(normalized));
   settingsCache.memoryEngine = normalized;
   return normalized;
@@ -897,4 +935,5 @@ module.exports = {
   updateControlEngineSettings,
   revealSettingsSecret,
   getSettingsSnapshot,
+  verifyGraphDashboardPassword,
 };

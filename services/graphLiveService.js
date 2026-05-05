@@ -1,13 +1,81 @@
-const { getMemoryEngineSettingsSync } = require('./appSettings');
+const jwt = require('jsonwebtoken');
+const { getMemoryEngineSettingsSync, verifyGraphDashboardPassword } = require('./appSettings');
 const { createNeo4jDriver, loadNeo4jDriver } = require('./memory/neo4jConnection');
 const { CONTROL_GRAPH_ID } = require('./control/controlSchema');
+const { isSuperAdminUser } = require('../utils/adminAccess');
 
 const EMBEDDING_KEYS = new Set(['embedding', 'vector']);
+const GRAPH_DASHBOARD_SCOPE = 'graph_dashboard';
 
 function normalizeLimit(value) {
   const numeric = Number(value || 600);
   if (!Number.isFinite(numeric) || numeric <= 0) return 600;
   return Math.min(Math.trunc(numeric), 1500);
+}
+
+function getBearerToken(req) {
+  const authHeader = req.headers?.authorization || '';
+  const [scheme, token] = String(authHeader).split(' ');
+  return scheme?.toLowerCase() === 'bearer' && token ? token : '';
+}
+
+function signGraphDashboardToken() {
+  const settings = getMemoryEngineSettingsSync();
+  return jwt.sign(
+    {
+      scope: GRAPH_DASHBOARD_SCOPE,
+      password_version: settings.graph_dashboard_password_version,
+    },
+    process.env.ACCESS_TOKEN_SECRET,
+    { expiresIn: '12h' }
+  );
+}
+
+function createGraphDashboardSession(password) {
+  const settings = getMemoryEngineSettingsSync();
+  if (!settings.graph_dashboard_password_hash) {
+    const error = new Error('Password dashboard grafo non configurata.');
+    error.status = 403;
+    throw error;
+  }
+  if (!verifyGraphDashboardPassword(password, settings.graph_dashboard_password_hash)) {
+    const error = new Error('Password dashboard non valida.');
+    error.status = 401;
+    throw error;
+  }
+  return {
+    graphDashboardToken: signGraphDashboardToken(),
+    expires_in_seconds: 43200,
+  };
+}
+
+function verifyGraphDashboardToken(token) {
+  try {
+    const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    const settings = getMemoryEngineSettingsSync();
+    return payload?.scope === GRAPH_DASHBOARD_SCOPE
+      && payload?.password_version
+      && payload.password_version === settings.graph_dashboard_password_version;
+  } catch (_) {
+    return false;
+  }
+}
+
+function verifySuperAdminToken(token) {
+  try {
+    const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    return isSuperAdminUser(payload);
+  } catch (_) {
+    return false;
+  }
+}
+
+function requireGraphDashboardAccess(req, res, next) {
+  const token = getBearerToken(req);
+  if (token && (verifyGraphDashboardToken(token) || verifySuperAdminToken(token))) {
+    return next();
+  }
+  return res.status(401).json({ error: 'Password dashboard richiesta.' });
 }
 
 function serializeValue(value) {
@@ -151,5 +219,7 @@ async function getLiveGraphSnapshot({ engine = 'memory', limit = 600 } = {}) {
 }
 
 module.exports = {
+  createGraphDashboardSession,
   getLiveGraphSnapshot,
+  requireGraphDashboardAccess,
 };
