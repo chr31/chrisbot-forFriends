@@ -61,6 +61,37 @@ function mapNodeProperties(node) {
   return mapped;
 }
 
+function compactSavedNode(node = {}) {
+  const {
+    embedding: _embedding,
+    alignment_text: _alignmentText,
+    ...rest
+  } = node || {};
+  return rest;
+}
+
+function compactUpsertResult(result = {}) {
+  return {
+    ...result,
+    locations: (result.locations || []).map(compactSavedNode),
+    buildings: (result.buildings || []).map(compactSavedNode),
+    rooms: (result.rooms || []).map(compactSavedNode),
+    devices: (result.devices || []).map(compactSavedNode),
+    actions: (result.actions || []).map(compactSavedNode),
+    capabilities: (result.capabilities || []).map(compactSavedNode),
+    device_types: (result.device_types || []).map(compactSavedNode),
+    adapters: (result.adapters || []).map(compactSavedNode),
+  };
+}
+
+function isGenericDeviceName(node = {}) {
+  const name = normalizeKey(node.name || node.normalized_name);
+  const deviceType = normalizeKey(node.device_type || node.type);
+  return !name
+    || name === deviceType
+    || ['device', 'stampante', 'printer', 'stampante_con', 'stampante_in'].includes(name);
+}
+
 function buildConnectionCacheKey(config) {
   return [config.neo4j_url, config.neo4j_username].join('|');
 }
@@ -112,7 +143,9 @@ function inferCapabilityKey(input = {}) {
     input.intent,
     input.command,
   ].filter(Boolean).join(' '), 800).toLowerCase();
+  if (/\b(stream|streaming)\b/.test(text) && /\b(status|stato|monitor|check|controll)\b/.test(text)) return 'stream_status';
   if (/\b(ping|online|status|stato|monitor|check|health)\b/.test(text)) return 'status_online';
+  if (/\b(music|musica|play|start|avvia|riproduci)\b/.test(text)) return 'music_play';
   if (/\b(power|accendi|turn on|on)\b/.test(text)) return 'power_on';
   if (/\b(spegni|turn off|off)\b/.test(text)) return 'power_off';
   if (/\b(audio|volume|mute|level|livello)\b/.test(text)) return 'audio_value';
@@ -145,6 +178,9 @@ function normalizeLocation(input = {}, fallbackKind = 'location', parentRef = nu
   }), 320) || normalizeKey(name);
   const canonicalKey = buildCanonicalKey('location', { kind, name, path });
   const idKind = kind === 'building' ? 'building' : kind === 'room' ? 'room' : 'location';
+  const aliasSources = kind === 'building'
+    ? [normalizeList(input.aliases), input.alias, name, input.building]
+    : [normalizeList(input.aliases), input.alias, name, input.room];
   const node = {
     id: buildControlId(idKind, { ...input, name, path, kind }),
     name,
@@ -152,7 +188,7 @@ function normalizeLocation(input = {}, fallbackKind = 'location', parentRef = nu
     kind,
     path,
     canonical_key: canonicalKey,
-    aliases: uniq([normalizeList(input.aliases), input.alias, name, input.room, input.building]),
+    aliases: uniq(aliasSources),
     enabled: parseBoolean(input.enabled, true),
   };
   node.alignment_text = normalizeText([
@@ -226,11 +262,19 @@ function normalizeDevice(input = {}) {
     mac_address: input.mac_address || input.macAddress,
   });
   const node = {
-    id: buildControlId('device', { ...input, name, device_type: deviceType }),
+    id: buildControlId('device', {
+      ...input,
+      name,
+      building: input.building || input.building_name || locationRef,
+      device_type: deviceType,
+      ip: '',
+      mac_address: '',
+      macAddress: '',
+    }),
     name,
     normalized_name: normalizeKey(input.normalized_name || name),
     canonical_key: canonicalKey,
-    aliases: uniq([normalizeList(input.aliases), input.alias, name, input.device_type, input.type]),
+    aliases: uniq([normalizeList(input.aliases), input.alias, name]),
     ip: normalizeText(input.ip, 80) || null,
     mac_address: normalizeText(input.mac_address || input.macAddress, 80) || null,
     manufacturer: normalizeText(input.manufacturer, 120) || null,
@@ -283,7 +327,7 @@ function normalizeAction(input = {}) {
     canonical_key: canonicalKey,
     action_key: actionKey,
     capability_key: capabilityKey,
-    aliases: uniq([normalizeList(input.aliases), input.alias, name, capabilityKey, actionKey]),
+    aliases: uniq([normalizeList(input.aliases), input.alias, name]),
     description: normalizeText(input.description, 800) || null,
     intent: normalizeIntent(input.intent),
     action_type: adapterType,
@@ -460,7 +504,7 @@ class Neo4jControlRepository {
           OR ($normalizedName IS NOT NULL AND n.normalized_name = $normalizedName AND ($kind IS NULL OR n.kind = $kind))
           OR ($ip IS NOT NULL AND n.ip = $ip)
           OR ($macAddress IS NOT NULL AND n.mac_address = $macAddress)
-          OR any(alias IN coalesce(n.aliases, []) WHERE toLower(alias) IN $aliases)
+          OR (($kind IS NULL OR n.kind = $kind) AND any(alias IN coalesce(n.aliases, []) WHERE toLower(alias) IN $aliases))
         )
       RETURN n, 1.0 AS score
       LIMIT 1
@@ -477,6 +521,8 @@ class Neo4jControlRepository {
     );
     const exact = exactResult.records[0]?.get('n');
     if (exact) return { node: mapNodeProperties(exact), score: 1, strategy: 'exact' };
+
+    if (labels.includes('ControlLocation')) return null;
 
     if (!Array.isArray(node.embedding) || node.embedding.length === 0) return null;
     const embeddingResult = await session.run(
@@ -508,6 +554,11 @@ class Neo4jControlRepository {
   async upsertOwnedNode(session, { labels, node }) {
     const matched = await this.findAlignedNode(session, { labels, node });
     if (matched?.node?.id) {
+      if (labels.includes('ControlDevice') && isGenericDeviceName(node) && matched.node.name) {
+        node.name = matched.node.name;
+        node.normalized_name = matched.node.normalized_name || normalizeKey(matched.node.name);
+        node.aliases = uniq([node.aliases, matched.node.aliases, matched.node.name]);
+      }
       node.id = matched.node.id;
       const labelsClause = labels.map((label) => `n:${label}`).join(' OR ');
       await session.run(
@@ -525,8 +576,9 @@ class Neo4jControlRepository {
       MATCH (g:EngineGraph {id: $graphId})
       MERGE (n:${labels[0]} {id: $nodeId})
       ON CREATE SET n.created_at = datetime()
+      WITH g, n, coalesce(n.aliases, []) AS existingAliases
       SET n += $node,
-        n.aliases = reduce(out = [], entry IN coalesce(n.aliases, []) + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
+        n.aliases = reduce(out = [], entry IN existingAliases + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
         n.updated_at = datetime()
       MERGE (g)-[:OWNS]->(n)
       `,
@@ -549,8 +601,9 @@ class Neo4jControlRepository {
       MATCH (g:EngineGraph {id: $graphId})
       MERGE (n:${label} {${keyField}: $key})
       ON CREATE SET n.created_at = datetime()
+      WITH g, n, coalesce(n.aliases, []) AS existingAliases
       SET n += $node,
-        n.aliases = reduce(out = [], entry IN coalesce(n.aliases, []) + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
+        n.aliases = reduce(out = [], entry IN existingAliases + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
         n.updated_at = datetime()
       MERGE (g)-[:OWNS]->(n)
       `,
@@ -565,7 +618,6 @@ class Neo4jControlRepository {
       `
       MATCH (parent:ControlLocation {id: $parentId}), (child:ControlLocation {id: $childId})
       MERGE (parent)-[:CONTAINS]->(child)
-      FOREACH (_ IN CASE WHEN parent.kind = 'building' AND child.kind = 'room' THEN [1] ELSE [] END | MERGE (parent)-[:HAS_ROOM]->(child))
       `,
       { parentId, childId }
     );
@@ -698,11 +750,10 @@ class Neo4jControlRepository {
             `
             MATCH (loc:ControlLocation {id: $locationId}), (d:ControlDevice {id: $deviceId})
             MERGE (d)-[:INSTALLED_IN]->(loc)
-            MERGE (loc)-[:HAS_DEVICE]->(d)
             `,
             { locationId, deviceId: saved.id }
           );
-          created.relations.push({ from: locationId, type: 'HAS_DEVICE', to: saved.id });
+          created.relations.push({ from: saved.id, type: 'INSTALLED_IN', to: locationId });
         }
         await session.run(
           `
@@ -760,7 +811,7 @@ class Neo4jControlRepository {
         }
       }
 
-      return created;
+      return compactUpsertResult(created);
     });
   }
 
@@ -784,25 +835,20 @@ class Neo4jControlRepository {
         MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(d:ControlDevice)
         OPTIONAL MATCH (d)-[:INSTALLED_IN]->(direct:ControlLocation)
         OPTIONAL MATCH (ancestor:ControlLocation)-[:CONTAINS*0..]->(direct)
-        OPTIONAL MATCH (legacyB:ControlBuilding)-[:HAS_DEVICE]->(d)
-        OPTIONAL MATCH (legacyB2:ControlBuilding)-[:HAS_ROOM]->(legacyR:ControlRoom)-[:HAS_DEVICE]->(d)
         WITH d,
-          [loc IN collect(DISTINCT direct) + collect(DISTINCT ancestor) WHERE loc IS NOT NULL] AS locations,
-          legacyB,
-          legacyB2,
-          legacyR
+          [loc IN collect(DISTINCT direct) + collect(DISTINCT ancestor) WHERE loc IS NOT NULL] AS locations
         WITH d, locations,
-          coalesce([loc IN locations WHERE loc.kind = 'building'][0], legacyB, legacyB2) AS building,
-          coalesce([loc IN locations WHERE loc.kind = 'room'][0], legacyR) AS room
+          [loc IN locations WHERE loc.kind IN ['building', 'campus', 'zone', 'location']][0] AS building,
+          [loc IN locations WHERE loc.kind = 'room'][0] AS room
         WHERE d.enabled <> false
           AND ($deviceType IS NULL OR d.device_type = $deviceType OR $deviceType IN coalesce(d.tags, []))
           AND (
             $building IS NULL
-            OR (building IS NOT NULL AND (
-              toLower(building.name) CONTAINS $building
-              OR toLower(coalesce(building.normalized_name, '')) CONTAINS $building
-              OR any(alias IN coalesce(building.aliases, []) WHERE toLower(alias) CONTAINS $building)
-            ))
+            OR any(loc IN locations WHERE
+              toLower(loc.name) CONTAINS $building
+              OR toLower(coalesce(loc.normalized_name, '')) CONTAINS $building
+              OR any(alias IN coalesce(loc.aliases, []) WHERE toLower(alias) CONTAINS $building)
+            )
           )
           AND (
             $room IS NULL
@@ -823,6 +869,7 @@ class Neo4jControlRepository {
         MATCH (d)-[:CAN_EXECUTE]->(a:ControlAction)
         OPTIONAL MATCH (a)-[:IMPLEMENTS]->(cap:ControlCapability)
         OPTIONAL MATCH (a)-[:EXECUTES_WITH]->(adapter:ControlCommandAdapter)
+        WITH d, a, building, room, cap, adapter
         WHERE a.enabled <> false
           AND ($intent IS NULL OR a.intent = $intent)
           AND ($actionType IS NULL OR a.action_type = $actionType OR adapter.key = $actionType)
@@ -940,7 +987,7 @@ class Neo4jControlRepository {
         OPTIONAL MATCH (a)-[:EXECUTES_WITH]->(adapter:ControlCommandAdapter)
         WITH d, a, cap, adapter, [loc IN collect(DISTINCT direct) + collect(DISTINCT ancestor) WHERE loc IS NOT NULL] AS locations
         RETURN d, a,
-          [loc IN locations WHERE loc.kind = 'building'][0] AS building,
+          [loc IN locations WHERE loc.kind IN ['building', 'campus', 'zone', 'location']][0] AS building,
           [loc IN locations WHERE loc.kind = 'room'][0] AS room,
           cap,
           adapter

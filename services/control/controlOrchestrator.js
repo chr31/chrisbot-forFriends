@@ -189,6 +189,7 @@ async function getControlSchemaContext() {
           'bash richiede command e non usa connection_ref.',
           'ping/http/http_api non usano connection_ref.',
           'host, port, username e password non vanno mai nel grafo.',
+          'Per i device salva l IP fornito come proprieta operativa; non bloccare updateSchema per validazione semantica degli ottetti IP.',
         ],
       },
     });
@@ -221,8 +222,12 @@ function withInferredControlFilters(args = {}) {
   if (!String(nextArgs.building || '').trim()) {
     if (/\b(?:college|collegio)\b/.test(query)) {
       nextArgs.building = 'College';
+    } else if (/\bcampus\s+esterno\b/.test(query)) {
+      nextArgs.building = 'Campus Esterno';
+    } else if (/\bserra\b/.test(query)) {
+      nextArgs.building = 'Serra';
     } else {
-      const buildingMatch = query.match(/\b(?:in|nel|nello|nell'|edificio|building)\s+([a-z0-9_.-]+)\b/i);
+      const buildingMatch = query.match(/\b(?:in|nel|nello|nella|nell'|edificio|building)\s+([a-z0-9_.-]+(?:\s+[a-z0-9_.-]+)?)(?=\s+(?:se|sia|sono|e|con|per|che|quando|dove|$)|[?.!,;]|$)/i);
       if (buildingMatch?.[1]) nextArgs.building = buildingMatch[1];
     }
   }
@@ -231,23 +236,76 @@ function withInferredControlFilters(args = {}) {
     if (roomMatch?.[1]) nextArgs.room = roomMatch[1];
   }
   if (!String(nextArgs.device_type || nextArgs.deviceType || '').trim()) {
-    if (/\b(proiettore|proiettori|projector|projectors|videoproiettore)\b/.test(query)) nextArgs.device_type = 'projector';
+    if (/\b(bluesound|blue\s*sound)\b/.test(query)) nextArgs.device_type = 'bluesound';
+    else if (/\b(proiettore|proiettori|projector|projectors|videoproiettore)\b/.test(query)) nextArgs.device_type = 'projector';
     else if (/\b(stampante|stampanti|printer|printers)\b/.test(query)) nextArgs.device_type = 'printer';
-    else if (/\b(audio|speaker|amplificatore|microfono)\b/.test(query)) nextArgs.device_type = 'audio';
+    else if (/\b(audio|musica|music|speaker|speakers|amplificatore|microfono)\b/.test(query)) nextArgs.device_type = 'audio';
     else if (/\b(computer|pc|workstation)\b/.test(query)) nextArgs.device_type = 'computer';
   }
   if (!String(nextArgs.intent || '').trim()) {
     if (/\b(controll|verific|monitor|status|stato|online|on line|valore|livello)\b/.test(query)) {
       nextArgs.intent = 'monitoring';
+    } else if (/\b(avvia|avviare|start|play|riproduci|metti)\b/.test(query)) {
+      nextArgs.intent = 'control';
     }
   }
   if (!String(nextArgs.capability || nextArgs.capability_key || '').trim()) {
-    if (/\b(ping|online|on line|status|stato)\b/.test(query)) nextArgs.capability = 'status_online';
+    if (/\b(stream|streaming)\b/.test(query) && /\b(stato|status|controll|verific)\b/.test(query)) nextArgs.capability = 'stream_status';
+    else if (/\b(avvia|avviare|start|play|riproduci|metti)\b/.test(query) && /\b(musica|music|audio|stream)\b/.test(query)) nextArgs.capability = 'music_play';
+    else if (/\b(ping|online|on line|status|stato)\b/.test(query)) nextArgs.capability = 'status_online';
     else if (/\b(accendi|turn on|power on)\b/.test(query)) nextArgs.capability = 'power_on';
     else if (/\b(spegni|turn off|power off)\b/.test(query)) nextArgs.capability = 'power_off';
     else if (/\b(audio|volume|mute|livello|valore)\b/.test(query)) nextArgs.capability = 'audio_value';
   }
   return nextArgs;
+}
+
+const DEVICE_TYPE_LABELS = {
+  projector: 'Proiettore',
+  printer: 'Stampante',
+  computer: 'Computer',
+  audio: 'Audio',
+  bluesound: 'Bluesound',
+};
+
+function cleanQuotedText(value = '') {
+  return String(value || '').replace(/['"“”]/g, '').trim();
+}
+
+function normalizeBuildingName(value = '') {
+  const clean = cleanQuotedText(value);
+  if (!clean) return '';
+  if (/^(college|colege|collegio)$/i.test(clean)) return 'College';
+  return /^[A-Z0-9_.-]{2,}$/.test(clean) ? clean.toUpperCase() : clean;
+}
+
+function extractAliasList(value = '') {
+  const scoped = String(value || '')
+    .split(/(?:,|\s+e\s+)\s*(?:aggiungi|crea|inserisci|collega|contiene|all['’]?interno|con\s+\d+\s+(?:aule|stanze|room))/i)[0]
+    .split(/\s+(?:all['’]?interno|dentro|nel|nella|nell['’]?|al|allo)\b/i)[0];
+  return scoped
+    .split(/\s+e\s+|\s+o\s+|,/i)
+    .map(cleanQuotedText)
+    .filter(Boolean);
+}
+
+function normalizeDeviceTypeLabel(deviceType, fallback) {
+  return DEVICE_TYPE_LABELS[deviceType] || normalizeText(fallback, 80) || 'Device';
+}
+
+function extractLocationRef(instruction = '') {
+  const roomMatch = instruction.match(/\b(aula|room|stanza|sala)\s+([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)?)(?=\s+(?:di|del|della|in|nel|nella|con|a|$))/i);
+  if (roomMatch) {
+    const label = roomMatch[1].toLowerCase() === 'room' ? 'Room' : roomMatch[1].toLowerCase() === 'aula' ? 'Aula' : cleanQuotedText(roomMatch[1]);
+    return `${label} ${cleanQuotedText(roomMatch[2])}`;
+  }
+  const buildingMatch = instruction.match(/\b(?:building|edificio)\s+(?:di\s+)?([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)?)(?=\s+(?:un|una|il|la|con|che|e|a|in|nel|nella|$))/i);
+  if (buildingMatch) return normalizeBuildingName(buildingMatch[1]);
+  const labMatch = instruction.match(/\b(?:laboratorio|lab)\s+([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)?)(?=\s+(?:un|una|il|la|con|che|e|a|in|nel|nella|$))/i);
+  if (labMatch) return cleanQuotedText(labMatch[0]);
+  const collegeMatch = instruction.match(/\b(?:college|colege|collegio)\b/i);
+  if (collegeMatch) return 'College';
+  return '';
 }
 
 function buildPromptSchemaPreview(args = {}) {
@@ -256,9 +314,92 @@ function buildPromptSchemaPreview(args = {}) {
   const lowered = instruction.toLowerCase();
   const schema = {};
 
+  const locations = [];
+  const addBuilding = (name, aliases = []) => {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return null;
+    const existing = locations.find((entry) => entry.kind === 'building' && entry.name.toLowerCase() === cleanName.toLowerCase());
+    if (existing) {
+      existing.aliases = Array.from(new Set([...(existing.aliases || []), ...aliases].filter(Boolean)));
+      return existing;
+    }
+    const building = { kind: 'building', name: cleanName, aliases };
+    locations.push(building);
+    return building;
+  };
+  const addRoom = (buildingName, roomName, aliases = []) => {
+    const cleanBuilding = String(buildingName || '').trim();
+    const cleanRoom = String(roomName || '').trim();
+    if (!cleanBuilding || !cleanRoom) return;
+    const path = `${cleanBuilding}/${cleanRoom}`;
+    const existing = locations.find((entry) => entry.kind === 'room' && String(entry.path || '').toLowerCase() === path.toLowerCase());
+    if (existing) {
+      existing.aliases = Array.from(new Set([...(existing.aliases || []), ...aliases].filter(Boolean)));
+      return;
+    }
+    locations.push({
+      kind: 'room',
+      name: cleanRoom,
+      parent: cleanBuilding,
+      building: cleanBuilding,
+      path,
+      aliases,
+    });
+  };
+
+  const knownBuildingMatches = instruction.matchAll(/\b([A-Za-z][A-Za-z0-9_.-]{1,40})\s*\(([^)]*)\)/g);
+  for (const match of knownBuildingMatches) {
+    const aliases = extractAliasList(String(match[2] || '').replace(/\bdetto\b/gi, ''));
+    addBuilding(normalizeBuildingName(match[1]), aliases);
+  }
+
+  const explicitBuildingAliasMatches = instruction.matchAll(/\bedificio\s+['"“”]?([A-Za-z0-9_.-]+)['"“”]?\s+con\s+alias\s+([^.;\n]+)/gi);
+  for (const match of explicitBuildingAliasMatches) {
+    addBuilding(normalizeBuildingName(match[1]), extractAliasList(match[2]));
+  }
+
+  const namedBuildingAliasMatches = instruction.matchAll(/\b([A-Z][A-Za-z0-9_.-]{1,40})\s+con\s+alias\s+([^.;\n]+)/g);
+  for (const match of namedBuildingAliasMatches) {
+    addBuilding(normalizeBuildingName(match[1]), extractAliasList(match[2]));
+  }
+
+  const roomRangeMatch = instruction.match(/(?:aula|aule)\s+([A-Za-z]+)\s*(\d+)\s*(?:all['’]?\s*aula|a|-) \s*([A-Za-z]+)?\s*(\d+)/i)
+    || instruction.match(/(?:aula|aule)\s+([A-Za-z]+)\s*(\d+)\s*(?:all['’]?\s*aula|a|-)\s*([A-Za-z]+)?\s*(\d+)/i)
+    || instruction.match(/Aula\s+([A-Za-z]+)\s*(\d+)[^.\n;]+?fino\s+a\s+['"“”]?Aula\s+([A-Za-z]+)?\s*(\d+)/i);
+  if (roomRangeMatch) {
+    const prefix = (roomRangeMatch[1] || roomRangeMatch[3] || '').toUpperCase();
+    const start = Number.parseInt(roomRangeMatch[2], 10);
+    const end = Number.parseInt(roomRangeMatch[4], 10);
+    const buildingName = locations.find((entry) => entry.kind === 'building')?.name || extractLocationRef(instruction);
+    if (buildingName && prefix && Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 100) {
+      addBuilding(buildingName, buildingName === 'College' ? ['college', 'colege', 'collegio'] : []);
+      for (let index = start; index <= end; index += 1) {
+        addRoom(buildingName, `Aula ${prefix}${index}`, [`${prefix}${index}`]);
+      }
+    }
+  }
+
+  const explicitRooms = Array.from(instruction.matchAll(/\b(Aula|Room|Stanza)\s+([A-Za-z]+)\s*(\d+)\b/gi))
+    .map((match) => `${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${String(match[2] || '').toUpperCase()}${Number.parseInt(match[3], 10)}`)
+    .filter((name, index, list) => name && list.indexOf(name) === index);
+  if (explicitRooms.length >= 2) {
+    const buildingName = locations.find((entry) => entry.kind === 'building')?.name || extractLocationRef(instruction);
+    if (buildingName) {
+      addBuilding(buildingName, buildingName === 'College' ? ['college', 'colege', 'collegio'] : []);
+      for (const roomName of explicitRooms) {
+        const alias = roomName.replace(/^Aula\s+/i, '');
+        addRoom(buildingName, roomName, [alias]);
+      }
+    }
+  }
+
+  if (locations.length > 0) {
+    schema.locations = locations;
+  }
+
   const buildingMatch = instruction.match(/(?:edificio|building)\s+([a-zA-Z0-9_.-]+(?:\s+[a-zA-Z0-9_.-]+)*?)(?=\s+(?:con|che|e|ha|contiene)\b|:|,|\.|\?|$)/i)
     || lowered.match(/\b(?:college|collegio)\b/i);
-  if (buildingMatch) {
+  if (buildingMatch && !schema.locations && !/\b(stampante|printer|device|action|ping)\b/i.test(instruction)) {
     const name = buildingMatch[0].includes('college') || buildingMatch[0].includes('collegio')
       ? 'College'
       : buildingMatch[1].trim();
@@ -276,7 +417,8 @@ function buildPromptSchemaPreview(args = {}) {
   }
 
   const roomMatch = instruction.match(/(?:aula|room|stanza)\s+([a-zA-Z0-9 _.-]+)/i);
-  if (roomMatch && !schema.rooms) {
+  const isDeviceMutation = /\b(device|stampante|printer|proiettore|projector|ip|action|azione|monitor|ping)\b/i.test(instruction);
+  if (roomMatch && !schema.rooms && !schema.locations && !isDeviceMutation) {
     schema.room = { name: roomMatch[0].trim(), aliases: [roomMatch[1].trim()] };
   }
 
@@ -288,12 +430,37 @@ function buildPromptSchemaPreview(args = {}) {
       : typeRaw === 'stampante' ? 'printer'
         : typeRaw === 'pc' ? 'computer'
           : typeRaw;
+    const deviceNameMatch = instruction.match(/\b(?:nome\/brand|brand|marca|nome)\s+['"“”]?([A-Za-z0-9_.-]+)['"“”]?/i)
+      || instruction.match(/\b(?:chiamato|chiamata)\s+['"“”]?([A-Za-z0-9_.-]+)['"“”]?/i)
+      || instruction.match(/\b(?:stampante|printer|proiettore|projector|computer|pc|audio)\s+(?!con\b|in\b|nel\b|nella\b|nell['’]?\b|all['’]?\b|al\b|allo\b)([A-Za-z0-9_.-]+)/i);
+    const typeLabel = normalizeDeviceTypeLabel(deviceType, typeRaw);
+    const deviceName = deviceNameMatch ? `${typeLabel} ${cleanQuotedText(deviceNameMatch[1])}` : [typeLabel, schema.room?.name].filter(Boolean).join(' ').trim();
+    const buildingName = extractLocationRef(instruction) || schema.building?.name;
     schema.device = {
-      name: [typeRaw, schema.room?.name].filter(Boolean).join(' ').trim() || 'Device',
+      name: deviceName || 'Device',
       ip: ipMatch?.[0] || undefined,
       device_type: deviceType,
-      aliases: [typeRaw].filter(Boolean),
+      manufacturer: deviceNameMatch?.[1] ? cleanQuotedText(deviceNameMatch[1]) : undefined,
+      location: buildingName || undefined,
+      aliases: [typeRaw, deviceNameMatch?.[1]].map(cleanQuotedText).filter(Boolean),
     };
+    if (buildingName && !schema.building && !schema.location && !schema.locations) {
+      if (/^(aula|room|stanza|sala|laboratorio|lab)\b/i.test(buildingName)) {
+        schema.location = { name: buildingName, kind: /^(aula|room|stanza|sala)\b/i.test(buildingName) ? 'room' : 'location' };
+      } else {
+        schema.building = { name: buildingName, aliases: buildingName === 'College' ? ['college', 'colege', 'collegio'] : [] };
+      }
+    }
+    if (/\bping|monitor|monitoring|online|on line|stato|status|controll/i.test(instruction)) {
+      schema.action = {
+        name: `Monitoring ping ${schema.device.name}`,
+        action_type: 'ping',
+        intent: 'monitoring',
+        capability_key: 'status_online',
+        device_ref: schema.device.name,
+        description: `Controlla se ${schema.device.name} e online tramite ping.`,
+      };
+    }
   }
 
   return Object.keys(schema).length > 0 ? schema : null;
@@ -341,7 +508,7 @@ async function updateControlSchema(args = {}) {
           device: args.device,
           action: args.action,
         };
-    const hasStructuredInput = ['building', 'room', 'device', 'action'].some((key) => payload[key]);
+    const hasStructuredInput = ['building', 'room', 'device', 'action', 'locations', 'devices', 'actions', 'capabilities'].some((key) => payload[key]);
     const inferred = hasStructuredInput ? null : buildPromptSchemaPreview(args);
     const schema = hasStructuredInput ? payload : inferred;
     if (!schema) {
@@ -435,4 +602,5 @@ module.exports = {
   getControlSchemaContext,
   retrieveControlInfo,
   updateControlSchema,
+  withInferredControlFilters,
 };
