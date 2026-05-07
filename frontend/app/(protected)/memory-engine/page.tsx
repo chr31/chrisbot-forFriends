@@ -1,7 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowTopRightOnSquareIcon, BoltIcon, CheckCircleIcon, CircleStackIcon, SparklesIcon, XCircleIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowTopRightOnSquareIcon,
+  BoltIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  CircleStackIcon,
+  SparklesIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/outline';
 
 type AuthUser = {
   name: string;
@@ -20,6 +28,8 @@ type AgentOption = {
 
 type SettingsPayload = {
   memory_engine?: {
+    enabled?: boolean;
+    neo4j_url?: string;
     neo4j_browser_url?: string;
   };
   control_engine?: {
@@ -112,6 +122,51 @@ type ControlResult = {
   error?: string;
 };
 
+type GraphNode = {
+  id: string;
+  labels: string[];
+  title: string;
+  kind: string;
+  properties: Record<string, unknown>;
+  x?: number;
+  y?: number;
+};
+
+type GraphLink = {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+};
+
+type GraphSnapshot = {
+  engine: 'memory' | 'control';
+  nodes: GraphNode[];
+  links: GraphLink[];
+};
+
+type GraphPreview = {
+  engine: 'memory' | 'control';
+  title: string;
+  nodes: GraphNode[];
+  links: GraphLink[];
+};
+
+type StatusTone = 'green' | 'yellow' | 'red';
+
+type StatusInfo = {
+  tone: StatusTone;
+  label: string;
+  description: string;
+};
+
+type ActivatedGraphSource = {
+  engine: 'memory' | 'control';
+  title: string;
+  ids: Set<string>;
+  terms: string[];
+};
+
 function displayValue(value: unknown) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
@@ -192,9 +247,126 @@ function formatDetails(details: unknown) {
   }
 }
 
+function getStatusToneClass(tone: StatusTone) {
+  if (tone === 'green') return 'border-emerald-700/60 bg-emerald-600/10 text-emerald-200';
+  if (tone === 'yellow') return 'border-amber-700/60 bg-amber-600/10 text-amber-200';
+  return 'border-rose-800/70 bg-rose-950/40 text-rose-200';
+}
+
+function normalizeGraphToken(value: unknown) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function collectGraphIds(value: unknown, ids = new Set<string>(), terms: string[] = []) {
+  if (value == null) return { ids, terms };
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectGraphIds(entry, ids, terms));
+    return { ids, terms };
+  }
+  if (typeof value !== 'object') {
+    const text = String(value || '').trim();
+    if (text.length > 2 && text.length < 160) terms.push(text);
+    return { ids, terms };
+  }
+
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      normalizedKey === 'id'
+      || normalizedKey.endsWith('_id')
+      || normalizedKey === 'device'
+      || normalizedKey === 'action'
+      || normalizedKey === 'room'
+      || normalizedKey === 'building'
+      || normalizedKey === 'capability'
+    ) {
+      const token = String(entry ?? '').trim();
+      if (token) ids.add(token);
+    }
+    if (['topic', 'information', 'summary', 'request_summary', 'name'].includes(normalizedKey)) {
+      const text = String(entry ?? '').trim();
+      if (text.length > 2 && text.length < 220) terms.push(text);
+    }
+    collectGraphIds(entry, ids, terms);
+  }
+  return { ids, terms };
+}
+
+function nodeMatchesActivatedSource(node: GraphNode, source: ActivatedGraphSource) {
+  const values = [
+    node.id,
+    node.title,
+    node.kind,
+    ...node.labels,
+    ...Object.values(node.properties || {}).map((value) => String(value ?? '')),
+  ].map(normalizeGraphToken).filter(Boolean);
+  for (const id of source.ids) {
+    const token = normalizeGraphToken(id);
+    if (token && values.some((value) => value === token || value.includes(token))) return true;
+  }
+  for (const term of source.terms.slice(0, 20)) {
+    const token = normalizeGraphToken(term);
+    if (token.length > 3 && values.some((value) => value.includes(token) || token.includes(value))) return true;
+  }
+  return false;
+}
+
+function buildActivatedGraphPreview(snapshot: GraphSnapshot, source: ActivatedGraphSource): GraphPreview {
+  const directNodeIds = new Set(
+    snapshot.nodes
+      .filter((node) => nodeMatchesActivatedSource(node, source))
+      .map((node) => node.id)
+  );
+  const previewNodeIds = new Set(directNodeIds);
+  const links = snapshot.links.filter((link) => {
+    const connected = directNodeIds.has(link.source) || directNodeIds.has(link.target);
+    if (connected) {
+      previewNodeIds.add(link.source);
+      previewNodeIds.add(link.target);
+    }
+    return connected;
+  });
+  const nodes = snapshot.nodes.filter((node) => previewNodeIds.has(node.id));
+  return {
+    engine: source.engine,
+    title: source.title,
+    nodes,
+    links: links.filter((link) => previewNodeIds.has(link.source) && previewNodeIds.has(link.target)),
+  };
+}
+
+function layoutPreviewGraph(nodes: GraphNode[]) {
+  return nodes.map((node, index) => {
+    const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2;
+    const ring = nodes.length < 6 ? 145 : 120 + Math.floor(index / 12) * 72;
+    return {
+      ...node,
+      x: Math.cos(angle) * ring,
+      y: Math.sin(angle) * ring,
+    };
+  });
+}
+
+function getPreviewNodeColor(node: GraphNode, engine: 'memory' | 'control') {
+  const labels = node.labels.join(' ');
+  if (engine === 'memory') {
+    if (labels.includes('MemoryItem')) return '#38bdf8';
+    if (labels.includes('MemoryTopic')) return '#22c55e';
+    if (labels.includes('MemoryAgent')) return '#f59e0b';
+    return '#94a3b8';
+  }
+  if (labels.includes('ControlDevice')) return '#f59e0b';
+  if (labels.includes('ControlAction')) return '#ef4444';
+  if (labels.includes('ControlLocation')) return '#22c55e';
+  if (labels.includes('ControlCapability')) return '#a78bfa';
+  return '#94a3b8';
+}
+
 export default function MemoryEnginePage() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [neo4jUrl, setNeo4jUrl] = useState('');
   const [neo4jBrowserUrl, setNeo4jBrowserUrl] = useState('');
   const [activeEngineTab, setActiveEngineTab] = useState<EngineTab>('memory');
   const [controlEnabled, setControlEnabled] = useState(false);
@@ -212,6 +384,9 @@ export default function MemoryEnginePage() {
   const [processLog, setProcessLog] = useState<ProcessLogStep[]>([]);
   const [isRunning, setIsRunning] = useState<MemoryResponse['action'] | null>(null);
   const [isControlRunning, setIsControlRunning] = useState<ControlAction | null>(null);
+  const [activatedGraphSource, setActivatedGraphSource] = useState<ActivatedGraphSource | null>(null);
+  const [graphPreview, setGraphPreview] = useState<GraphPreview | null>(null);
+  const [isGraphLoading, setIsGraphLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const authFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -243,6 +418,8 @@ export default function MemoryEnginePage() {
           }
           if (settingsResponse.ok) {
             const settingsBody = await settingsResponse.json().catch(() => ({})) as SettingsPayload;
+            setMemoryEnabled(Boolean(settingsBody.memory_engine?.enabled));
+            setNeo4jUrl(String(settingsBody.memory_engine?.neo4j_url || '').trim());
             setNeo4jBrowserUrl(String(settingsBody.memory_engine?.neo4j_browser_url || '').trim());
             setControlEnabled(Boolean(settingsBody.control_engine?.enabled));
             setControlExecutionEnabled(Boolean(settingsBody.control_engine?.execution_enabled));
@@ -267,6 +444,64 @@ export default function MemoryEnginePage() {
   );
   const memoryTargetValue = memoryScope === 'shared' ? 'shared' : `agent:${selectedAgentId}`;
 
+  const memoryStatus = useMemo<StatusInfo>(() => {
+    if (!memoryEnabled) {
+      return {
+        tone: 'red',
+        label: 'Memorie disattive',
+        description: 'Memory Engine disattivo: gli agenti non recuperano ne aggiornano memorie.',
+      };
+    }
+    if (!neo4jUrl) {
+      return {
+        tone: 'yellow',
+        label: 'Memorie da verificare',
+        description: 'Memory Engine attivo, ma la configurazione Neo4j sembra incompleta.',
+      };
+    }
+    return {
+      tone: 'green',
+      label: 'Memorie attive',
+      description: 'Memory Engine attivo: gli agenti possono recuperare e aggiornare memorie secondo scope.',
+    };
+  }, [memoryEnabled, neo4jUrl]);
+
+  const controlStatus = useMemo<StatusInfo>(() => (
+    controlEnabled
+      ? {
+          tone: 'green',
+          label: 'Control attivo',
+          description: 'Control Engine attivo: gli agenti possono vedere retrieveInfo e updateSchema.',
+        }
+      : {
+          tone: 'red',
+          label: 'Control disattivo',
+          description: 'Control Engine disattivo: retrieveInfo e updateSchema non sono esposti agli agenti.',
+        }
+  ), [controlEnabled]);
+
+  const controlExecutionStatus = useMemo<StatusInfo>(() => {
+    if (controlExecutionEnabled && !controlEnabled) {
+      return {
+        tone: 'yellow',
+        label: 'Azioni da verificare',
+        description: 'Esecuzione azioni abilitata, ma Control Engine e disattivo.',
+      };
+    }
+    if (controlExecutionEnabled) {
+      return {
+        tone: 'green',
+        label: 'Azioni attive',
+        description: 'Esecuzione azioni attiva: executeAction e le azioni reali sui device sono abilitate.',
+      };
+    }
+    return {
+      tone: 'red',
+      label: 'Azioni disattive',
+      description: 'Esecuzione azioni disattiva: executeAction resta bloccato e non esegue comandi sui device.',
+    };
+  }, [controlEnabled, controlExecutionEnabled]);
+
   const handleMemoryTargetChange = (value: string) => {
     if (value === 'shared') {
       setMemoryScope('shared');
@@ -278,11 +513,58 @@ export default function MemoryEnginePage() {
     }
   };
 
+  const buildMemoryGraphSource = (action: MemoryResponse['action'], packet: MemoryPacket | null, responseItems: MemoryItem[]) => {
+    const ids = new Set<string>();
+    const terms: string[] = [];
+    (packet?.retrieval?.selected_ids || []).forEach((id) => ids.add(String(id)));
+    collectGraphIds(packet, ids, terms);
+    responseItems.forEach((item) => {
+      if (item.id && !item.id.includes('-')) ids.add(item.id);
+      terms.push(item.topic, item.information);
+    });
+    return {
+      engine: 'memory' as const,
+      title: action === 'getMemories' ? 'Grafo getMemories' : 'Grafo setMemories',
+      ids,
+      terms: terms.filter(Boolean),
+    };
+  };
+
+  const buildControlGraphSource = (action: ControlAction, result: ControlResult) => {
+    const ids = new Set<string>();
+    const terms: string[] = [];
+    collectGraphIds(result?.result || result, ids, terms);
+    return {
+      engine: 'control' as const,
+      title: `Grafo ${action}`,
+      ids,
+      terms: terms.filter(Boolean),
+    };
+  };
+
+  const openActivatedGraph = async () => {
+    if (!activatedGraphSource) return;
+    setIsGraphLoading(true);
+    setError(null);
+    try {
+      const response = await authFetch(`/api/memory-engine/graph/live?engine=${activatedGraphSource.engine}&limit=900`);
+      const snapshot = await response.json().catch(() => ({})) as GraphSnapshot & { error?: string };
+      if (!response.ok) throw new Error(snapshot?.error || 'Impossibile caricare il sotto-grafo.');
+      setGraphPreview(buildActivatedGraphPreview(snapshot, activatedGraphSource));
+    } catch (err: any) {
+      setError(err?.message || 'Errore durante il caricamento del sotto-grafo.');
+    } finally {
+      setIsGraphLoading(false);
+    }
+  };
+
   const runMemoryAction = async (action: MemoryResponse['action']) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
     setIsRunning(action);
     setError(null);
+    setActivatedGraphSource(null);
+    setGraphPreview(null);
     try {
       const endpoint = action === 'getMemories' ? '/api/memory-engine/get' : '/api/memory-engine/set';
       const response = await authFetch(endpoint, {
@@ -302,6 +584,7 @@ export default function MemoryEnginePage() {
       setGeneratedAnswer(body.generated_answer || null);
       setProcessLog(Array.isArray(body.process_log) ? body.process_log : []);
       setLastAction(action);
+      setActivatedGraphSource(buildMemoryGraphSource(action, body.packet || null, Array.isArray(body.items) ? body.items : []));
     } catch (err: any) {
       setError(err?.message || 'Errore durante il test Memory Engine.');
     } finally {
@@ -317,6 +600,8 @@ export default function MemoryEnginePage() {
     setIsControlRunning(action);
     setError(null);
     setControlResult(null);
+    setActivatedGraphSource(null);
+    setGraphPreview(null);
     try {
       const extraPayload = parseControlPayload();
       const endpoint = action === 'retrieveInfo'
@@ -337,6 +622,7 @@ export default function MemoryEnginePage() {
       if (!response.ok) throw new Error(body?.error || 'Operazione Control Engine non riuscita.');
       setControlResult(body);
       setControlAction(action);
+      setActivatedGraphSource(buildControlGraphSource(action, body));
     } catch (err: any) {
       setError(err?.message || 'Errore durante il test Control Engine.');
     } finally {
@@ -361,94 +647,110 @@ export default function MemoryEnginePage() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <a
-                href="/graph-live?engine=memory"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20"
-                title="Apri grafo Memory Engine live"
-              >
-                <CircleStackIcon className="h-5 w-5" />
-                Memory
-              </a>
-              <a
-                href="/graph-live?engine=control"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20"
-                title="Apri grafo Control Engine live"
-              >
-                <BoltIcon className="h-5 w-5" />
-                Control
-              </a>
+              <details className="group relative">
+                <summary className="inline-flex h-11 cursor-pointer list-none items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20">
+                  <CircleStackIcon className="h-5 w-5" />
+                  Live Dashboard
+                  <ChevronDownIcon className="h-4 w-4 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="absolute right-0 top-full z-30 mt-2 w-48 overflow-hidden rounded-xl border border-gray-800 bg-gray-950 py-1 shadow-2xl">
+                  <a
+                    href={neo4jBrowserUrl || '#'}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-disabled={!neo4jBrowserUrl}
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-semibold ${
+                      neo4jBrowserUrl
+                        ? 'text-gray-100 hover:bg-gray-900'
+                        : 'pointer-events-none text-gray-500'
+                    }`}
+                    title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
+                  >
+                    <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+                    DB
+                  </a>
+                  <a
+                    href="/graph-live?engine=memory"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-900"
+                    title="Apri Live Dashboard"
+                  >
+                    <CircleStackIcon className="h-5 w-5" />
+                    Dashboard
+                  </a>
+                </div>
+              </details>
               <span className="group relative inline-flex">
                 <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${
-                    controlEnabled
-                      ? 'border-emerald-700/60 bg-emerald-600/10 text-emerald-200'
-                      : 'border-gray-800 bg-gray-950/60 text-gray-500'
-                  }`}
-                  title={`Control Engine: ${controlEnabled ? 'attivo' : 'disattivo'}`}
-                  aria-label={`Control Engine: ${controlEnabled ? 'attivo' : 'disattivo'}`}
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(memoryStatus.tone)}`}
+                  title={memoryStatus.label}
+                  aria-label={memoryStatus.label}
                 >
-                  {controlEnabled ? <CheckCircleIcon className="h-5 w-5" /> : <XCircleIcon className="h-5 w-5" />}
+                  {memoryStatus.tone === 'red' ? <XCircleIcon className="h-5 w-5" /> : <CheckCircleIcon className="h-5 w-5" />}
                 </span>
                 <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-                  Control Engine {controlEnabled ? 'attivo' : 'disattivo'}: {controlEnabled ? 'gli agenti possono vedere retrieveInfo e updateSchema.' : 'retrieveInfo e updateSchema non sono esposti agli agenti.'}
+                  {memoryStatus.description}
                 </span>
               </span>
               <span className="group relative inline-flex">
                 <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${
-                    controlExecutionEnabled
-                      ? 'border-amber-700/60 bg-amber-600/10 text-amber-200'
-                      : 'border-gray-800 bg-gray-950/60 text-gray-500'
-                  }`}
-                  title={`Esecuzione azioni: ${controlExecutionEnabled ? 'attiva' : 'disattiva'}`}
-                  aria-label={`Esecuzione azioni: ${controlExecutionEnabled ? 'attiva' : 'disattiva'}`}
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(controlStatus.tone)}`}
+                  title={controlStatus.label}
+                  aria-label={controlStatus.label}
+                >
+                  {controlStatus.tone === 'red' ? <XCircleIcon className="h-5 w-5" /> : <CheckCircleIcon className="h-5 w-5" />}
+                </span>
+                <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+                  {controlStatus.description}
+                </span>
+              </span>
+              <span className="group relative inline-flex">
+                <span
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(controlExecutionStatus.tone)}`}
+                  title={controlExecutionStatus.label}
+                  aria-label={controlExecutionStatus.label}
                 >
                   <BoltIcon className="h-5 w-5" />
                 </span>
                 <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-                  Esecuzione azioni {controlExecutionEnabled ? 'attiva' : 'disattiva'}: {controlExecutionEnabled ? 'executeAction e le azioni reali sui device sono abilitate.' : 'executeAction resta bloccato e non esegue comandi sui device.'}
+                  {controlExecutionStatus.description}
                 </span>
               </span>
-              <a
-                href={neo4jBrowserUrl || '#'}
-                target="_blank"
-                rel="noreferrer"
-                aria-disabled={!neo4jBrowserUrl}
-                className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-semibold ${
-                  neo4jBrowserUrl
-                    ? 'border-sky-700/60 bg-sky-600/10 text-sky-100 hover:bg-sky-600/20'
-                    : 'pointer-events-none border-gray-800 bg-gray-950/60 text-gray-500'
-                }`}
-                title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
-              >
-                <ArrowTopRightOnSquareIcon className="h-5 w-5" />
-                DB
-              </a>
             </div>
           </div>
 
-          <div className="mt-5 inline-flex rounded-xl border border-gray-800 bg-gray-950 p-1">
-            {[
-              { id: 'memory' as const, label: 'Memory Engine' },
-              { id: 'control' as const, label: 'Control Engine' },
-            ].map((tab) => (
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <div className="inline-flex rounded-xl border border-gray-800 bg-gray-950 p-1">
+              {[
+                { id: 'memory' as const, label: 'Memory Engine' },
+                { id: 'control' as const, label: 'Control Engine' },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveEngineTab(tab.id)}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                    activeEngineTab === tab.id
+                      ? 'bg-sky-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-900'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {activatedGraphSource ? (
               <button
-                key={tab.id}
                 type="button"
-                onClick={() => setActiveEngineTab(tab.id)}
-                className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                  activeEngineTab === tab.id
-                    ? 'bg-sky-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-900'
-                }`}
+                onClick={openActivatedGraph}
+                disabled={isGraphLoading}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-60"
               >
-                {tab.label}
+                <CircleStackIcon className={`h-5 w-5 ${isGraphLoading ? 'animate-pulse' : ''}`} />
+                Graph
               </button>
-            ))}
+            ) : null}
           </div>
 
           <div className="mt-5 space-y-3">
@@ -759,6 +1061,99 @@ export default function MemoryEnginePage() {
           ) : null}
         </section>
       </div>
+      {graphPreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6">
+          <div className="flex h-full max-h-[46rem] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-sky-900/70 bg-gray-950 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Graph preview</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">{graphPreview.title}</h2>
+                <p className="mt-1 text-xs text-gray-400">
+                  {graphPreview.nodes.length} nodi / {graphPreview.links.length} relazioni
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGraphPreview(null)}
+                className="inline-flex h-10 items-center justify-center rounded-xl border border-gray-700 px-4 text-sm font-semibold text-gray-100 hover:bg-gray-900"
+              >
+                Chiudi
+              </button>
+            </div>
+            <div className="relative min-h-0 flex-1 bg-[radial-gradient(circle_at_center,#111827_0,#030712_55%,#000_100%)]">
+              {graphPreview.nodes.length > 0 ? (() => {
+                const nodes = layoutPreviewGraph(graphPreview.nodes);
+                const byId = new Map(nodes.map((node) => [node.id, node]));
+                return (
+                  <svg viewBox="-420 -300 840 600" className="h-full w-full" role="img" aria-label={graphPreview.title}>
+                    <g>
+                      {graphPreview.links.map((link) => {
+                        const source = byId.get(link.source);
+                        const target = byId.get(link.target);
+                        if (!source || !target) return null;
+                        return (
+                          <g key={link.id}>
+                            <line
+                              x1={source.x || 0}
+                              y1={source.y || 0}
+                              x2={target.x || 0}
+                              y2={target.y || 0}
+                              stroke="#38bdf8"
+                              strokeOpacity="0.58"
+                              strokeWidth="2.5"
+                            />
+                            <text
+                              x={((source.x || 0) + (target.x || 0)) / 2}
+                              y={((source.y || 0) + (target.y || 0)) / 2}
+                              fill="#cbd5e1"
+                              fontSize="10"
+                              fontWeight="700"
+                              textAnchor="middle"
+                            >
+                              {link.type}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </g>
+                    <g>
+                      {nodes.map((node) => (
+                        <g key={node.id} transform={`translate(${node.x || 0} ${node.y || 0})`}>
+                          <circle
+                            r="15"
+                            fill={getPreviewNodeColor(node, graphPreview.engine)}
+                            stroke="#bae6fd"
+                            strokeWidth="2"
+                          />
+                          <g transform="translate(0 30)">
+                            <rect
+                              x={-(Math.min(node.title.length, 32) * 3.8 + 12)}
+                              y="-11"
+                              width={Math.min(node.title.length, 32) * 7.6 + 24}
+                              height="22"
+                              rx="7"
+                              fill="#020617"
+                              fillOpacity="0.9"
+                              stroke="#1e3a5f"
+                            />
+                            <text fill="#f8fafc" fontSize="11" fontWeight="700" textAnchor="middle" dominantBaseline="middle">
+                              {node.title.length > 32 ? `${node.title.slice(0, 31)}...` : node.title}
+                            </text>
+                          </g>
+                        </g>
+                      ))}
+                    </g>
+                  </svg>
+                );
+              })() : (
+                <div className="flex h-full items-center justify-center p-8 text-center text-sm text-gray-400">
+                  Nessun nodo del grafo live corrisponde ai dati restituiti dall&apos;ultima funzione.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

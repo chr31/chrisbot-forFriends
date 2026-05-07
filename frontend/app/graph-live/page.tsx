@@ -52,6 +52,16 @@ type DragState = {
   lastY: number;
 };
 
+type MemoryGraphFilter = {
+  mode: 'all' | 'shared' | 'agent';
+  agentId?: string;
+};
+
+type MemoryAgentOption = {
+  id: string;
+  label: string;
+};
+
 function getInitialEngine() {
   if (typeof window === 'undefined') return 'memory';
   return new URLSearchParams(window.location.search).get('engine') === 'control' ? 'control' : 'memory';
@@ -111,6 +121,62 @@ function getLinkLabelOpacity(zoom: number) {
 function isTechnicalNode(node: GraphNode, engine: 'memory' | 'control') {
   const technicalLabels = engine === 'memory' ? MEMORY_TECHNICAL_LABELS : CONTROL_TECHNICAL_LABELS;
   return node.labels.some((label) => technicalLabels.has(label));
+}
+
+function normalizePropertyId(value: unknown) {
+  if (value == null) return '';
+  return String(value).trim();
+}
+
+function getMemoryNodeAgentId(node: GraphNode) {
+  return normalizePropertyId(node.properties.agent_id || node.properties.memory_agent_id);
+}
+
+function isMemoryAgentNode(node: GraphNode) {
+  return node.labels.includes('MemoryAgent');
+}
+
+function isMemoryScopedNode(node: GraphNode) {
+  return node.labels.some((label) => label.startsWith('Memory') && label !== 'MemoryAgent');
+}
+
+function getMemoryAgentOptions(nodes: GraphNode[]) {
+  const options = new Map<string, string>();
+  for (const node of nodes) {
+    if (isMemoryAgentNode(node)) {
+      const id = normalizePropertyId(node.properties.id || node.title);
+      if (id) options.set(id, String(node.properties.name || node.title || id));
+    }
+    const agentId = getMemoryNodeAgentId(node);
+    if (agentId) {
+      options.set(agentId, String(node.properties.agent_label || node.properties.agent_name || options.get(agentId) || `Agente ${agentId}`));
+    }
+  }
+  return Array.from(options, ([id, label]) => ({ id, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'it'));
+}
+
+function parseMemoryFilterValue(value: string): MemoryGraphFilter {
+  if (value === 'shared') return { mode: 'shared' };
+  if (value.startsWith('agent:')) return { mode: 'agent', agentId: value.slice('agent:'.length) };
+  return { mode: 'all' };
+}
+
+function stringifyMemoryFilter(filter: MemoryGraphFilter) {
+  return filter.mode === 'agent' && filter.agentId ? `agent:${filter.agentId}` : filter.mode;
+}
+
+function memoryNodeMatchesFilter(node: GraphNode, filter: MemoryGraphFilter) {
+  if (filter.mode === 'all') return true;
+  if (isMemoryAgentNode(node)) {
+    return filter.mode === 'agent' && normalizePropertyId(node.properties.id || node.title) === filter.agentId;
+  }
+  if (!isMemoryScopedNode(node)) return true;
+
+  const agentId = getMemoryNodeAgentId(node);
+  const scope = String(node.properties.scope || '').trim().toLowerCase();
+  if (filter.mode === 'shared') return scope === 'shared' || !agentId;
+  return Boolean(filter.agentId) && agentId === filter.agentId;
 }
 
 function truncate(value: string, limit = 32) {
@@ -266,6 +332,8 @@ export default function GraphLivePage() {
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
+  const [showTechnicalNodes, setShowTechnicalNodes] = useState(false);
+  const [memoryFilter, setMemoryFilter] = useState<MemoryGraphFilter>({ mode: 'all' });
   const [dashboardPassword, setDashboardPassword] = useState('');
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -319,18 +387,49 @@ export default function GraphLivePage() {
     return () => window.clearInterval(timer);
   }, [engine, loadGraph, requiresPassword]);
 
+  const memoryAgentOptions = useMemo(
+    () => getMemoryAgentOptions(snapshot?.nodes || []),
+    [snapshot]
+  );
+
+  useEffect(() => {
+    if (memoryFilter.mode !== 'agent') return;
+    if (memoryAgentOptions.some((agent) => agent.id === memoryFilter.agentId)) return;
+    setMemoryFilter({ mode: 'all' });
+  }, [memoryAgentOptions, memoryFilter]);
+
   const visibleGraph = useMemo(() => {
-    const visibleNodes = (snapshot?.nodes || []).filter((node) => !isTechnicalNode(node, engine));
+    const allNodes = snapshot?.nodes || [];
+    const allLinks = snapshot?.links || [];
+    const technicalNodeIds = new Set(
+      allNodes
+        .filter((node) => isTechnicalNode(node, engine))
+        .map((node) => node.id)
+    );
+    const filteredNodes = engine === 'memory'
+      ? allNodes.filter((node) => memoryNodeMatchesFilter(node, memoryFilter))
+      : allNodes;
+    const filteredNodeIds = new Set(filteredNodes.map((node) => node.id));
+    const visibleNodes = showTechnicalNodes
+      ? filteredNodes
+      : filteredNodes.filter((node) => !isTechnicalNode(node, engine));
     const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-    const visibleLinks = (snapshot?.links || []).filter((link) => (
+    const visibleLinks = allLinks.filter((link) => (
       visibleNodeIds.has(link.source) && visibleNodeIds.has(link.target)
     ));
+    const technicalNodeCount = filteredNodes.filter((node) => technicalNodeIds.has(node.id)).length;
+    const technicalLinkCount = allLinks.filter((link) => (
+      filteredNodeIds.has(link.source)
+        && filteredNodeIds.has(link.target)
+        && (technicalNodeIds.has(link.source) || technicalNodeIds.has(link.target))
+    )).length;
     return {
       nodes: visibleNodes,
       links: aggregateLinks(visibleLinks),
-      hiddenNodeCount: Math.max(0, (snapshot?.nodes?.length || 0) - visibleNodes.length),
+      technicalNodeCount,
+      technicalLinkCount,
     };
-  }, [engine, snapshot]);
+  }, [engine, memoryFilter, showTechnicalNodes, snapshot]);
   const nodes = useMemo(
     () => layoutGraph(visibleGraph.nodes, visibleGraph.links),
     [visibleGraph]
@@ -338,8 +437,31 @@ export default function GraphLivePage() {
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) || null : null;
   const links = visibleGraph.links;
+  const hasActiveSelection = Boolean(selectedNode);
+  const selectedNeighborhood = useMemo(() => {
+    if (!selectedNodeId || !nodeById.has(selectedNodeId)) {
+      return {
+        nodeIds: new Set<string>(),
+        linkIds: new Set<string>(),
+      };
+    }
+    const nodeIds = new Set<string>([selectedNodeId]);
+    const linkIds = new Set<string>();
+    for (const link of links) {
+      if (link.source === selectedNodeId || link.target === selectedNodeId) {
+        nodeIds.add(link.source);
+        nodeIds.add(link.target);
+        linkIds.add(link.id);
+      }
+    }
+    return { nodeIds, linkIds };
+  }, [links, nodeById, selectedNodeId]);
   const textScale = getReadableTextScale(viewport.zoom);
   const linkLabelOpacity = getLinkLabelOpacity(viewport.zoom);
+
+  useEffect(() => {
+    if (selectedNodeId && !nodeById.has(selectedNodeId)) setSelectedNodeId(null);
+  }, [nodeById, selectedNodeId]);
 
   const switchEngine = (nextEngine: 'memory' | 'control') => {
     setEngine(nextEngine);
@@ -452,12 +574,39 @@ export default function GraphLivePage() {
               Control
             </button>
           </div>
+          {engine === 'memory' ? (
+            <select
+              value={stringifyMemoryFilter(memoryFilter)}
+              onChange={(event) => {
+                setSelectedNodeId(null);
+                setMemoryFilter(parseMemoryFilterValue(event.target.value));
+              }}
+              className="h-10 rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm font-semibold text-gray-100 outline-none hover:bg-gray-900 focus:border-sky-500"
+              aria-label="Filtro memorie"
+            >
+              <option value="all">Tutte le memorie</option>
+              <option value="shared">Solo condivise</option>
+              {memoryAgentOptions.map((agent) => (
+                <option key={agent.id} value={`agent:${agent.id}`}>
+                  {agent.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <div className="text-sm text-gray-300">
             <span className="font-semibold text-white">{nodes.length}</span> nodi visibili
             <span className="mx-2 text-gray-600">/</span>
             <span className="font-semibold text-white">{links.length}</span> relazioni
-            {visibleGraph.hiddenNodeCount > 0 ? (
-              <span className="ml-3 text-gray-500">{visibleGraph.hiddenNodeCount} tecnici nascosti</span>
+            {visibleGraph.technicalNodeCount > 0 || visibleGraph.technicalLinkCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowTechnicalNodes((current) => !current)}
+                className="ml-3 text-sky-300 underline decoration-sky-500/60 underline-offset-4 hover:text-sky-100"
+              >
+                {showTechnicalNodes ? 'Nascondi' : 'Mostra'} parti tecniche:{' '}
+                <span className="font-semibold">{visibleGraph.technicalNodeCount}</span> nodi /{' '}
+                <span className="font-semibold">{visibleGraph.technicalLinkCount}</span> relazioni
+              </button>
             ) : null}
           </div>
         </div>
@@ -548,14 +697,26 @@ export default function GraphLivePage() {
             const geometry = getLinkGeometry(source, target, link);
             const linkLabel = getLinkLabel(link);
             const linkLabelWidth = linkLabel.length * 8 + 18;
+            const isRelatedLink = selectedNeighborhood.linkIds.has(link.id);
+            const isDimmed = hasActiveSelection && !isRelatedLink;
             return (
-              <g key={link.id}>
+              <g key={link.id} opacity={isDimmed ? 0.16 : 1}>
+                {isRelatedLink ? (
+                  <path
+                    d={geometry.path}
+                    fill="none"
+                    stroke="#0ea5e9"
+                    strokeWidth="10"
+                    strokeLinecap="round"
+                    strokeOpacity="0.18"
+                  />
+                ) : null}
                 <path
                   d={geometry.path}
                   fill="none"
-                  stroke="#334155"
-                  strokeWidth={link.relationCount && link.relationCount > 1 ? 3 : 2}
-                  strokeOpacity="0.68"
+                  stroke={isRelatedLink ? '#38bdf8' : '#334155'}
+                  strokeWidth={isRelatedLink ? 5 : link.relationCount && link.relationCount > 1 ? 3 : 2}
+                  strokeOpacity={isRelatedLink ? 0.92 : 0.68}
                 />
                 {linkLabelOpacity > 0 ? (
                   <g
@@ -570,12 +731,12 @@ export default function GraphLivePage() {
                       height="24"
                       rx="7"
                       fill="#020617"
-                      fillOpacity="0.84"
-                      stroke="#1e3a5f"
-                      strokeOpacity="0.85"
+                      fillOpacity={isRelatedLink ? 0.96 : 0.84}
+                      stroke={isRelatedLink ? '#7dd3fc' : '#1e3a5f'}
+                      strokeOpacity={isRelatedLink ? 0.95 : 0.85}
                     />
                     <text
-                      fill="#cbd5e1"
+                      fill={isRelatedLink ? '#f8fafc' : '#cbd5e1'}
                       fontSize="13"
                       fontWeight="700"
                       dominantBaseline="middle"
@@ -592,7 +753,10 @@ export default function GraphLivePage() {
         <g>
           {nodes.map((node) => {
             const selected = node.id === selectedNodeId;
-            const labelOpacity = getNodeLabelOpacity(viewport.zoom, selected);
+            const connected = selectedNeighborhood.nodeIds.has(node.id);
+            const isRelatedNode = hasActiveSelection && connected;
+            const isDimmed = hasActiveSelection && !connected;
+            const labelOpacity = getNodeLabelOpacity(viewport.zoom, selected || isRelatedNode);
             const labelLimit = selected ? 32 : viewport.zoom < 1 ? 22 : 30;
             const fontSize = selected ? 18 : 14;
             const labelLines = splitLabel(node.title, labelLimit);
@@ -602,6 +766,7 @@ export default function GraphLivePage() {
               <g
                 key={node.id}
                 transform={`translate(${node.x || 0} ${node.y || 0})`}
+                opacity={isDimmed ? 0.22 : 1}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -609,12 +774,21 @@ export default function GraphLivePage() {
                 }}
                 className="cursor-pointer"
               >
+                {isRelatedNode ? (
+                  <circle
+                    r={getNodeRadius(node) + (selected ? 11 : 8)}
+                    fill="none"
+                    stroke={selected ? '#ffffff' : '#38bdf8'}
+                    strokeWidth={selected ? 3 : 2}
+                    strokeOpacity={selected ? 0.52 : 0.42}
+                  />
+                ) : null}
                 <circle
                   r={getNodeRadius(node) + (selected ? 5 : 0)}
                   fill={getNodeColor(node, engine)}
-                  fillOpacity={selected ? 1 : 0.86}
-                  stroke={selected ? '#ffffff' : '#0f172a'}
-                  strokeWidth={selected ? 4 : 2}
+                  fillOpacity={selected || connected ? 1 : 0.86}
+                  stroke={selected ? '#ffffff' : connected ? '#7dd3fc' : '#0f172a'}
+                  strokeWidth={selected ? 4 : connected ? 3 : 2}
                 />
                 {labelOpacity > 0 ? (
                   <g
@@ -629,9 +803,9 @@ export default function GraphLivePage() {
                       height={labelBox.height}
                       rx="8"
                       fill="#020617"
-                      fillOpacity={selected ? 0.94 : 0.82}
-                      stroke={selected ? '#bae6fd' : '#1e3a5f'}
-                      strokeOpacity={selected ? 0.9 : 0.72}
+                      fillOpacity={selected || isRelatedNode ? 0.94 : 0.82}
+                      stroke={selected ? '#bae6fd' : isRelatedNode ? '#38bdf8' : '#1e3a5f'}
+                      strokeOpacity={selected || isRelatedNode ? 0.9 : 0.72}
                     />
                     <text
                       fill="#f8fafc"

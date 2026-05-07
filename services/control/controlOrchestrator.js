@@ -280,9 +280,53 @@ function buildPromptSchemaPreview(args = {}) {
     schema.room = { name: roomMatch[0].trim(), aliases: [roomMatch[1].trim()] };
   }
 
+  const defaultDeviceTypeMatch = lowered.match(/\b(proiettore|projector|stampante|stampanti|printer|printers|audio|computer|pc)\b/);
+  const defaultDeviceTypeRaw = defaultDeviceTypeMatch?.[1] || '';
+  const defaultDeviceType = defaultDeviceTypeRaw === 'proiettore' ? 'projector'
+    : defaultDeviceTypeRaw === 'stampante' || defaultDeviceTypeRaw === 'stampanti' ? 'printer'
+      : defaultDeviceTypeRaw === 'printers' ? 'printer'
+        : defaultDeviceTypeRaw === 'pc' ? 'computer'
+          : defaultDeviceTypeRaw;
+  const deviceLines = instruction
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s*/, '').trim())
+    .filter((line) => /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(line));
+  const parsedDevices = deviceLines
+    .map((line) => {
+      const ip = line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0];
+      const name = line
+        .replace(/\b(?:con\s+)?ip\b.*$/i, '')
+        .replace(/\b(?:indirizzo\s+)?(?:\d{1,3}\.){3}\d{1,3}\b.*$/i, '')
+        .replace(/[;,.]+$/g, '')
+        .trim();
+      if (!ip || !name) return null;
+      return {
+        name,
+        ip,
+        device_type: defaultDeviceType || 'generic',
+        location: schema.building?.name || undefined,
+        capabilities: /\b(ping|online|monitor|monitorag|stato|status)\b/i.test(instruction) ? ['status_online'] : undefined,
+      };
+    })
+    .filter(Boolean);
+  if (parsedDevices.length > 1) {
+    schema.devices = parsedDevices;
+    if (/\b(ping|online|monitor|monitorag|stato|status)\b/i.test(instruction)) {
+      schema.action = {
+        name: 'Monitoring ping',
+        action_key: 'monitoring_ping',
+        action_type: 'ping',
+        intent: 'monitoring',
+        capability_key: 'status_online',
+        description: 'Controlla se il device e online tramite ping.',
+        risk_level: 'low',
+      };
+    }
+  }
+
   const ipMatch = instruction.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
   const typeMatch = lowered.match(/\b(proiettore|projector|stampante|printer|audio|computer|pc)\b/);
-  if (typeMatch || ipMatch) {
+  if (!schema.devices && (typeMatch || ipMatch)) {
     const typeRaw = typeMatch?.[1] || 'device';
     const deviceType = typeRaw === 'proiettore' ? 'projector'
       : typeRaw === 'stampante' ? 'printer'
@@ -330,7 +374,17 @@ async function updateControlSchema(args = {}) {
     requireEnabled();
     const dryRun = args.dry_run !== false;
     const payload = args.schema && typeof args.schema === 'object'
-      ? args.schema
+      ? {
+          building: args.building,
+          room: args.room,
+          location: args.location,
+          locations: args.locations,
+          capabilities: args.capabilities,
+          capability: args.capability,
+          device: args.device,
+          action: args.action,
+          ...args.schema,
+        }
       : {
           building: args.building,
           room: args.room,
@@ -341,7 +395,7 @@ async function updateControlSchema(args = {}) {
           device: args.device,
           action: args.action,
         };
-    const hasStructuredInput = ['building', 'room', 'device', 'action'].some((key) => payload[key]);
+    const hasStructuredInput = ['building', 'buildings', 'room', 'rooms', 'device', 'devices', 'action', 'actions'].some((key) => payload[key]);
     const inferred = hasStructuredInput ? null : buildPromptSchemaPreview(args);
     const schema = hasStructuredInput ? payload : inferred;
     if (!schema) {

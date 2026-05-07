@@ -24,6 +24,12 @@ const QUERY_STOPWORDS = new Set([
   'the', 'and', 'with', 'for', 'status', 'check', 'controllare', 'controlla',
   'verifica', 'verificare', 'stato', 'online', 'edificio', 'building',
 ]);
+const DEVICE_ALIAS_STOPWORDS = new Set([
+  'device', 'dispositivo', 'generic',
+  'printer', 'printers', 'stampante', 'stampanti',
+  'projector', 'projectors', 'proiettore', 'proiettori', 'videoproiettore',
+  'audio', 'computer', 'pc', 'workstation',
+]);
 
 const SCHEMA_STATEMENTS = [
   'CREATE CONSTRAINT control_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
@@ -83,6 +89,13 @@ function uniq(values = [], limit = 32) {
     if (result.length >= limit) break;
   }
   return result;
+}
+
+function filterDeviceAliases(values = []) {
+  return uniq(values).filter((alias) => {
+    const key = normalizeKey(alias);
+    return key && !DEVICE_ALIAS_STOPWORDS.has(key);
+  });
 }
 
 function buildQueryTokens(value) {
@@ -230,7 +243,7 @@ function normalizeDevice(input = {}) {
     name,
     normalized_name: normalizeKey(input.normalized_name || name),
     canonical_key: canonicalKey,
-    aliases: uniq([normalizeList(input.aliases), input.alias, name, input.device_type, input.type]),
+    aliases: filterDeviceAliases([normalizeList(input.aliases), input.alias, name]),
     ip: normalizeText(input.ip, 80) || null,
     mac_address: normalizeText(input.mac_address || input.macAddress, 80) || null,
     manufacturer: normalizeText(input.manufacturer, 120) || null,
@@ -261,6 +274,26 @@ function normalizeDevice(input = {}) {
 
 function normalizeAction(input = {}) {
   if (typeof input === 'string') input = { name: input };
+  if (
+    /\bping\b/i.test(String(input.command || input.name || input.action || input.action_type || input.type || ''))
+    && !['ping', 'http', 'http_api', 'telnet', 'telnet_auth', 'ssh', 'bash'].includes(String(input.action_type || input.type || '').trim().toLowerCase())
+  ) {
+    input = {
+      ...input,
+      action_type: 'ping',
+      intent: input.intent || 'monitoring',
+      capability_key: input.capability_key || input.capability || 'status_online',
+    };
+  }
+  if (String(input.action_type || input.type || '').trim().toLowerCase() === 'ping' && !input.name && !input.action && !input.action_name) {
+    input = {
+      ...input,
+      name: 'Monitoring ping',
+      action_key: 'monitoring_ping',
+      intent: input.intent || 'monitoring',
+      capability_key: input.capability_key || input.capability || 'status_online',
+    };
+  }
   const name = normalizeText(input.name || input.action || input.action_name, 180);
   if (!name) return null;
   const adapterType = normalizeActionType(input.adapter_type || input.action_type || input.type);
@@ -322,21 +355,22 @@ function normalizeAction(input = {}) {
   ].filter(Boolean).join(' '), 1800);
   return {
     node,
-    device_ref: normalizeText(input.device_id || input.device_ref || input.device || '', 240) || null,
+    device_ref: normalizeText(input.device_id || input.device_ref || input.device || input.target || '', 240) || null,
   };
 }
 
 function collectSchemaInput(input = {}) {
+  const expanded = expandNestedSchemaInput(input);
   const locations = [];
-  const buildingEntry = input.building || input.building_node;
-  const building = buildingEntry ? normalizeLocation(buildingEntry, 'building') : normalizeLocation(input, 'building');
-  const hasBuildingInput = Boolean(buildingEntry || input.building || input.building_name);
+  const buildingEntry = expanded.building || expanded.building_node;
+  const building = buildingEntry ? normalizeLocation(buildingEntry, 'building') : normalizeLocation(expanded, 'building');
+  const hasBuildingInput = Boolean(buildingEntry || expanded.building || expanded.building_name);
   const activeBuilding = hasBuildingInput ? building : null;
   if (activeBuilding) locations.push(activeBuilding);
 
   const roomInputs = [
-    ...(Array.isArray(input.rooms) ? input.rooms : []),
-    ...(input.room || input.room_node ? [input.room || input.room_node] : []),
+    ...(Array.isArray(expanded.rooms) ? expanded.rooms : []),
+    ...(expanded.room || expanded.room_node ? [expanded.room || expanded.room_node] : []),
   ];
   for (const roomInput of roomInputs) {
     const room = normalizeLocation({
@@ -348,27 +382,104 @@ function collectSchemaInput(input = {}) {
   }
 
   for (const locationInput of [
-    ...(Array.isArray(input.locations) ? input.locations : []),
-    ...(input.location || input.location_node ? [input.location || input.location_node] : []),
+    ...(Array.isArray(expanded.locations) ? expanded.locations : []),
+    ...(expanded.location || expanded.location_node ? [expanded.location || expanded.location_node] : []),
   ]) {
     const location = normalizeLocation(locationInput, locationInput?.kind || 'location', activeBuilding?.node?.id || null);
     if (location) locations.push(location);
   }
 
   const devices = [
-    ...(Array.isArray(input.devices) ? input.devices : []),
-    ...(input.device || input.device_node ? [input.device || input.device_node] : []),
+    ...(Array.isArray(expanded.devices) ? expanded.devices : []),
+    ...(expanded.device || expanded.device_node ? [expanded.device || expanded.device_node] : []),
   ].map(normalizeDevice).filter(Boolean);
   const actions = [
-    ...(Array.isArray(input.actions) ? input.actions : []),
-    ...(input.action || input.action_node ? [input.action || input.action_node] : []),
+    ...(Array.isArray(expanded.actions) ? expanded.actions : []),
+    ...(expanded.action || expanded.action_node ? [expanded.action || expanded.action_node] : []),
   ].map(normalizeAction).filter(Boolean);
   const explicitCapabilities = [
-    ...(Array.isArray(input.capabilities) ? input.capabilities : []),
-    ...(input.capability || input.capability_node ? [input.capability || input.capability_node] : []),
+    ...(Array.isArray(expanded.capabilities) ? expanded.capabilities : []),
+    ...(expanded.capability || expanded.capability_node ? [expanded.capability || expanded.capability_node] : []),
   ].map((entry) => normalizeCapability(typeof entry === 'object' ? entry : { key: entry, name: entry })).filter(Boolean);
 
   return { locations, devices, actions, explicitCapabilities };
+}
+
+function normalizeNestedAction(input = {}) {
+  const action = typeof input === 'object' ? { ...input } : { name: input };
+  const commandText = String(action.command || action.name || action.action || '').trim();
+  if (/\bping\b/i.test(commandText)) {
+    action.action_type = 'ping';
+    action.intent = 'monitoring';
+    action.capability_key = 'status_online';
+    if (!action.description) action.description = 'Controlla se il device e online tramite ping.';
+    if (!action.risk_level) action.risk_level = 'low';
+  }
+  return action;
+}
+
+function expandNestedSchemaInput(input = {}) {
+  const expanded = { ...input };
+  const locations = [...(Array.isArray(input.locations) ? input.locations : [])];
+  const rooms = [...(Array.isArray(input.rooms) ? input.rooms : [])];
+  const devices = [...(Array.isArray(input.devices) ? input.devices : [])];
+  const actions = [...(Array.isArray(input.actions) ? input.actions.map(normalizeNestedAction) : [])];
+  const capabilities = [...(Array.isArray(input.capabilities) ? input.capabilities : [])];
+  const buildings = Array.isArray(input.buildings) ? input.buildings : [];
+
+  if (!expanded.building && buildings.length === 1 && buildings[0] && typeof buildings[0] === 'object') {
+    expanded.building = {
+      ...buildings[0],
+      devices: undefined,
+      rooms: undefined,
+    };
+  }
+
+  for (const building of buildings) {
+    if (!building || typeof building !== 'object') continue;
+    const buildingName = normalizeText(building.name || building.building || building.building_name, 180);
+    if (buildingName && buildings.length > 1) {
+      locations.push({
+        ...building,
+        name: buildingName,
+        kind: 'building',
+      });
+    }
+
+    const nestedRooms = Array.isArray(building.rooms) ? building.rooms : [];
+    for (const room of nestedRooms) {
+      const roomEntry = typeof room === 'object' ? room : { name: room };
+      if (!normalizeText(roomEntry.name || roomEntry.room || roomEntry.room_name, 180)) continue;
+      rooms.push({
+        ...roomEntry,
+        building: buildingName || roomEntry.building,
+      });
+    }
+
+    for (const device of Array.isArray(building.devices) ? building.devices : []) {
+      if (!device || typeof device !== 'object') continue;
+      const locationRoom = typeof device.location === 'object'
+        ? normalizeText(device.location.room || device.location.name || device.location.room_name, 180)
+        : normalizeText(device.room || '', 180);
+      if (locationRoom) {
+        rooms.push({ name: locationRoom, building: buildingName });
+      }
+      devices.push({
+        ...device,
+        device_type: device.device_type || device.type,
+        building: buildingName || device.building,
+        location: locationRoom || buildingName || device.location,
+        capabilities: device.capabilities || (/\bping\b/i.test(String(device.actions || '')) ? ['status_online'] : undefined),
+      });
+    }
+  }
+
+  expanded.locations = locations;
+  expanded.rooms = rooms;
+  expanded.devices = devices;
+  expanded.actions = actions;
+  expanded.capabilities = capabilities;
+  return expanded;
 }
 
 async function enrichEmbeddings(items = [], settings = {}) {
@@ -534,10 +645,10 @@ class Neo4jControlRepository {
     );
 
     if (labels.includes('ControlBuilding')) {
-      await session.run('MATCH (n:ControlLocation {id: $id}) SET n:ControlBuilding', { id: node.id });
+      await session.run('MATCH (n:ControlLocation {id: $id}) SET n:ControlBuilding REMOVE n:ControlRoom', { id: node.id });
     }
     if (labels.includes('ControlRoom')) {
-      await session.run('MATCH (n:ControlLocation {id: $id}) SET n:ControlRoom', { id: node.id });
+      await session.run('MATCH (n:ControlLocation {id: $id}) SET n:ControlRoom REMOVE n:ControlBuilding', { id: node.id });
     }
 
     return { ...node, alignment: matched ? { strategy: matched.strategy, score: matched.score } : { strategy: 'created', score: null } };
