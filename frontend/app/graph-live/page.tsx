@@ -328,7 +328,7 @@ function layoutGraph(nodes: GraphNode[], links: GraphLink[]) {
 }
 
 export default function GraphLivePage() {
-  const [engine, setEngine] = useState<'memory' | 'control'>(() => getInitialEngine() as 'memory' | 'control');
+  const [engine, setEngine] = useState<'memory' | 'control'>('memory');
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
@@ -349,7 +349,7 @@ export default function GraphLivePage() {
     return fetch(input, { ...init, headers, cache: 'no-store' });
   }, []);
 
-  const loadGraph = useCallback(async (nextEngine = engine) => {
+  const loadGraph = useCallback(async (nextEngine: 'memory' | 'control') => {
     setIsLoading(true);
     setError(null);
     try {
@@ -373,7 +373,7 @@ export default function GraphLivePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [authFetch, engine]);
+  }, [authFetch]);
 
   useEffect(() => {
     const nextEngine = getInitialEngine() as 'memory' | 'control';
