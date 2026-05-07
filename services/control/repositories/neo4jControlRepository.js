@@ -287,11 +287,7 @@ function normalizeDevice(input = {}) {
     name,
     normalized_name: normalizeKey(input.normalized_name || name),
     canonical_key: canonicalKey,
-<<<<<<< HEAD
     aliases: filterDeviceAliases([normalizeList(input.aliases), input.alias, name]),
-=======
-    aliases: uniq([normalizeList(input.aliases), input.alias, name]),
->>>>>>> 64e217e07bd550fd2626abee0bed4a9c5386a4c3
     ip: normalizeText(input.ip, 80) || null,
     mac_address: normalizeText(input.mac_address || input.macAddress, 80) || null,
     manufacturer: normalizeText(input.manufacturer, 120) || null,

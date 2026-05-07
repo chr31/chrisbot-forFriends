@@ -562,11 +562,20 @@ async function updateControlSchema(args = {}) {
           device: args.device,
           action: args.action,
         };
-<<<<<<< HEAD
-    const hasStructuredInput = ['building', 'buildings', 'room', 'rooms', 'device', 'devices', 'action', 'actions'].some((key) => payload[key]);
-=======
-    const hasStructuredInput = ['building', 'room', 'device', 'action', 'locations', 'devices', 'actions', 'capabilities'].some((key) => payload[key]);
->>>>>>> 64e217e07bd550fd2626abee0bed4a9c5386a4c3
+    const hasStructuredInput = [
+      'building',
+      'buildings',
+      'room',
+      'rooms',
+      'location',
+      'locations',
+      'capability',
+      'capabilities',
+      'device',
+      'devices',
+      'action',
+      'actions',
+    ].some((key) => payload[key]);
     const inferred = hasStructuredInput ? null : buildPromptSchemaPreview(args);
     const schema = hasStructuredInput ? payload : inferred;
     if (!schema) {
