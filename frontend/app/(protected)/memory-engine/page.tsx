@@ -167,6 +167,63 @@ type ActivatedGraphSource = {
   terms: string[];
 };
 
+const GRAPH_ID_KEYS = new Set([
+  'id',
+  'key',
+  'canonical_key',
+  'subject_key',
+  'request_key',
+  'topic_key',
+  'run_key',
+  'memory_id',
+  'item_id',
+  'device_id',
+  'action_id',
+  'building_id',
+  'room_id',
+  'capability_key',
+  'adapter_key',
+  'device_type',
+  'adapter_type',
+  'from',
+  'to',
+]);
+
+const GRAPH_TERM_KEYS = new Set([
+  'topic',
+  'information',
+  'summary',
+  'request_summary',
+  'name',
+  'device',
+  'action',
+  'building',
+  'room',
+  'capability',
+  'description',
+]);
+
+const GRAPH_GENERIC_TOKENS = new Set([
+  'true',
+  'false',
+  'null',
+  'none',
+  'shared',
+  'dedicated',
+  'memory',
+  'control',
+  'device',
+  'action',
+  'building',
+  'room',
+  'location',
+  'capability',
+  'adapter',
+  'created',
+  'updated',
+  'unchanged',
+]);
+
 function displayValue(value: unknown) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
@@ -257,6 +314,19 @@ function normalizeGraphToken(value: unknown) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+function addGraphId(ids: Set<string>, value: unknown) {
+  if (value == null || typeof value === 'object') return;
+  const token = String(value).trim();
+  if (token && !GRAPH_GENERIC_TOKENS.has(normalizeGraphToken(token))) ids.add(token);
+}
+
+function addGraphTerm(terms: string[], value: unknown) {
+  if (value == null || typeof value === 'object') return;
+  const text = String(value).trim();
+  const normalized = normalizeGraphToken(text);
+  if (text.length > 3 && text.length < 220 && !GRAPH_GENERIC_TOKENS.has(normalized)) terms.push(text);
+}
+
 function collectGraphIds(value: unknown, ids = new Set<string>(), terms: string[] = []) {
   if (value == null) return { ids, terms };
   if (Array.isArray(value)) {
@@ -264,49 +334,45 @@ function collectGraphIds(value: unknown, ids = new Set<string>(), terms: string[
     return { ids, terms };
   }
   if (typeof value !== 'object') {
-    const text = String(value || '').trim();
-    if (text.length > 2 && text.length < 160) terms.push(text);
     return { ids, terms };
   }
 
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     const normalizedKey = key.toLowerCase();
-    if (
-      normalizedKey === 'id'
-      || normalizedKey.endsWith('_id')
-      || normalizedKey === 'device'
-      || normalizedKey === 'action'
-      || normalizedKey === 'room'
-      || normalizedKey === 'building'
-      || normalizedKey === 'capability'
-    ) {
-      const token = String(entry ?? '').trim();
-      if (token) ids.add(token);
-    }
-    if (['topic', 'information', 'summary', 'request_summary', 'name'].includes(normalizedKey)) {
-      const text = String(entry ?? '').trim();
-      if (text.length > 2 && text.length < 220) terms.push(text);
-    }
+    if (GRAPH_ID_KEYS.has(normalizedKey) || normalizedKey.endsWith('_id')) addGraphId(ids, entry);
+    if (GRAPH_TERM_KEYS.has(normalizedKey)) addGraphTerm(terms, entry);
     collectGraphIds(entry, ids, terms);
   }
   return { ids, terms };
 }
 
 function nodeMatchesActivatedSource(node: GraphNode, source: ActivatedGraphSource) {
-  const values = [
+  const idValues = [
     node.id,
+    node.properties?.id,
+    node.properties?.key,
+    node.properties?.canonical_key,
+    node.properties?.subject_key,
+    node.properties?.request_key,
+    node.properties?.device_type,
+    node.properties?.adapter_type,
+  ].map(normalizeGraphToken).filter(Boolean);
+  const textValues = [
     node.title,
-    node.kind,
-    ...node.labels,
-    ...Object.values(node.properties || {}).map((value) => String(value ?? '')),
+    node.properties?.name,
+    node.properties?.topic,
+    node.properties?.information,
+    node.properties?.summary,
+    node.properties?.description,
+    ...(Array.isArray(node.properties?.aliases) ? node.properties.aliases : []),
   ].map(normalizeGraphToken).filter(Boolean);
   for (const id of source.ids) {
     const token = normalizeGraphToken(id);
-    if (token && values.some((value) => value === token || value.includes(token))) return true;
+    if (token && idValues.some((value) => value === token)) return true;
   }
   for (const term of source.terms.slice(0, 20)) {
     const token = normalizeGraphToken(term);
-    if (token.length > 3 && values.some((value) => value.includes(token) || token.includes(value))) return true;
+    if (token.length > 3 && !GRAPH_GENERIC_TOKENS.has(token) && textValues.some((value) => value.includes(token))) return true;
   }
   return false;
 }
@@ -317,21 +383,18 @@ function buildActivatedGraphPreview(snapshot: GraphSnapshot, source: ActivatedGr
       .filter((node) => nodeMatchesActivatedSource(node, source))
       .map((node) => node.id)
   );
-  const previewNodeIds = new Set(directNodeIds);
-  const links = snapshot.links.filter((link) => {
-    const connected = directNodeIds.has(link.source) || directNodeIds.has(link.target);
-    if (connected) {
-      previewNodeIds.add(link.source);
-      previewNodeIds.add(link.target);
-    }
-    return connected;
+  const links = snapshot.links.filter((link) => directNodeIds.has(link.source) && directNodeIds.has(link.target));
+  const linkedNodeIds = new Set<string>();
+  links.forEach((link) => {
+    linkedNodeIds.add(link.source);
+    linkedNodeIds.add(link.target);
   });
-  const nodes = snapshot.nodes.filter((node) => previewNodeIds.has(node.id));
+  const nodes = snapshot.nodes.filter((node) => directNodeIds.has(node.id) || linkedNodeIds.has(node.id));
   return {
     engine: source.engine,
     title: source.title,
     nodes,
-    links: links.filter((link) => previewNodeIds.has(link.source) && previewNodeIds.has(link.target)),
+    links,
   };
 }
 
@@ -519,7 +582,7 @@ export default function MemoryEnginePage() {
     (packet?.retrieval?.selected_ids || []).forEach((id) => ids.add(String(id)));
     collectGraphIds(packet, ids, terms);
     responseItems.forEach((item) => {
-      if (item.id && !item.id.includes('-')) ids.add(item.id);
+      if (item.id) ids.add(item.id);
       terms.push(item.topic, item.information);
     });
     return {
