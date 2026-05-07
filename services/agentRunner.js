@@ -137,6 +137,13 @@ function sanitizeMessages(messages) {
   for (const raw of Array.isArray(messages) ? messages : []) {
     if (!raw || !raw.role) continue;
     if (raw.role === 'assistant' && raw.tool_calls) {
+      for (const toolCallId of pendingToolCallIds) {
+        sanitized.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: 'Tool non eseguito: storico incompleto recuperato dal database.',
+        });
+      }
       pendingToolCallIds = new Set(
         Array.isArray(raw.tool_calls) ? raw.tool_calls.map((tc) => tc?.id).filter(Boolean) : []
       );
@@ -149,14 +156,7 @@ function sanitizeMessages(messages) {
     }
 
     if (raw.role === 'tool') {
-      const last = sanitized[sanitized.length - 1];
-      const hasCaller =
-        raw.tool_call_id &&
-        last &&
-        last.role === 'assistant' &&
-        Array.isArray(last.tool_calls) &&
-        last.tool_calls.some((tc) => tc.id === raw.tool_call_id);
-      if (hasCaller) {
+      if (raw.tool_call_id && pendingToolCallIds.has(raw.tool_call_id)) {
         sanitized.push({
           role: 'tool',
           tool_call_id: raw.tool_call_id,
@@ -167,6 +167,14 @@ function sanitizeMessages(messages) {
       continue;
     }
 
+    for (const toolCallId of pendingToolCallIds) {
+      sanitized.push({
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: 'Tool non eseguito: storico incompleto recuperato dal database.',
+      });
+    }
+    pendingToolCallIds = new Set();
     sanitized.push({ role: raw.role, content: raw.role === 'assistant' ? toAssistantContentString(raw.content) : (raw.content ?? '') });
   }
 
@@ -449,9 +457,10 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
   if (responseMessage.role === 'assistant') {
     const assistantContent = toAssistantContentString(responseMessage.content);
     const hasAssistantContent = Boolean(assistantContent.trim());
+    const hasToolCalls = Array.isArray(responseMessage.tool_calls) && responseMessage.tool_calls.length > 0;
     const hasModelDebugPayload = Boolean(String(responseMessage.reasoning || '').trim())
       || Number.isFinite(responseMessage.total_tokens);
-    if ((context.depth || 0) === 0 && (hasAssistantContent || hasModelDebugPayload)) {
+    if ((context.depth || 0) === 0 && (hasAssistantContent || hasModelDebugPayload || hasToolCalls)) {
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: agent.id,
@@ -465,6 +474,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           parent_run_id: context.parentRunId || null,
           depth: Number.isFinite(context.depth) ? context.depth : 0,
           delegated_by_agent_id: depth > 0 ? context.parentAgentId || null : null,
+          tool_calls: Array.isArray(responseMessage.tool_calls) ? responseMessage.tool_calls : undefined,
         },
       }]);
     }
@@ -758,15 +768,28 @@ function buildAgentSystemPrompt(agent) {
   return `${promptParts.filter(Boolean).join('\n\n')} Oggi e il ${new Date().toISOString()}`.trim();
 }
 
+function buildStoredToolResultSummary(row) {
+  const metadata = row?.metadata_json || {};
+  const parts = [
+    'Risultato tool storico recuperato dal database.',
+    metadata.tool_name ? `Tool: ${metadata.tool_name}` : null,
+    metadata.tool_call_id ? `Tool call id: ${metadata.tool_call_id}` : null,
+    metadata.arguments ? `Argomenti: ${stringifyForModel(metadata.arguments)}` : null,
+    `Risultato: ${String(row?.content || '')}`,
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
 function mapStoredRowToHistoryEntry(row, options = {}) {
   const visibleOnly = options.visibleOnly === true;
+  const storedToolCalls = Array.isArray(row?.metadata_json?.tool_calls) ? row.metadata_json.tool_calls : null;
   if (row.event_type === 'delegation') {
     return null;
   }
   if (row.event_type === 'guardrail') {
     return null;
   }
-  if (row.event_type === 'model_debug') {
+  if (row.event_type === 'model_debug' && !storedToolCalls) {
     return null;
   }
   if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {
@@ -787,14 +810,33 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
   if (row.role === 'tool') {
     return null;
   }
-  return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+  return {
+    role: row.role,
+    content: row.content,
+    reasoning: row.reasoning || null,
+    ...(storedToolCalls ? { tool_calls: storedToolCalls } : {}),
+  };
 }
 
 async function buildInitialAgentHistory(agent, rows, options = {}) {
   if (Array.isArray(rows) && rows.length > 0) {
-    const mapped = rows.map((row) => {
-      return mapStoredRowToHistoryEntry(row, options);
-    }).filter(Boolean);
+    const mapped = [];
+    for (const row of rows) {
+      const entry = mapStoredRowToHistoryEntry(row, options);
+      if (!entry) continue;
+      if (
+        entry.role === 'tool'
+        && !mapped.some((candidate) =>
+          candidate?.role === 'assistant'
+          && Array.isArray(candidate.tool_calls)
+          && candidate.tool_calls.some((toolCall) => toolCall?.id === entry.tool_call_id)
+        )
+      ) {
+        mapped.push({ role: 'assistant', content: buildStoredToolResultSummary(row) });
+        continue;
+      }
+      mapped.push(entry);
+    }
     if (options.visibleOnly === true) {
       const visibleLimit = Number.isFinite(Number(options.visibleLimit))
         ? Math.max(1, Math.trunc(Number(options.visibleLimit)))
