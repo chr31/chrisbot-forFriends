@@ -1257,6 +1257,22 @@ export default function AgentChatPage() {
       }
     }
 
+    if (normalizeParentRunId(run.parent_run_id) === null) {
+      for (const { message, index } of indexedMessages) {
+        if (message.event_type !== 'delegation_result') continue;
+        if (normalizeParentRunId(message.metadata_json?.parent_run_id) !== Number(run.id)) continue;
+        const content = String(message.content || '').trim();
+        if (!content) continue;
+        detailItems.push({
+          key: `run-${run.id}-delegation-return-${index}`,
+          order: index + 0.15,
+          label: 'Risposta ricevuta dal worker',
+          subtitle: message.agent_name || null,
+          content: formatDelegationResultContent(content),
+        });
+      }
+    }
+
     const orderedItems = detailItems
       .filter((item) => String(item.content || '').trim())
       .sort((a, b) => a.order - b.order);

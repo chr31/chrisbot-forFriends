@@ -123,11 +123,16 @@ function extractToolFallbackText(content) {
 }
 
 function buildAssistantFallbackFromToolMessages(toolMessages = []) {
-  for (let index = toolMessages.length - 1; index >= 0; index -= 1) {
-    const candidate = extractToolFallbackText(toolMessages[index]?.content);
-    if (candidate) return candidate;
+  const results = [];
+  for (const toolMessage of toolMessages) {
+    const candidate = extractToolFallbackText(toolMessage?.content);
+    if (candidate) results.push(candidate);
   }
-  return '';
+  if (results.length === 0) return '';
+  if (results.length === 1) return results[0];
+  return results
+    .map((result, index) => `Risultato tool ${index + 1}:\n${result}`)
+    .join('\n\n');
 }
 
 function sanitizeMessages(messages) {
@@ -460,7 +465,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
     const hasToolCalls = Array.isArray(responseMessage.tool_calls) && responseMessage.tool_calls.length > 0;
     const hasModelDebugPayload = Boolean(String(responseMessage.reasoning || '').trim())
       || Number.isFinite(responseMessage.total_tokens);
-    if ((context.depth || 0) === 0 && (hasAssistantContent || hasModelDebugPayload || hasToolCalls)) {
+    if (hasAssistantContent || hasModelDebugPayload || hasToolCalls) {
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: agent.id,
@@ -473,7 +478,7 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           run_id: context.runId || null,
           parent_run_id: context.parentRunId || null,
           depth: Number.isFinite(context.depth) ? context.depth : 0,
-          delegated_by_agent_id: depth > 0 ? context.parentAgentId || null : null,
+          delegated_by_agent_id: (context.depth || 0) > 0 ? context.parentAgentId || null : null,
           tool_calls: Array.isArray(responseMessage.tool_calls) ? responseMessage.tool_calls : undefined,
         },
       }]);
@@ -780,9 +785,18 @@ function buildStoredToolResultSummary(row) {
   return parts.join('\n');
 }
 
+function buildDelegatedWorkerAssistantSummary(row) {
+  const agentName = String(row?.agent_name || 'worker').trim() || 'worker';
+  const content = String(row?.content || '').trim();
+  if (!content) return '';
+  return `Risposta finale del worker ${agentName}:\n${content}`;
+}
+
 function mapStoredRowToHistoryEntry(row, options = {}) {
   const visibleOnly = options.visibleOnly === true;
   const storedToolCalls = Array.isArray(row?.metadata_json?.tool_calls) ? row.metadata_json.tool_calls : null;
+  const isNestedAssistant = row.role === 'assistant'
+    && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id);
   if (row.event_type === 'delegation') {
     return null;
   }
@@ -792,7 +806,11 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
   if (row.event_type === 'model_debug' && !storedToolCalls) {
     return null;
   }
-  if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {
+  if (isNestedAssistant) {
+    if (row.event_type === 'message') {
+      const content = buildDelegatedWorkerAssistantSummary(row);
+      return content ? { role: 'assistant', content } : null;
+    }
     return null;
   }
   if (isNestedWorkerToolResult(row)) {
@@ -821,6 +839,14 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
 async function buildInitialAgentHistory(agent, rows, options = {}) {
   if (Array.isArray(rows) && rows.length > 0) {
     const mapped = [];
+    const nestedAssistantRunIds = new Set(
+      rows
+        .filter((row) => row?.role === 'assistant'
+          && row?.event_type === 'message'
+          && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)
+          && Number.isFinite(Number(row?.metadata_json?.run_id)))
+        .map((row) => Number(row.metadata_json.run_id))
+    );
     for (const row of rows) {
       const entry = mapStoredRowToHistoryEntry(row, options);
       if (!entry) continue;
@@ -836,6 +862,15 @@ async function buildInitialAgentHistory(agent, rows, options = {}) {
         continue;
       }
       mapped.push(entry);
+      if (
+        row?.event_type === 'delegation_result'
+        && !nestedAssistantRunIds.has(Number(row?.metadata_json?.run_id))
+      ) {
+        const workerSummary = buildDelegatedWorkerAssistantSummary(row);
+        if (workerSummary) {
+          mapped.push({ role: 'assistant', content: workerSummary });
+        }
+      }
     }
     if (options.visibleOnly === true) {
       const visibleLimit = Number.isFinite(Number(options.visibleLimit))
@@ -873,4 +908,9 @@ module.exports = {
   buildInitialAgentHistory,
   sanitizeMessages,
   createChatId,
+  __test: {
+    buildAssistantFallbackFromToolMessages,
+    buildDelegatedWorkerAssistantSummary,
+    mapStoredRowToHistoryEntry,
+  },
 };
