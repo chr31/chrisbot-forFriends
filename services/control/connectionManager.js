@@ -17,9 +17,19 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getConnection(ref) {
+function normalizeSessionLookup(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getConnection(refOrName) {
+  const lookup = normalizeSessionLookup(refOrName);
   return (getControlEngineSettingsSync()?.persistent_connections || [])
-    .find((connection) => connection.ref === ref && connection.enabled !== false);
+    .find((connection) => {
+      if (connection.enabled === false) return false;
+      return normalizeSessionLookup(connection.ref) === lookup
+        || normalizeSessionLookup(connection.label) === lookup
+        || normalizeSessionLookup(connection.name) === lookup;
+    });
 }
 
 function sanitizeOutput(raw, command) {
@@ -272,7 +282,7 @@ async function executeSshCommand(entry, config, command) {
 
 async function executePersistentConnectionCommand(connectionRef, command) {
   const config = getConnection(connectionRef);
-  if (!config) return { status: 'failed', error: `Connessione persistente non trovata o disabilitata: ${connectionRef}` };
+  if (!config) return { status: 'failed', error: `Sessione persistente non trovata o disabilitata: ${connectionRef}` };
   const entry = getOrCreateEntry(config);
   try {
     if (config.protocol === 'ssh') {

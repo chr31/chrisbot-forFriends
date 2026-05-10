@@ -1,7 +1,7 @@
 const { getControlEngineSettingsSync, getMemoryEngineSettingsSync } = require('../appSettings');
 const { createControlRepository } = require('./repositories/controlRepository');
 const { executeControlActionTarget } = require('./actionExecutor');
-const { normalizeKey } = require('./controlSchema');
+const { CONTROL_GRAPH_ID, normalizeKey } = require('./controlSchema');
 
 function toolString(payload) {
   try {
@@ -27,6 +27,194 @@ function requireEnabled() {
   const settings = getControlEngineSettingsSync();
   if (!settings.enabled) throw new Error('Control Engine disabilitato.');
   return settings;
+}
+
+function withControlRoot(result = {}) {
+  return {
+    control_engine_root: {
+      labels: ['EngineGraph'],
+      id: CONTROL_GRAPH_ID,
+      name: 'Control Engine',
+      attach_pattern: `MATCH (g:EngineGraph {id: $graphId}) MERGE (g)-[:OWNS]->(n)`,
+    },
+    ...result,
+  };
+}
+
+async function getControlSessions() {
+  const tool = 'chrisbot_ControlEngine_getSessions';
+  try {
+    requireEnabled();
+    const sessions = getPersistentConnections()
+      .filter((connection) => connection.enabled !== false)
+      .map((connection) => connection.label || connection.ref)
+      .filter(Boolean);
+    return toolString({ ok: true, tool, result: { count: sessions.length, sessions } });
+  } catch (error) {
+    return toolError(tool, error);
+  }
+}
+
+function unwrapGraphObject(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) return null;
+  if (value.properties && typeof value.properties === 'object') {
+    return {
+      ...value.properties,
+      __labels: Array.isArray(value.labels) ? value.labels : [],
+      __type: value.type || null,
+    };
+  }
+  return value;
+}
+
+function collectGraphObjects(value, output = []) {
+  if (!value || typeof value !== 'object') return output;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectGraphObjects(entry, output));
+    return output;
+  }
+  const unwrapped = unwrapGraphObject(value);
+  if (unwrapped) output.push(unwrapped);
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === 'object') collectGraphObjects(entry, output);
+  }
+  return output;
+}
+
+function inferActionType(source = {}) {
+  const explicit = String(source.action_type || source.adapter_type || source.type || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  if (source.bash === true) return 'bash';
+  if (source.ssh === true) return 'ssh';
+  if (source.telnet === true || source.session === true) return 'telnet';
+  if (source.http === true || /^https?:\/\//i.test(String(source.command || ''))) return 'http';
+  if (source.ping === true || /\bping\b/i.test(String(source.command || source.name || ''))) return 'ping';
+  return 'bash';
+}
+
+function buildCommandTarget(commandSource = {}, devices = [], sessions = []) {
+  const session = sessions[0] || {};
+  const actionType = inferActionType({
+    ...session,
+    ...commandSource,
+    type: commandSource.type || commandSource.action_type || (session.telnet_auth === true ? 'telnet_auth' : session.telnet === true ? 'telnet' : undefined),
+  });
+  const command = String(commandSource.command || commandSource.cmd || commandSource.value || '').trim();
+  const commandIp = command.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || null;
+  const device = devices.find((entry) => entry.ip) || {};
+  const connectionRef = commandSource.connection_ref
+    || commandSource.session_ref
+    || commandSource.session
+    || session.name
+    || session.label
+    || null;
+  return {
+    device: {
+      id: device.id || commandSource.device_id || commandSource.deviceId || null,
+      name: device.name || commandSource.device || commandSource.device_name || null,
+      ip: device.ip || commandSource.ip || session.ip || commandIp || null,
+    },
+    action: {
+      id: commandSource.id || commandSource.command_id || null,
+      name: commandSource.name || commandSource.action || command || 'Comando Control Engine',
+      action_type: actionType,
+      adapter_type: actionType,
+      command,
+      connection_ref: connectionRef,
+    },
+    params: {
+      username: session.username || session.user || commandSource.username || commandSource.user || undefined,
+      password: session.password || session.pass || commandSource.password || commandSource.pass || undefined,
+    },
+  };
+}
+
+function extractCommandTargets(records = []) {
+  const targets = [];
+  const seen = new Set();
+  for (const record of records) {
+    const objects = collectGraphObjects(record);
+    const devices = objects.filter((entry) => (
+      (entry.__labels || []).some((label) => ['Device', 'ControlDevice'].includes(label))
+      || entry.device_type
+      || entry.ip
+    ));
+    const sessions = objects.filter((entry) => (
+      (entry.__labels || []).some((label) => ['Sessione'].includes(label))
+      || entry.telnet_auth
+      || entry.persistent
+      || (entry.username && entry.password)
+    ));
+    const commands = objects.filter((entry) => (
+      (entry.__labels || []).some((label) => ['Comando', 'ControlAction'].includes(label))
+      || entry.command
+      || entry.cmd
+    ));
+    for (const command of commands) {
+      const target = buildCommandTarget(command, devices, sessions);
+      if (!target.action.command && target.action.action_type !== 'ping') continue;
+      const key = [target.action.id, target.action.action_type, target.action.command, target.device.ip, target.action.connection_ref].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push(target);
+    }
+  }
+  return targets;
+}
+
+async function runGraphCommandTargets(records = []) {
+  const targets = extractCommandTargets(records);
+  const items = [];
+  for (const target of targets) {
+    const output = await executeControlActionTarget(target);
+    items.push({
+      device: target.device?.name,
+      device_id: target.device?.id,
+      action: target.action?.name,
+      action_id: target.action?.id,
+      action_type: target.action?.action_type,
+      status: output.status || 'unknown',
+      output: output.output || output.stdout || '',
+      stdout: output.stdout || '',
+      stderr: output.stderr || '',
+      error: output.error || null,
+      exit_code: output.exit_code ?? null,
+    });
+  }
+  return {
+    detected: targets.length,
+    executed: items.length,
+    failed: items.filter((item) => item.status === 'failed').length,
+    items,
+  };
+}
+
+async function getControlGraph(args = {}) {
+  const tool = 'chrisbot_ControlEngine_getGraph';
+  try {
+    const settings = requireEnabled();
+    const result = await getRepository().runGraphQuery(args.queryGraph, { mode: 'read' });
+    if (args.runCommands === true) {
+      if (!settings.execution_enabled) throw new Error('Esecuzione Control Engine disabilitata.');
+      const command_results = await runGraphCommandTargets(result.records);
+      return toolString({ ok: true, tool, result: withControlRoot({ ...result, command_results }) });
+    }
+    return toolString({ ok: true, tool, result: withControlRoot(result) });
+  } catch (error) {
+    return toolError(tool, error);
+  }
+}
+
+async function updateControlGraph(args = {}) {
+  const tool = 'chrisbot_ControlEngine_updateGraph';
+  try {
+    requireEnabled();
+    const result = await getRepository().runGraphQuery(args.queryGraph, { mode: 'write' });
+    return toolString({ ok: true, tool, result: withControlRoot(result) });
+  } catch (error) {
+    return toolError(tool, error);
+  }
 }
 
 function compactAliases(value = [], limit = 6) {
@@ -666,8 +854,11 @@ async function executeControlAction(args = {}) {
 
 module.exports = {
   executeControlAction,
+  getControlGraph,
+  getControlSessions,
   getControlSchemaContext,
   retrieveControlInfo,
+  updateControlGraph,
   updateControlSchema,
   withInferredControlFilters,
 };

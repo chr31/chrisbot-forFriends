@@ -2,10 +2,9 @@ const { createInternalNotification } = require('./notifications');
 const { getGoals, editGoals } = require('./agentState');
 const { getControlEngineSettingsSync } = require('../appSettings');
 const {
-  executeControlAction,
-  getControlSchemaContext,
-  retrieveControlInfo,
-  updateControlSchema,
+  getControlGraph,
+  getControlSessions,
+  updateControlGraph,
 } = require('../control/controlOrchestrator');
 
 const DEFAULT_INTERNAL_PREFIX = 'chrisbot_';
@@ -71,103 +70,51 @@ const INTERNAL_TOOL_DEFINITIONS = [
 function getControlEngineToolDefinitions() {
   const settings = getControlEngineSettingsSync();
   if (!settings.enabled) return [];
-  const tools = [
+  return [
     {
-      key: 'controlEngineGetSchemaContext',
-      name: 'ControlEngine_getSchemaContext',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getSchemaContext`,
-      description: 'Restituisce i valori accettati e le regole stringenti per preparare una proposta JSON Control Engine prima di chiamare updateSchema. Usa questo tool prima di creare o modificare action ssh/telnet. Restituisce sempre una stringa JSON.',
+      key: 'controlEngineGetGraph',
+      name: 'ControlEngine_getGraph',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getGraph`,
+      description: 'Tool che permette di ricavare informazioni dalla struttura del grafo di controllo',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          queryGraph: { type: 'string', description: 'Query Cypher di lettura da eseguire su Neo4j senza restrizioni automatiche sui nodi.' },
+          runCommands: { type: 'boolean', description: 'Se true esegue tutti i comandi presenti nei risultati e restituisce i loro output.' },
+        },
+        required: ['queryGraph', 'runCommands'],
+        additionalProperties: false,
+      },
+      handler: getControlGraph,
+    },
+    {
+      key: 'controlEngineGetSessions',
+      name: 'ControlEngine_getSessions',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getSessions`,
+      description: 'Tool che restiutisce le sessioni disponibili da associare ai comandi singoli',
       inputSchema: {
         type: 'object',
         properties: {},
         additionalProperties: false,
       },
-      handler: getControlSchemaContext,
+      handler: getControlSessions,
     },
     {
-      key: 'controlEngineRetrieveInfo',
-      name: 'ControlEngine_retriveInfo',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_retriveInfo`,
-      description: 'Interroga il grafo Control Engine per trovare edifici, stanze, device e azioni eseguibili o di monitoring. Restituisce sempre una stringa JSON.',
+      key: 'controlEngineUpdateGraph',
+      name: 'ControlEngine_updateGraph',
+      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_updateGraph`,
+      description: 'Tool che permette di aggiornare la struttura del grafo di controllo con nuove informazioni o riscrivendo quelle obsolete.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Richiesta naturale o filtro testuale.' },
-          intent: { type: 'string', enum: ['control', 'monitoring'], description: 'Intento azione desiderato.' },
-          building: { type: 'string', description: 'Nome o alias edificio opzionale.' },
-          room: { type: 'string', description: 'Nome o alias stanza opzionale.' },
-          device_type: { type: 'string', description: 'Tipo device, es. projector, printer, audio, bluesound, computer.' },
-          capability: { type: 'string', description: 'Capability richiesta, es. status_online, stream_status, music_play, power_on, audio_value.' },
-          action_type: { type: 'string', enum: ['bash', 'telnet', 'telnet_auth', 'ssh', 'ping', 'http', 'http_api'], description: 'Adapter tecnico azione opzionale.' },
-          limit: { type: 'number', description: 'Numero massimo risultati.' },
+          queryGraph: { type: 'string', description: 'Query Cypher di aggiornamento da eseguire su Neo4j senza restrizioni automatiche sui nodi.' },
         },
+        required: ['queryGraph'],
         additionalProperties: false,
       },
-      handler: retrieveControlInfo,
-    },
-    {
-      key: 'controlEngineUpdateSchema',
-      name: 'ControlEngine_updateSchema',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_updateSchema`,
-      description: 'Aggiunge o aggiorna nodi e relazioni del grafo Control Engine. Usa prima ControlEngine_getSchemaContext per ottenere connection_ref accettati. Le action telnet/ssh richiedono command e connection_ref esistente/enabled; bash richiede command e vieta connection_ref; host, porta, username e password non vanno mai nel grafo. Usa dry_run=true per preview. Restituisce sempre una stringa JSON.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          instruction: { type: 'string', description: 'Istruzione naturale per creare o aggiornare elementi del grafo.' },
-          dry_run: { type: 'boolean', description: 'Se true genera solo una preview.' },
-          schema: {
-            type: 'object',
-            description: 'Payload strutturato con locations/building/room, devices, capabilities, actions.',
-            additionalProperties: true,
-          },
-          locations: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          location: { type: 'object', additionalProperties: true },
-          capabilities: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          capability: { type: 'object', additionalProperties: true },
-          building: { type: 'object', additionalProperties: true },
-          room: { type: 'object', additionalProperties: true },
-          device: { type: 'object', additionalProperties: true },
-          action: { type: 'object', additionalProperties: true },
-        },
-        additionalProperties: false,
-      },
-      handler: updateControlSchema,
+      handler: updateControlGraph,
     },
   ];
-
-  if (settings.execution_enabled) {
-    tools.push({
-      key: 'controlEngineExecuteAction',
-      name: 'ControlEngine_executeAction',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_executeAction`,
-          description: 'Esegue azioni gia presenti nel grafo Control Engine su device target. Le action ssh/telnet usano solo connection_ref salvato nel grafo e connessioni persistenti configurate nelle impostazioni. Restituisce sempre una stringa JSON.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Richiesta originale o motivazione dell esecuzione.' },
-          dry_run: { type: 'boolean', description: 'Se true non esegue realmente.' },
-          params: { type: 'object', description: 'Parametri runtime opzionali, es. username/password per telnet_auth.', additionalProperties: true },
-          targets: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                device_id: { type: 'string' },
-                action_id: { type: 'string' },
-              },
-              required: ['device_id', 'action_id'],
-              additionalProperties: false,
-            },
-          },
-        },
-        required: ['targets'],
-        additionalProperties: false,
-      },
-      handler: executeControlAction,
-    });
-  }
-
-  return tools;
 }
 
 function buildInternalToolRegistry() {

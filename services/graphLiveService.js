@@ -167,11 +167,12 @@ async function runGraphQuery(engine, limit) {
     const query = engine === 'control'
       ? `
         MATCH (g:EngineGraph {id: $graphId})
-        OPTIONAL MATCH (g)-[:OWNS]->(owned)
-        WITH g, collect(owned) AS owned
-        WITH [g] + owned AS allNodes
-        UNWIND allNodes AS n
-        WITH n LIMIT $limit
+        OPTIONAL MATCH (g)-[:OWNS]->(root)
+        OPTIONAL MATCH path = (root)-[*0..8]->(n)
+        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
+        UNWIND [g] + branchNodes AS n
+        WITH DISTINCT n LIMIT $limit
         WITH collect(n) AS nodes
         OPTIONAL MATCH (a)-[r]-(b)
         WHERE a IN nodes AND b IN nodes

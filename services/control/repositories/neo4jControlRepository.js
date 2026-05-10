@@ -33,6 +33,11 @@ const DEVICE_ALIAS_STOPWORDS = new Set([
 
 const SCHEMA_STATEMENTS = [
   'CREATE CONSTRAINT control_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
+  'CREATE CONSTRAINT control_place_id IF NOT EXISTS FOR (n:Luogo) REQUIRE n.id IS UNIQUE',
+  'CREATE CONSTRAINT control_device_new_id IF NOT EXISTS FOR (n:Device) REQUIRE n.id IS UNIQUE',
+  'CREATE CONSTRAINT control_action_type_id IF NOT EXISTS FOR (n:ActionType) REQUIRE n.id IS UNIQUE',
+  'CREATE CONSTRAINT control_command_id IF NOT EXISTS FOR (n:Comando) REQUIRE n.id IS UNIQUE',
+  'CREATE CONSTRAINT control_session_id IF NOT EXISTS FOR (n:Sessione) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_location_id IF NOT EXISTS FOR (n:ControlLocation) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_building_id IF NOT EXISTS FOR (n:ControlBuilding) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_room_id IF NOT EXISTS FOR (n:ControlRoom) REQUIRE n.id IS UNIQUE',
@@ -51,6 +56,9 @@ const SCHEMA_STATEMENTS = [
   'CREATE INDEX control_action_intent IF NOT EXISTS FOR (n:ControlAction) ON (n.intent)',
   'CREATE INDEX control_action_type IF NOT EXISTS FOR (n:ControlAction) ON (n.action_type)',
   'CREATE INDEX control_action_capability IF NOT EXISTS FOR (n:ControlAction) ON (n.capability_key)',
+  'CREATE INDEX control_place_name IF NOT EXISTS FOR (n:Luogo) ON (n.name)',
+  'CREATE INDEX control_device_new_name IF NOT EXISTS FOR (n:Device) ON (n.name)',
+  'CREATE INDEX control_command_name IF NOT EXISTS FOR (n:Comando) ON (n.name)',
 ];
 
 function getSessionAccessMode(mode) {
@@ -65,6 +73,125 @@ function mapNodeProperties(node) {
     mapped[key] = value && typeof value.toNumber === 'function' ? value.toNumber() : value;
   }
   return mapped;
+}
+
+function sanitizeGraphProperties(properties = {}) {
+  const output = {};
+  for (const [key, value] of Object.entries(properties || {})) {
+    if (['embedding', 'alignment_text'].includes(key)) continue;
+    output[key] = serializeNeo4jValue(value);
+  }
+  return output;
+}
+
+function getNeo4jIdentity(value) {
+  if (value === null || value === undefined) return null;
+  const identity = value.identity ?? value.elementId;
+  if (identity === null || identity === undefined) return null;
+  return typeof identity?.toNumber === 'function' ? identity.toNumber() : String(identity);
+}
+
+function getNeo4jRelationshipEndpoint(value, side) {
+  const legacy = value?.[side];
+  if (legacy !== null && legacy !== undefined) {
+    return typeof legacy?.toNumber === 'function' ? legacy.toNumber() : String(legacy);
+  }
+  const elementId = side === 'start' ? value?.startNodeElementId : value?.endNodeElementId;
+  return elementId === null || elementId === undefined ? null : String(elementId);
+}
+
+function serializeNeo4jValue(value, options = {}) {
+  if (value === null || value === undefined) return value;
+  if (typeof value?.toNumber === 'function') return value.toNumber();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => serializeNeo4jValue(entry, options))
+      .filter((entry) => entry !== undefined);
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== 'object') return value;
+  if (value.labels && value.properties) {
+    if (options.allowedNodeIds && !options.allowedNodeIds.has(getNeo4jIdentity(value))) return undefined;
+    return {
+      labels: value.labels,
+      properties: sanitizeGraphProperties(mapNodeProperties(value)),
+    };
+  }
+  if (value.type && value.properties) {
+    if (
+      options.allowedNodeIds
+      && (
+        !options.allowedNodeIds.has(getNeo4jRelationshipEndpoint(value, 'start'))
+        || !options.allowedNodeIds.has(getNeo4jRelationshipEndpoint(value, 'end'))
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      type: value.type,
+      start: serializeNeo4jValue(value.start, options),
+      end: serializeNeo4jValue(value.end, options),
+      properties: sanitizeGraphProperties(mapNodeProperties(value)),
+    };
+  }
+  if (value.segments) {
+    const segments = value.segments
+      .map((segment) => serializeNeo4jValue(segment, options))
+      .filter((segment) => segment !== undefined);
+    if (options.allowedNodeIds && segments.length === 0) return undefined;
+    return {
+      start: serializeNeo4jValue(value.start, options),
+      end: serializeNeo4jValue(value.end, options),
+      segments,
+      length: segments.length,
+    };
+  }
+  const output = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const serialized = serializeNeo4jValue(entry, options);
+    if (serialized !== undefined) output[key] = serialized;
+  }
+  return output;
+}
+
+function assertSafeControlQuery(query) {
+  const compact = String(query || '').replace(/\s+/g, ' ').trim();
+  if (/[;]\s*\S/.test(compact) || /\b(?:USE|LOAD\s+CSV|CALL\s+db\.|CALL\s+apoc\.)\b/i.test(compact)) {
+    throw new Error('queryGraph contiene clausole non consentite per il Control Engine.');
+  }
+}
+
+async function getControlBranchNodeIds(session) {
+  const result = await session.run(
+    `
+    MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
+    MATCH path = (root)-[*0..8]->(n)
+    WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+    RETURN id(n) AS id
+    `,
+    { graphId: CONTROL_GRAPH_ID }
+  );
+  return new Set(result.records.map((record) => {
+    const id = record.get('id');
+    return id && typeof id.toNumber === 'function' ? id.toNumber() : String(id);
+  }));
+}
+
+function summarizeResult(result, options = {}) {
+  return {
+    summary: {
+      query_type: result.summary?.queryType || null,
+      counters: result.summary?.counters?.updates?.() || {},
+    },
+    records: result.records.map((record) => {
+      const row = {};
+      for (const key of record.keys) {
+        const value = serializeNeo4jValue(record.get(key), options);
+        if (value !== undefined) row[key] = value;
+      }
+      return row;
+    }),
+  };
 }
 
 function compactSavedNode(node = {}) {
@@ -591,7 +718,9 @@ class Neo4jControlRepository {
     return this.withSession('write', async (session) => {
       const result = await session.run(
         `
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(n)
+        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
+        MATCH path = (root)-[*0..8]->(n)
+        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
         WITH collect(n) AS nodes, count(n) AS deleted
         FOREACH (node IN nodes | DETACH DELETE node)
         RETURN deleted
@@ -600,6 +729,30 @@ class Neo4jControlRepository {
       );
       const deleted = result.records[0]?.get('deleted');
       return { deleted: deleted && typeof deleted.toNumber === 'function' ? deleted.toNumber() : Number(deleted || 0) };
+    });
+  }
+
+  async runGraphQuery(queryGraph, { mode = 'read' } = {}) {
+    const query = normalizeText(queryGraph, 12000);
+    if (!query) throw new Error('queryGraph mancante.');
+    assertSafeControlQuery(query);
+    return this.withSession(mode, async (session) => {
+      await session.run(`EXPLAIN ${query}`, { graphId: CONTROL_GRAPH_ID });
+      if (mode === 'read') {
+        const result = await session.run(query, { graphId: CONTROL_GRAPH_ID });
+        const allowedNodeIds = await getControlBranchNodeIds(session);
+        return summarizeResult(result, { allowedNodeIds });
+      }
+
+      const transaction = session.beginTransaction();
+      try {
+        const result = await transaction.run(query, { graphId: CONTROL_GRAPH_ID });
+        await transaction.commit();
+        return summarizeResult(result);
+      } catch (error) {
+        await transaction.rollback().catch(() => null);
+        throw error;
+      }
     });
   }
 
