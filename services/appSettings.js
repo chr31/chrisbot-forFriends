@@ -24,6 +24,8 @@ const settingsCache = {
 
 const DEFAULT_ADMIN_GROUP = 'chrisbot.admin';
 const DEFAULT_MCP_CLIENT_NAME = 'chrisbot';
+const DEFAULT_MEMORY_NEO4J_HTTP_HOST_PORT = 7474;
+const DEFAULT_CONTROL_NEO4J_HTTP_HOST_PORT = 7475;
 const PORTAL_ACCESS_SENSITIVE_FIELDS = Object.freeze([
   'local_admin_password',
   'azure_client_secret',
@@ -45,6 +47,11 @@ function normalizeGroupList(input, fallback = []) {
 function parseInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parsePort(value, fallback) {
+  const parsed = parseInteger(value, fallback);
+  return parsed > 0 && parsed <= 65535 ? parsed : fallback;
 }
 
 function parseBoolean(value, fallback = false) {
@@ -162,6 +169,7 @@ function buildDefaultOpenAiRuntimeSettings() {
 }
 
 function buildDefaultMemoryEngineSettings() {
+  const browserPort = parsePort(process.env.NEO4J_HTTP_HOST_PORT, DEFAULT_MEMORY_NEO4J_HTTP_HOST_PORT);
   return {
     enabled: false,
     analysis_model_provider: 'openai',
@@ -171,7 +179,7 @@ function buildDefaultMemoryEngineSettings() {
     embedding_model: '',
     embedding_ollama_server_id: null,
     neo4j_url: 'bolt://neo4j:7687',
-    neo4j_browser_url: 'http://127.0.0.1:7474',
+    neo4j_browser_url: `http://127.0.0.1:${browserPort}`,
     neo4j_username: 'neo4j',
     neo4j_password: '',
     graph_dashboard_password_hash: '',
@@ -244,11 +252,12 @@ Knowledge:
 }
 
 function buildDefaultControlEngineSettings() {
+  const browserPort = parsePort(process.env.CONTROL_NEO4J_HTTP_HOST_PORT, DEFAULT_CONTROL_NEO4J_HTTP_HOST_PORT);
   return {
     enabled: false,
     execution_enabled: false,
     neo4j_url: 'bolt://neo4j-control:7687',
-    neo4j_browser_url: 'http://127.0.0.1:7475',
+    neo4j_browser_url: `http://127.0.0.1:${browserPort}`,
     neo4j_username: 'neo4j',
     neo4j_password: '',
     persistent_connections: [],

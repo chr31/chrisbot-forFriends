@@ -38,6 +38,7 @@ const MEMORY_TEST_AGENT = {
   slug: 'memory-engine-access',
   kind: 'worker',
   memory_engine_enabled: true,
+  improve_memories_enabled: true,
   memory_scope: 'shared',
 };
 
@@ -125,7 +126,9 @@ function packetToItems(packet = {}, fallbackUser = null) {
     const values = Array.isArray(packet?.[section]) ? packet[section] : [];
     values.forEach((value, index) => {
       items.push({
-        id: `${section}-${index}`,
+        id: value && typeof value === 'object' && !Array.isArray(value) && value.id
+          ? String(value.id)
+          : `${section}-${index}`,
         user: process.user_key || fallbackUser || 'n/d',
         agent: process.agent || packet.agent_id || 'shared',
         topic: getMemoryTopic(value, section),
@@ -202,10 +205,18 @@ async function resolveMemoryTestAgent(body = {}) {
 }
 
 function applySetStatuses(items = [], packet = {}) {
+  const unchangedCount = Number(packet?.embedding?.unchanged_items || 0);
   const updatedCount = Number(packet?.embedding?.updated_items || 0);
+  const savedCount = Number(packet?.embedding?.saved_items || 0);
   return items.map((item, index) => ({
     ...item,
-    status: index < updatedCount ? 'updated' : 'added',
+    status: index < unchangedCount
+      ? 'unchanged'
+      : index < unchangedCount + updatedCount
+        ? 'updated'
+        : savedCount > 0
+          ? 'added'
+          : 'unchanged',
   }));
 }
 
@@ -269,6 +280,10 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet }) {
 function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
   const embedding = packet?.embedding || {};
   const warnings = Array.isArray(packet?.warnings) ? packet.warnings : [];
+  const toolCalls = embedding.agent_tool_calls || packet?.episodes?.tools || 0;
+  const persistedItems = Number(embedding.saved_items || 0)
+    + Number(embedding.updated_items || 0)
+    + Number(embedding.unchanged_items || 0);
   return [
     buildLogStep('request', 'Richiesta test', 'completed', 'Prompt ricevuto come informazione candidata da salvare.', {
       prompt,
@@ -282,31 +297,38 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
       packet?.enabled === false ? 'skipped' : 'completed',
       packet?.enabled === false
         ? `afterMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'afterMemory ha delegato valutazione e aggiornamento all agente memorie.'
+        : 'afterMemory ha valutato il contesto e preparato eventuali aggiornamenti memoria.'
     ),
-    buildLogStep('episodes', 'Salvataggio episodi', packet?.episodes?.saved ? 'completed' : 'skipped', 'Persistenza degli eventi immutabili della run di test.', {
-      episodes_saved: packet?.episodes?.saved || 0,
+    buildLogStep('persistence', 'Persistenza Neo4j', persistedItems > 0 ? 'completed' : 'skipped', 'Scrittura o conferma delle memorie operative nel grafo.', {
+      saved_items: embedding.saved_items || 0,
+      updated_items: embedding.updated_items || 0,
+      unchanged_items: embedding.unchanged_items || 0,
       tool_uses_saved: packet?.episodes?.tools || 0,
     }),
     buildLogStep(
       'memory-agent',
-      'runCypherQuery',
+      toolCalls > 0 ? 'runCypherQuery' : 'scrittura diretta',
       packet?.skipped_reason === 'agent_error' ? 'error' : 'completed',
-      'L agente memorie ha cercato il contenuto esistente e applicato eventuali query di scrittura.',
+      toolCalls > 0
+        ? 'L agente memorie ha applicato eventuali query tramite runCypherQuery.'
+        : 'Il backend ha persistito le memorie strutturate senza tool-call del modello.',
       {
-        tool_calls: embedding.agent_tool_calls || packet?.episodes?.tools || 0,
+        tool_calls: toolCalls,
         request_summary: packet?.request?.summary || null,
       }
     ),
     buildLogStep(
       'structured-output',
-      'memoryStatus',
-      packet?.contextText ? 'completed' : 'skipped',
+      packet?.contextText ? 'memoryStatus' : 'packet memorie',
+      packet?.contextText || items.length > 0 ? 'completed' : 'skipped',
       packet?.contextText
         ? 'L agente ha restituito output strutturato memoryStatus.'
-        : `Nessuno status restituito${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
+        : items.length > 0
+          ? 'Il packet contiene memorie persistite anche senza testo memoryStatus.'
+          : `Nessuno status restituito${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
       {
         memoryStatus: packet?.contextText || '',
+        items: items.length,
       }
     ),
     buildLogStep('classification', 'Esito set', items.length > 0 ? 'completed' : 'skipped', 'Classificazione visuale delle memorie restituite alla console.', {

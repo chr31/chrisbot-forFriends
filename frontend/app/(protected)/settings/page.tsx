@@ -1977,8 +1977,8 @@ export default function SettingsPage() {
                 <div>
                   <h3 className="text-sm font-semibold text-white">Neo4j Control Engine</h3>
                 </div>
-                <div className="mt-4 grid gap-x-4 gap-y-4 lg:grid-cols-2">
-                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                <div className="mt-4 grid max-w-4xl gap-x-4 gap-y-4 sm:grid-cols-2">
+                  <label className="min-w-0 text-sm text-gray-200">
                     <span className="mb-1 block">URL Bolt</span>
                     <input
                       value={controlEngine.neo4j_url}
@@ -1991,7 +1991,7 @@ export default function SettingsPage() {
                     />
                   </label>
 
-                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                  <label className="min-w-0 text-sm text-gray-200">
                     <span className="mb-1 block">URL pagina web Neo4j</span>
                     <input
                       value={controlEngine.neo4j_browser_url}

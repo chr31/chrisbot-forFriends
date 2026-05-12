@@ -769,6 +769,7 @@ class Neo4jMemoryRepository {
         { id }
       );
       const existingItem = mapNodeProperties(existing.records?.[0]?.get('m'));
+      const hadExistingItem = Boolean(existingItem?.id);
       const params = {
         id,
         scope: normalizeScope(input.scope),
@@ -854,7 +855,7 @@ class Neo4jMemoryRepository {
         );
       }
 
-      return { id, ...params };
+      return { id, ...params, created: !hadExistingItem, updated: hadExistingItem };
     });
   }
 

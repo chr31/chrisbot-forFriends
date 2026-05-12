@@ -77,6 +77,8 @@ Variabili:
 - `CONTROL_NEO4J_HTTP_HOST_PORT`: porta HTTP pubblicata sull'host per Neo4j Browser del Control Engine. Default: `7475`.
 - `CONTROL_NEO4J_BOLT_HOST_PORT`: porta Bolt pubblicata sull'host per Neo4j Control Engine. Default: `7688`.
 
+Queste variabili cambiano le porte pubblicate sull'host. Dentro la rete Docker i container Neo4j restano raggiungibili sui rispettivi service name e sulla porta interna `7687`: `bolt://neo4j:7687` per Memory Engine e `bolt://neo4j-control:7687` per Control Engine. Il seed delle impostazioni applicative usa `NEO4J_HTTP_HOST_PORT` e `CONTROL_NEO4J_HTTP_HOST_PORT` per costruire le URL browser locali.
+
 Configurazione minima per avviare Neo4j locale insieme a MySQL locale:
 
 ```env

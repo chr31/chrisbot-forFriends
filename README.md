@@ -85,6 +85,7 @@ npm run dev:all
 
 - [Struttura env](docs/struttura-env.md)
 - [Funzioni](docs/funzioni.md)
+- [Linee guida UI](docs/ui-guidelines.md)
 
 ## Licenza
 

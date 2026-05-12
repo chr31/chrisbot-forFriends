@@ -264,7 +264,7 @@ function getPacketMetric(packet: MemoryPacket | null) {
     typeof packet.embedding?.saved_items === 'number' ? `salvate ${packet.embedding.saved_items}` : '',
     typeof packet.embedding?.updated_items === 'number' ? `aggiornate ${packet.embedding.updated_items}` : '',
     typeof packet.embedding?.unchanged_items === 'number' ? `immutate ${packet.embedding.unchanged_items}` : '',
-    typeof packet.episodes?.saved === 'number' ? `episodi ${packet.episodes.saved}` : '',
+    typeof packet.episodes?.saved === 'number' ? `persistite ${packet.episodes.saved}` : '',
   ].filter(Boolean);
   return parts.join(' - ');
 }
