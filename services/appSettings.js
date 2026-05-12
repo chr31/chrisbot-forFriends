@@ -247,6 +247,10 @@ function buildDefaultControlEngineSettings() {
   return {
     enabled: false,
     execution_enabled: false,
+    neo4j_url: 'bolt://neo4j-control:7687',
+    neo4j_browser_url: 'http://127.0.0.1:7475',
+    neo4j_username: 'neo4j',
+    neo4j_password: '',
     persistent_connections: [],
   };
 }
@@ -325,6 +329,10 @@ function normalizeControlEngineSettings(value) {
   return {
     enabled: parseBoolean(value?.enabled, defaults.enabled),
     execution_enabled: parseBoolean(value?.execution_enabled, defaults.execution_enabled),
+    neo4j_url: String(value?.neo4j_url || defaults.neo4j_url).trim() || defaults.neo4j_url,
+    neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
+    neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
+    neo4j_password: String(value?.neo4j_password || '').trim(),
     persistent_connections: normalizeControlPersistentConnections(value?.persistent_connections),
   };
 }
@@ -387,6 +395,7 @@ function deserializeControlEngineSettings(value) {
   if (!value || typeof value !== 'object') return value;
   return {
     ...value,
+    neo4j_password: decryptValue(value.neo4j_password),
     persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
       ...connection,
       username: decryptValue(connection?.username),
@@ -399,6 +408,7 @@ function serializeControlEngineSettings(value) {
   if (!value || typeof value !== 'object') return value;
   return {
     ...value,
+    neo4j_password: encryptValue(value.neo4j_password),
     persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
       ...connection,
       username: encryptValue(connection?.username),
@@ -661,6 +671,8 @@ function redactMemoryEngineSettings(value) {
 function redactControlEngineSettings(value) {
   return {
     ...value,
+    neo4j_password: '',
+    neo4j_password_configured: Boolean(String(value?.neo4j_password || '').trim()),
     persistent_connections: (value?.persistent_connections || []).map((connection) => ({
       ...connection,
       id: undefined,
@@ -925,7 +937,12 @@ async function updateControlEngineSettings(nextValue) {
       });
   }
   const normalized = preserveControlConnectionSecrets(
-    normalizeControlEngineSettings({ ...current, ...incomingWithSecrets }),
+    preserveExistingSecrets(
+      normalizeControlEngineSettings({ ...current, ...incomingWithSecrets }),
+      incoming,
+      current,
+      ['neo4j_password']
+    ),
     incoming,
     current
   );
@@ -970,6 +987,10 @@ function revealSettingsSecret(target = {}) {
 
   if (area === 'memory_engine' && field === 'neo4j_password') {
     return String(getMemoryEngineSettingsSync()?.neo4j_password || '');
+  }
+
+  if (area === 'control_engine' && field === 'neo4j_password') {
+    return String(getControlEngineSettingsSync()?.neo4j_password || '');
   }
 
   if (area === 'mcp_runtime' && field === 'headers_json') {

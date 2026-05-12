@@ -38,7 +38,7 @@ const REFRESH_MS = 5000;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 4;
 const MEMORY_TECHNICAL_LABELS = new Set(['MemoryRun', 'MemoryStatus', 'MemoryTool', 'MemoryEpisode']);
-const CONTROL_TECHNICAL_LABELS = new Set(['EngineGraph']);
+const CONTROL_TECHNICAL_LABELS = new Set<string>();
 
 type ViewportState = {
   x: number;
@@ -85,7 +85,6 @@ function getNodeColor(node: GraphNode, engine: 'memory' | 'control') {
     if (labels.includes('MemoryRequest')) return '#f472b6';
     return '#94a3b8';
   }
-  if (labels.includes('EngineGraph')) return '#38bdf8';
   if (labels.includes('ControlDevice')) return '#f59e0b';
   if (labels.includes('ControlAction')) return '#ef4444';
   if (labels.includes('ControlLocation')) return '#22c55e';
@@ -95,7 +94,6 @@ function getNodeColor(node: GraphNode, engine: 'memory' | 'control') {
 
 function getNodeRadius(node: GraphNode) {
   const labels = node.labels.join(' ');
-  if (labels.includes('EngineGraph')) return 22;
   if (labels.includes('MemoryRun') || labels.includes('ControlDevice')) return 17;
   if (labels.includes('MemoryItem') || labels.includes('ControlAction')) return 15;
   return 12;

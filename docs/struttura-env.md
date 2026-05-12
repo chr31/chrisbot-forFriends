@@ -51,18 +51,20 @@ Con MySQL esterno:
 
 Variabili usate solo da Docker Compose:
 
-- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` quando vuoi il container MySQL incluso. Aggiungi `local-neo4j` quando vuoi avviare anche il container Neo4j locale del Memory Engine. Lascialo vuoto con database esterni.
+- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` quando vuoi il container MySQL incluso. Aggiungi `local-neo4j` per Neo4j Memory Engine e `local-control-neo4j` per Neo4j Control Engine. Lascialo vuoto con database esterni.
 - `MYSQL_ROOT_PASSWORD`: password root del container MySQL.
 - `MYSQL_HOST_PORT`: porta host pubblicata per MySQL. Intero positivo. Default: `3307`.
 
-## Neo4j locale per Memory Engine
+## Neo4j locali per Memory Engine e Control Engine
 
 Il container Neo4j locale e' opzionale e viene avviato solo se `COMPOSE_PROFILES` contiene `local-neo4j`.
+Il container Neo4j del Control Engine e' separato e viene avviato solo se `COMPOSE_PROFILES` contiene `local-control-neo4j`.
 
 Esempi:
 
 - `COMPOSE_PROFILES=local-mysql`: avvia MySQL locale, non avvia Neo4j.
-- `COMPOSE_PROFILES=local-mysql,local-neo4j`: avvia MySQL locale e Neo4j locale.
+- `COMPOSE_PROFILES=local-mysql,local-neo4j`: avvia MySQL locale e Neo4j Memory locale.
+- `COMPOSE_PROFILES=local-mysql,local-neo4j,local-control-neo4j`: avvia MySQL locale, Neo4j Memory locale e Neo4j Control locale.
 - `COMPOSE_PROFILES=local-neo4j`: usa MySQL esterno e avvia solo Neo4j locale.
 - `COMPOSE_PROFILES=`: non avvia database locali.
 
@@ -72,16 +74,18 @@ Variabili:
 - `NEO4J_PASSWORD`: password del container Neo4j locale. Deve essere non vuota. Default esempio: `change-me-neo4j`.
 - `NEO4J_HTTP_HOST_PORT`: porta HTTP pubblicata sull'host per Neo4j Browser. Default: `7474`.
 - `NEO4J_BOLT_HOST_PORT`: porta Bolt pubblicata sull'host. Default: `7687`.
+- `CONTROL_NEO4J_HTTP_HOST_PORT`: porta HTTP pubblicata sull'host per Neo4j Browser del Control Engine. Default: `7475`.
+- `CONTROL_NEO4J_BOLT_HOST_PORT`: porta Bolt pubblicata sull'host per Neo4j Control Engine. Default: `7688`.
 
 Configurazione minima per avviare Neo4j locale insieme a MySQL locale:
 
 ```env
-COMPOSE_PROFILES=local-mysql,local-neo4j
+COMPOSE_PROFILES=local-mysql,local-neo4j,local-control-neo4j
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=change-me-neo4j
 ```
 
-Le porte possono essere omesse: Docker Compose usa `7474` per HTTP e `7687` per Bolt.
+Le porte possono essere omesse: Docker Compose usa `7474`/`7687` per Memory e `7475`/`7688` per Control.
 
 Configurazione minima per avviare solo Neo4j locale usando un MySQL esterno:
 
@@ -93,9 +97,10 @@ NEO4J_PASSWORD=change-me-neo4j
 
 Nel network Docker interno il backend raggiunge Neo4j locale con:
 
-- `bolt://neo4j:7687`
+- Memory Engine: `bolt://neo4j:7687`
+- Control Engine: `bolt://neo4j-control:7687`
 
-Il portale non avvia o spegne direttamente Docker: l'ON/OFF del container locale si gestisce con `COMPOSE_PROFILES`. La futura tab `Impostazioni > Memorie` gestira' invece l'abilitazione applicativa del Memory Engine, le credenziali operative e il test connessione.
+Il portale non avvia o spegne direttamente Docker: l'ON/OFF dei container locali si gestisce con `COMPOSE_PROFILES`. Le impostazioni applicative gestiscono abilitazione e credenziali operative dei singoli engine.
 
 ## Scheduler e routine
 

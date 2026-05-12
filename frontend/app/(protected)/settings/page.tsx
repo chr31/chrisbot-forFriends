@@ -111,6 +111,11 @@ type MemoryEngineSettings = {
 type ControlEngineSettings = {
   enabled: boolean;
   execution_enabled: boolean;
+  neo4j_url: string;
+  neo4j_browser_url: string;
+  neo4j_username: string;
+  neo4j_password: string;
+  neo4j_password_configured?: boolean;
   persistent_connections: ControlPersistentConnection[];
 };
 
@@ -202,7 +207,7 @@ type SettingsPayload = {
 };
 
 type SecretRevealTarget = {
-  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine';
+  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine' | 'control_engine';
   field: string;
   connection_id?: string;
 };
@@ -1967,7 +1972,81 @@ export default function SettingsPage() {
           </div>
 
           {controlEngine ? (
-            <div className="mt-6 rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+            <div className="mt-6 space-y-4">
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Neo4j Control Engine</h3>
+                </div>
+                <div className="mt-4 grid gap-x-4 gap-y-4 lg:grid-cols-2">
+                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                    <span className="mb-1 block">URL Bolt</span>
+                    <input
+                      value={controlEngine.neo4j_url}
+                      onChange={(event) => setControlEngine((current) => current ? {
+                        ...current,
+                        neo4j_url: event.target.value,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="bolt://neo4j-control:7687"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                    <span className="mb-1 block">URL pagina web Neo4j</span>
+                    <input
+                      value={controlEngine.neo4j_browser_url}
+                      onChange={(event) => setControlEngine((current) => current ? {
+                        ...current,
+                        neo4j_browser_url: event.target.value,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="http://127.0.0.1:7475"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Username</span>
+                    <input
+                      value={controlEngine.neo4j_username}
+                      onChange={(event) => setControlEngine((current) => current ? {
+                        ...current,
+                        neo4j_username: event.target.value,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="neo4j"
+                    />
+                  </label>
+
+                  <label className="min-w-0 text-sm text-gray-200">
+                    <span className="mb-1 block">Password</span>
+                    <div className="flex gap-2">
+                      <input
+                        type={revealedSecrets['control.neo4j_password'] ? 'text' : 'password'}
+                        value={controlEngine.neo4j_password}
+                        onChange={(event) => setControlEngine((current) => current ? {
+                          ...current,
+                          neo4j_password: event.target.value,
+                        } : current)}
+                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        placeholder={controlEngine.neo4j_password_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password Neo4j'}
+                      />
+                      <SecretRevealButton
+                        isRevealed={Boolean(revealedSecrets['control.neo4j_password'])}
+                        isLoading={Boolean(revealingSecrets['control.neo4j_password'])}
+                        disabled={!controlEngine.neo4j_password_configured}
+                        onReveal={() => revealSecret(
+                          'control.neo4j_password',
+                          { area: 'control_engine', field: 'neo4j_password' },
+                          (value) => setControlEngine((current) => current ? { ...current, neo4j_password: value } : current),
+                          (revealedValue) => setControlEngine((current) => current?.neo4j_password === revealedValue ? { ...current, neo4j_password: '' } : current),
+                        )}
+                      />
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-white">Connessioni persistenti</h3>
@@ -2105,6 +2184,7 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 ))}
+              </div>
               </div>
             </div>
           ) : (

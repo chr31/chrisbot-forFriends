@@ -12,6 +12,7 @@ const {
   updateMemoryEngineSettings,
   updateControlEngineSettings,
   getMemoryEngineSettingsSync,
+  getControlEngineSettingsSync,
   revealSettingsSecret,
 } = require('../services/appSettings');
 const { getAiOptionsSnapshot } = require('../services/aiModelCatalog');
@@ -165,7 +166,7 @@ router.delete('/memory/values', async (_req, res) => {
 
 router.delete('/control/values', async (_req, res) => {
   try {
-    const result = await createControlRepository(getMemoryEngineSettingsSync()).clearAllControlData();
+    const result = await createControlRepository(getControlEngineSettingsSync()).clearAllControlData();
     return res.json({ ok: true, ...result });
   } catch (error) {
     console.error('Errore eliminazione Control Engine Neo4j:', error);

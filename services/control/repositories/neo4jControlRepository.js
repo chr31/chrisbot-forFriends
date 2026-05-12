@@ -2,8 +2,6 @@ const { createNeo4jDriver, loadNeo4jDriver, normalizeConnectionInput } = require
 const { embedTexts } = require('../../memory/memoryEmbedding');
 const {
   ACTION_TYPES,
-  CONTROL_GRAPH_ID,
-  CONTROL_GRAPH_KEY,
   buildCanonicalKey,
   buildControlId,
   normalizeActionType,
@@ -32,7 +30,6 @@ const DEVICE_ALIAS_STOPWORDS = new Set([
 ]);
 
 const SCHEMA_STATEMENTS = [
-  'CREATE CONSTRAINT control_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_place_id IF NOT EXISTS FOR (n:Luogo) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_device_new_id IF NOT EXISTS FOR (n:Device) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT control_action_type_id IF NOT EXISTS FOR (n:ActionType) REQUIRE n.id IS UNIQUE',
@@ -152,29 +149,6 @@ function serializeNeo4jValue(value, options = {}) {
     if (serialized !== undefined) output[key] = serialized;
   }
   return output;
-}
-
-function assertSafeControlQuery(query) {
-  const compact = String(query || '').replace(/\s+/g, ' ').trim();
-  if (/[;]\s*\S/.test(compact) || /\b(?:USE|LOAD\s+CSV|CALL\s+db\.|CALL\s+apoc\.)\b/i.test(compact)) {
-    throw new Error('queryGraph contiene clausole non consentite per il Control Engine.');
-  }
-}
-
-async function getControlBranchNodeIds(session) {
-  const result = await session.run(
-    `
-    MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
-    MATCH path = (root)-[*0..8]->(n)
-    WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-    RETURN id(n) AS id
-    `,
-    { graphId: CONTROL_GRAPH_ID }
-  );
-  return new Set(result.records.map((record) => {
-    const id = record.get('id');
-    return id && typeof id.toNumber === 'function' ? id.toNumber() : String(id);
-  }));
 }
 
 function summarizeResult(result, options = {}) {
@@ -699,33 +673,22 @@ class Neo4jControlRepository {
     for (const statement of SCHEMA_STATEMENTS) {
       await session.run(statement);
     }
-    await session.run(
-      `
-      MERGE (g:EngineGraph {id: $id})
-      ON CREATE SET g.created_at = datetime()
-      SET g.name = 'Control Engine', g.graph_key = $graphKey, g.updated_at = datetime()
-      `,
-      { id: CONTROL_GRAPH_ID, graphKey: CONTROL_GRAPH_KEY }
-    );
     schemaCache.add(cacheKey);
   }
 
   async ensureReady() {
-    return this.withSession('write', async () => ({ ok: true, schema: 'ready', graph_id: CONTROL_GRAPH_ID }));
+    return this.withSession('write', async () => ({ ok: true, schema: 'ready' }));
   }
 
   async clearAllControlData() {
     return this.withSession('write', async (session) => {
       const result = await session.run(
         `
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
-        MATCH path = (root)-[*0..8]->(n)
-        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+        MATCH (n)
         WITH collect(n) AS nodes, count(n) AS deleted
         FOREACH (node IN nodes | DETACH DELETE node)
         RETURN deleted
-        `,
-        { graphId: CONTROL_GRAPH_ID }
+        `
       );
       const deleted = result.records[0]?.get('deleted');
       return { deleted: deleted && typeof deleted.toNumber === 'function' ? deleted.toNumber() : Number(deleted || 0) };
@@ -735,18 +698,16 @@ class Neo4jControlRepository {
   async runGraphQuery(queryGraph, { mode = 'read' } = {}) {
     const query = normalizeText(queryGraph, 12000);
     if (!query) throw new Error('queryGraph mancante.');
-    assertSafeControlQuery(query);
     return this.withSession(mode, async (session) => {
-      await session.run(`EXPLAIN ${query}`, { graphId: CONTROL_GRAPH_ID });
+      await session.run(`EXPLAIN ${query}`);
       if (mode === 'read') {
-        const result = await session.run(query, { graphId: CONTROL_GRAPH_ID });
-        const allowedNodeIds = await getControlBranchNodeIds(session);
-        return summarizeResult(result, { allowedNodeIds });
+        const result = await session.run(query);
+        return summarizeResult(result);
       }
 
       const transaction = session.beginTransaction();
       try {
-        const result = await transaction.run(query, { graphId: CONTROL_GRAPH_ID });
+        const result = await transaction.run(query);
         await transaction.commit();
         return summarizeResult(result);
       } catch (error) {
@@ -837,16 +798,14 @@ class Neo4jControlRepository {
 
     await session.run(
       `
-      MATCH (g:EngineGraph {id: $graphId})
       MERGE (n:${labels[0]} {id: $nodeId})
       ON CREATE SET n.created_at = datetime()
-      WITH g, n, coalesce(n.aliases, []) AS existingAliases
+      WITH n, coalesce(n.aliases, []) AS existingAliases
       SET n += $node,
         n.aliases = reduce(out = [], entry IN existingAliases + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
         n.updated_at = datetime()
-      MERGE (g)-[:OWNS]->(n)
       `,
-      { graphId: CONTROL_GRAPH_ID, nodeId: node.id, node, aliases: node.aliases || [] }
+      { nodeId: node.id, node, aliases: node.aliases || [] }
     );
 
     if (labels.includes('ControlBuilding')) {
@@ -862,16 +821,14 @@ class Neo4jControlRepository {
   async upsertKeyNode(session, { label, keyField = 'key', node }) {
     await session.run(
       `
-      MATCH (g:EngineGraph {id: $graphId})
       MERGE (n:${label} {${keyField}: $key})
       ON CREATE SET n.created_at = datetime()
-      WITH g, n, coalesce(n.aliases, []) AS existingAliases
+      WITH n, coalesce(n.aliases, []) AS existingAliases
       SET n += $node,
         n.aliases = reduce(out = [], entry IN existingAliases + $aliases | CASE WHEN entry IN out THEN out ELSE out + entry END),
         n.updated_at = datetime()
-      MERGE (g)-[:OWNS]->(n)
       `,
-      { graphId: CONTROL_GRAPH_ID, key: node[keyField], node, aliases: node.aliases || [] }
+      { key: node[keyField], node, aliases: node.aliases || [] }
     );
     return node;
   }
@@ -1096,7 +1053,7 @@ class Neo4jControlRepository {
       const neo4j = loadNeo4jDriver();
       const result = await session.run(
         `
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(d:ControlDevice)
+        MATCH (d:ControlDevice)
         OPTIONAL MATCH (d)-[:INSTALLED_IN]->(direct:ControlLocation)
         OPTIONAL MATCH (ancestor:ControlLocation)-[:CONTAINS*0..]->(direct)
         WITH d,
@@ -1152,7 +1109,6 @@ class Neo4jControlRepository {
         LIMIT $limit
         `,
         {
-          graphId: CONTROL_GRAPH_ID,
           query,
           queryTokens,
           building,
@@ -1187,7 +1143,7 @@ class Neo4jControlRepository {
       const neo4j = loadNeo4jDriver();
       const result = await session.run(
         `
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(b:ControlLocation {kind: 'building'})
+        MATCH (b:ControlLocation {kind: 'building'})
         WHERE (
           $building IS NULL
           OR toLower(b.name) CONTAINS $building
@@ -1215,7 +1171,7 @@ class Neo4jControlRepository {
         RETURN b, collect(DISTINCT r)[0..$limit] AS rooms
         LIMIT $limit
         `,
-        { graphId: CONTROL_GRAPH_ID, query, building, room, limit: neo4j.int(limit) }
+        { query, building, room, limit: neo4j.int(limit) }
       );
       return result.records.map((record) => ({
         building: mapNodeProperties(record.get('b')),
@@ -1242,7 +1198,7 @@ class Neo4jControlRepository {
       const result = await session.run(
         `
         UNWIND $targets AS target
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(d:ControlDevice {id: target.device_id})
+        MATCH (d:ControlDevice {id: target.device_id})
         MATCH (d)-[:CAN_EXECUTE]->(a:ControlAction {id: target.action_id})
         WHERE d.enabled <> false AND a.enabled <> false
         OPTIONAL MATCH (d)-[:INSTALLED_IN]->(direct:ControlLocation)
@@ -1256,7 +1212,7 @@ class Neo4jControlRepository {
           cap,
           adapter
         `,
-        { graphId: CONTROL_GRAPH_ID, targets: normalizedTargets }
+        { targets: normalizedTargets }
       );
       return result.records.map((record) => ({
         device: mapNodeProperties(record.get('d')),

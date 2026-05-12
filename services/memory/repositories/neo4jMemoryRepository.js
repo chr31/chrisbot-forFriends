@@ -18,8 +18,6 @@ const {
 } = require('../memorySchema');
 
 const schemaCache = new Set();
-const MEMORY_GRAPH_ID = 'memory_engine';
-const MEMORY_BRANCH_LABELS = ['User', 'Request', 'Process', 'Topic', 'Knowledge'];
 const LEXICAL_STOP_WORDS = new Set([
   'about',
   'agent',
@@ -56,7 +54,6 @@ const LEXICAL_STOP_WORDS = new Set([
 ]);
 
 const SCHEMA_STATEMENTS = [
-  'CREATE CONSTRAINT memory_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_episode_id IF NOT EXISTS FOR (n:MemoryEpisode) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_item_id IF NOT EXISTS FOR (n:MemoryItem) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_run_id IF NOT EXISTS FOR (n:MemoryRun) REQUIRE n.id IS UNIQUE',
@@ -315,15 +312,6 @@ class Neo4jMemoryRepository {
     for (const statement of SCHEMA_STATEMENTS) {
       await session.run(statement);
     }
-    await session.run(
-      `
-      MERGE (g:EngineGraph {id: $graphId})
-      ON CREATE SET g.created_at = datetime()
-      SET g.name = 'Memory Engine', g.graph_key = $graphId, g.updated_at = datetime()
-      `,
-      { graphId: MEMORY_GRAPH_ID }
-    );
-    await this.attachMemoryBranchNodes(session);
     schemaCache.add(cacheKey);
   }
 
@@ -338,15 +326,11 @@ class Neo4jMemoryRepository {
     return this.withSession('write', async (session) => {
       const result = await session.run(
         `
-        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
-        MATCH path = (root)-[*0..8]->(n)
-        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-        WITH collect(DISTINCT root) + collect(DISTINCT n) AS nodes
-        WITH nodes, size(nodes) AS deleted
+        MATCH (n)
+        WITH collect(n) AS nodes, count(n) AS deleted
         FOREACH (node IN nodes | DETACH DELETE node)
         RETURN deleted
-        `,
-        { graphId: MEMORY_GRAPH_ID }
+        `
       );
       const deleted = result.records[0]?.get('deleted');
       return {
@@ -361,10 +345,6 @@ class Neo4jMemoryRepository {
 
     await session.run(
       `
-      MERGE (g:EngineGraph {id: $graphId})
-      ON CREATE SET g.created_at = datetime()
-      SET g.name = 'Memory Engine', g.graph_key = $graphId, g.updated_at = datetime()
-      WITH g
       MERGE (r:MemoryRun {id: $runKey})
       ON CREATE SET r.created_at = datetime()
       SET
@@ -377,9 +357,8 @@ class Neo4jMemoryRepository {
         r.started_at = coalesce($startedAt, r.started_at),
         r.finished_at = coalesce($finishedAt, r.finished_at),
         r.updated_at = datetime()
-      MERGE (g)-[:OWNS]->(r)
       `,
-      { ...params, graphId: MEMORY_GRAPH_ID }
+      params
     );
 
     if (params.agentId) {
@@ -399,53 +378,18 @@ class Neo4jMemoryRepository {
     return params.runKey;
   }
 
-  async attachMemoryBranchNodes(session) {
-    await session.run(
-      `
-      MATCH (g:EngineGraph {id: $graphId})
-      MATCH (n)
-      WHERE any(label IN labels(n) WHERE label STARTS WITH 'Memory' OR label IN $branchLabels)
-      MERGE (g)-[:OWNS]->(n)
-      `,
-      { graphId: MEMORY_GRAPH_ID, branchLabels: MEMORY_BRANCH_LABELS }
-    );
-  }
-
-  async getMemoryBranchNodeIds(session) {
-    const result = await session.run(
-      `
-      MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
-      OPTIONAL MATCH path = (root)-[*0..8]->(n)
-      WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-      WITH collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
-      UNWIND branchNodes AS branchNode
-      RETURN DISTINCT id(branchNode) AS id
-      `,
-      { graphId: MEMORY_GRAPH_ID }
-    );
-    return new Set(result.records.map((record) => {
-      const id = record.get('id');
-      return id && typeof id.toNumber === 'function' ? id.toNumber() : String(id);
-    }));
-  }
-
   async getMemoryBranchSnapshot(limit = 600) {
     return this.withSession('read', async (session) => {
       const result = await session.run(
         `
-        MATCH (g:EngineGraph {id: $graphId})
-        OPTIONAL MATCH (g)-[:OWNS]->(root)
-        OPTIONAL MATCH path = (root)-[*0..8]->(n)
-        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
-        UNWIND [g] + branchNodes AS n
+        MATCH (n)
         WITH DISTINCT n LIMIT $limit
         WITH collect(n) AS nodes
         OPTIONAL MATCH (a)-[r]-(b)
         WHERE a IN nodes AND b IN nodes
         RETURN nodes, collect(DISTINCT r) AS relationships
         `,
-        { graphId: MEMORY_GRAPH_ID, limit }
+        { limit }
       );
       const record = result.records[0];
       return {
@@ -459,11 +403,9 @@ class Neo4jMemoryRepository {
     return this.withSession('read', async (session) => {
       const result = await session.run(
         `
-        MATCH (g:EngineGraph {id: $graphId})
-        OPTIONAL MATCH (g)-[:OWNS]->(root)
-        RETURN g.id AS id, g.name AS name, count(root) AS roots
-        `,
-        { graphId: MEMORY_GRAPH_ID }
+        MATCH (n)
+        RETURN 'memory_engine' AS id, 'Memory Engine' AS name, count(n) AS roots
+        `
       );
       const record = result.records[0];
       const roots = record?.get('roots');
@@ -476,22 +418,20 @@ class Neo4jMemoryRepository {
   }
 
   async explainCypherQuery(session, query) {
-    await session.run(`EXPLAIN ${query}`, { graphId: MEMORY_GRAPH_ID });
+    await session.run(`EXPLAIN ${query}`);
   }
 
   async runReadCypherQuery(session, cypher) {
     await this.explainCypherQuery(session, cypher);
-    const result = await session.run(cypher, { graphId: MEMORY_GRAPH_ID });
-    const allowedNodeIds = await this.getMemoryBranchNodeIds(session);
-    return summarizeCypherResult(result, { allowedNodeIds });
+    const result = await session.run(cypher);
+    return summarizeCypherResult(result);
   }
 
   async runWriteCypherQuery(session, cypher) {
     const transaction = session.beginTransaction();
     try {
-      const result = await transaction.run(cypher, { graphId: MEMORY_GRAPH_ID });
+      const result = await transaction.run(cypher);
       await transaction.commit();
-      await this.attachMemoryBranchNodes(session);
       return summarizeCypherResult(result);
     } catch (error) {
       await transaction.rollback().catch(() => null);

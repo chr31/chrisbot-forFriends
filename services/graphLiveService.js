@@ -1,12 +1,10 @@
 const jwt = require('jsonwebtoken');
-const { getMemoryEngineSettingsSync, verifyGraphDashboardPassword } = require('./appSettings');
+const { getMemoryEngineSettingsSync, getControlEngineSettingsSync, verifyGraphDashboardPassword } = require('./appSettings');
 const { createNeo4jDriver, loadNeo4jDriver } = require('./memory/neo4jConnection');
-const { CONTROL_GRAPH_ID } = require('./control/controlSchema');
 const { isSuperAdminUser } = require('../utils/adminAccess');
 
 const EMBEDDING_KEYS = new Set(['embedding', 'vector']);
 const GRAPH_DASHBOARD_SCOPE = 'graph_dashboard';
-const MEMORY_GRAPH_ID = 'memory_engine';
 
 function normalizeLimit(value) {
   const numeric = Number(value || 600);
@@ -159,36 +157,16 @@ function serializeRelationship(relationship, nodeIdByElementId) {
 }
 
 async function runGraphQuery(engine, limit) {
-  const config = getMemoryEngineSettingsSync();
+  const config = engine === 'control' ? getControlEngineSettingsSync() : getMemoryEngineSettingsSync();
   const driver = createNeo4jDriver(config);
   const neo4j = loadNeo4jDriver();
   const session = driver.session({ defaultAccessMode: neo4j.session.READ });
   try {
     const params = {
       limit: neo4j.int(limit),
-      graphId: engine === 'control' ? CONTROL_GRAPH_ID : MEMORY_GRAPH_ID,
     };
-    const query = engine === 'control'
-      ? `
-        MATCH (g:EngineGraph {id: $graphId})
-        OPTIONAL MATCH (g)-[:OWNS]->(root)
-        OPTIONAL MATCH path = (root)-[*0..8]->(n)
-        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
-        UNWIND [g] + branchNodes AS n
-        WITH DISTINCT n LIMIT $limit
-        WITH collect(n) AS nodes
-        OPTIONAL MATCH (a)-[r]-(b)
-        WHERE a IN nodes AND b IN nodes
-        RETURN nodes, collect(DISTINCT r) AS relationships
-        `
-      : `
-        MATCH (g:EngineGraph {id: $graphId})
-        OPTIONAL MATCH (g)-[:OWNS]->(root)
-        OPTIONAL MATCH path = (root)-[*0..8]->(n)
-        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
-        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
-        UNWIND [g] + branchNodes AS n
+    const query = `
+        MATCH (n)
         WITH DISTINCT n LIMIT $limit
         WITH collect(n) AS nodes
         OPTIONAL MATCH (a)-[r]-(b)

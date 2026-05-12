@@ -1,8 +1,5 @@
 const crypto = require('crypto');
 
-const CONTROL_GRAPH_ID = 'control';
-const CONTROL_GRAPH_KEY = 'chrisbot-actions';
-
 const ACTION_TYPES = new Set(['bash', 'telnet', 'telnet_auth', 'ssh', 'ping', 'http', 'http_api']);
 const ACTION_INTENTS = new Set(['control', 'monitoring']);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
@@ -106,8 +103,6 @@ function parseBoolean(value, fallback = false) {
 }
 
 module.exports = {
-  CONTROL_GRAPH_ID,
-  CONTROL_GRAPH_KEY,
   ACTION_TYPES,
   buildControlId,
   buildCanonicalKey,

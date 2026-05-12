@@ -1,7 +1,7 @@
-const { getControlEngineSettingsSync, getMemoryEngineSettingsSync } = require('../appSettings');
+const { getControlEngineSettingsSync } = require('../appSettings');
 const { createControlRepository } = require('./repositories/controlRepository');
 const { executeControlActionTarget } = require('./actionExecutor');
-const { CONTROL_GRAPH_ID, normalizeKey } = require('./controlSchema');
+const { normalizeKey } = require('./controlSchema');
 
 function toolString(payload) {
   try {
@@ -20,25 +20,13 @@ function toolError(tool, error) {
 }
 
 function getRepository() {
-  return createControlRepository(getMemoryEngineSettingsSync());
+  return createControlRepository(getControlEngineSettingsSync());
 }
 
 function requireEnabled() {
   const settings = getControlEngineSettingsSync();
   if (!settings.enabled) throw new Error('Control Engine disabilitato.');
   return settings;
-}
-
-function withControlRoot(result = {}) {
-  return {
-    control_engine_root: {
-      labels: ['EngineGraph'],
-      id: CONTROL_GRAPH_ID,
-      name: 'Control Engine',
-      attach_pattern: `MATCH (g:EngineGraph {id: $graphId}) MERGE (g)-[:OWNS]->(n)`,
-    },
-    ...result,
-  };
 }
 
 async function getControlSessions() {
@@ -198,9 +186,9 @@ async function getControlGraph(args = {}) {
     if (args.runCommands === true) {
       if (!settings.execution_enabled) throw new Error('Esecuzione Control Engine disabilitata.');
       const command_results = await runGraphCommandTargets(result.records);
-      return toolString({ ok: true, tool, result: withControlRoot({ ...result, command_results }) });
+      return toolString({ ok: true, tool, result: { ...result, command_results } });
     }
-    return toolString({ ok: true, tool, result: withControlRoot(result) });
+    return toolString({ ok: true, tool, result });
   } catch (error) {
     return toolError(tool, error);
   }
@@ -211,7 +199,7 @@ async function updateControlGraph(args = {}) {
   try {
     requireEnabled();
     const result = await getRepository().runGraphQuery(args.queryGraph, { mode: 'write' });
-    return toolString({ ok: true, tool, result: withControlRoot(result) });
+    return toolString({ ok: true, tool, result });
   } catch (error) {
     return toolError(tool, error);
   }
