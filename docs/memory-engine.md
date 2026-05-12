@@ -624,21 +624,16 @@ Improve memories agente = ON per afterMemory
 
 ### beforeMemory
 
-Scopo: preparare un pacchetto compatto di contesto da iniettare prima della risposta dell'agente.
+Scopo: chiedere all'agente dedicato del Memory Engine se nel grafo esistono informazioni utili alla richiesta corrente.
 
 Responsabilita':
 
 ```txt
-1. Riceve il contesto recente della chat.
-2. Usa il modello chat dedicato alle memorie per generare:
-   - summary richiesta, richiesto nel prompt in massimo 10 parole
-   - argomenti operativi stabili
-   - retrieval query semantiche
-3. Usa il modello embedding dedicato per trasformare summary, argomenti e query in vettori.
-4. Recupera da Neo4j le memorie candidate coerenti con lo scope dell'agente, includendo match sulla rete MemoryRequest/MemoryTopic/MemoryTool.
-5. Usa il modello chat per valutare e compattare le memorie rilevanti in un contextText richiesto nel prompt in massimo 50 parole.
-6. Produce un memoryContextPacket.
-7. Inietta il pacchetto nel prompt prima della chiamata modello dell'agente.
+1. Riceve solo il contesto della chat principale: system, user e assistant.
+2. Aggiunge il prompt beforeMemory configurato nelle impostazioni.
+3. L'agente memoria usa runCypherQuery(query) fino a 50 volte nella stessa run.
+4. Le query di lettura vengono eseguite normalmente; il risultato passato al modello contiene solo risultati del ramo Memory Engine.
+5. La risposta finale dell'agente memoria diventa il contextText iniettato nel prompt principale.
 ```
 
 Output indicativo:
@@ -659,25 +654,19 @@ Il pacchetto deve essere compatto, leggibile e limitato alle informazioni utili 
 
 ### afterMemory
 
-Scopo: aggiornare il grafo dopo la risposta dell'agente.
+Scopo: aggiornare il grafo in background dopo la risposta dell'agente principale.
 
 Responsabilita':
 
 ```txt
-1. Riceve messaggi, risposta assistant, tool calls e tool results.
-2. Usa il modello chat dedicato alle memorie per proporre summary richiesta, topic e memorie operative minime.
-3. Salva sempre gli Episode rilevanti come eventi immutabili.
-4. Valida i candidati prodotti dal modello.
-5. Scarta duplicati, output incerti o troppo generici.
-6. Aggiorna MemoryItem tramite codice backend, sovrascrivendo la versione corrente quando trova una memoria correlata sullo stesso subject_key/topic.
-7. Genera embedding per i contenuti ricercabili nuovi o aggiornati.
-8. Collega la memoria aggiornata alla rete MemoryRequest/MemoryTopic/MemoryTool/MemoryStatus tramite relazioni NEEDED_FOR e correlate.
-9. Invalida fatti superati solo con evidenza forte.
+1. Riceve solo il contesto della chat principale, includendo la risposta finale assistant.
+2. Aggiunge il prompt afterMemory configurato nelle impostazioni.
+3. L'agente memoria cerca nel database cosa esiste gia.
+4. L'agente inserisce o aggiorna informazioni tramite runCypherQuery(query).
+5. afterMemory non blocca la run dell'agente principale.
 ```
 
-Il modello chat non deve scrivere direttamente su Neo4j.
-
-Il modello produce JSON strutturato; il backend valida e applica le modifiche.
+runCypherQuery accetta solo `{ query }`. Le query di scrittura sono libere; le query di lettura vengono filtrate nel risultato restituito al modello.
 
 ## Modello IA dedicato alle memorie
 

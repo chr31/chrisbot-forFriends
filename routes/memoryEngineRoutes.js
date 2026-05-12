@@ -3,9 +3,7 @@ const router = express.Router();
 const authenticateToken = require('../middleware/authenticateToken');
 const { requireSuperAdmin } = require('../utils/adminAccess');
 const { getAgentById } = require('../database/db_agents');
-const { getMemoryEngineSettingsSync } = require('../services/appSettings');
 const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
-const { callMemoryChatText } = require('../services/memory/memoryModelRuntime');
 const {
   createGraphDashboardSession,
   getLiveGraphSnapshot,
@@ -211,19 +209,6 @@ function applySetStatuses(items = [], packet = {}) {
   }));
 }
 
-function countPacketItems(packet = {}) {
-  return MEMORY_SECTIONS.reduce((counts, section) => {
-    counts[section] = Array.isArray(packet?.[section]) ? packet[section].length : 0;
-    return counts;
-  }, {});
-}
-
-function hasWarning(packet = {}, text) {
-  const needle = String(text || '').toLowerCase();
-  return (Array.isArray(packet?.warnings) ? packet.warnings : [])
-    .some((warning) => String(warning || '').toLowerCase().includes(needle));
-}
-
 function buildLogStep(id, title, status, description, details = null) {
   return {
     id,
@@ -234,7 +219,7 @@ function buildLogStep(id, title, status, description, details = null) {
   };
 }
 
-function buildBeforeMemoryProcessLog({ prompt, agent, packet, generatedAnswer }) {
+function buildBeforeMemoryProcessLog({ prompt, agent, packet }) {
   const hasContext = Boolean(String(packet?.contextText || '').trim());
   const retrieval = packet?.retrieval || {};
   const warnings = Array.isArray(packet?.warnings) ? packet.warnings : [];
@@ -247,39 +232,26 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet, generatedAnswer })
     }),
     buildLogStep(
       'before-start',
-      'beforeMemory',
+      'Agente beforeMemory',
       packet?.enabled === false ? 'skipped' : 'completed',
       packet?.enabled === false
         ? `beforeMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'beforeMemory ha analizzato richiesta, scope e agente.'
+        : 'beforeMemory ha delegato il recupero all agente memorie.'
     ),
-    buildLogStep('query-analysis', 'Analisi richiesta', packet?.request?.summary ? 'completed' : 'skipped', 'Generazione di sintesi, topic e query di retrieval.', {
+    buildLogStep('memory-agent', 'runCypherQuery', packet?.skipped_reason === 'retrieval_error' ? 'error' : 'completed', 'L agente memorie ha usato il tool runCypherQuery secondo necessita.', {
       summary: packet?.request?.summary || retrieval.request_summary || null,
-      topics: packet?.request?.topics || retrieval.topics || [],
-      queries: retrieval.queries || [],
+      tool_calls: retrieval.agent_tool_calls || 0,
+      selected_ids: retrieval.selected_ids || [],
     }),
     buildLogStep(
-      'retrieval',
-      'Ricerca memorie',
-      retrieval.embedding_error ? 'warning' : (packet?.skipped_reason === 'retrieval_error' ? 'error' : 'completed'),
-      'Ricerca ibrida su embedding, match lessicale e relazioni Neo4j.',
-      {
-        candidate_count: retrieval.candidate_count || 0,
-        embedding_provider: retrieval.embedding_provider || null,
-        embedding_model: retrieval.embedding_model || null,
-        embedding_error: retrieval.embedding_error || null,
-      }
-    ),
-    buildLogStep(
-      'compaction',
-      'Compattazione contesto',
+      'structured-output',
+      'availableMemories',
       hasContext ? 'completed' : 'skipped',
       hasContext
-        ? 'Le memorie candidate sono state sintetizzate nel contextText.'
-        : `Nessun contextText iniettabile${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
+        ? 'L agente ha restituito output strutturato availableMemories.'
+        : `Nessuna memoria disponibile${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
       {
-        selected_ids: retrieval.selected_ids || [],
-        contextText: packet?.contextText || '',
+        availableMemories: packet?.contextText || '',
       }
     ),
     buildLogStep(
@@ -287,20 +259,6 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet, generatedAnswer })
       'Iniezione nel prompt',
       hasContext ? 'completed' : 'skipped',
       hasContext ? 'Il contextText e stato inserito nei messaggi della richiesta.' : 'Nessuna memoria e stata inserita nei messaggi.'
-    ),
-    buildLogStep(
-      'llm-answer',
-      'Risposta LLM di test',
-      generatedAnswer?.error ? 'error' : (generatedAnswer?.text ? 'completed' : 'skipped'),
-      generatedAnswer?.error
-        ? 'La risposta LLM non e stata generata.'
-        : (generatedAnswer?.text ? 'Risposta generata usando il contesto recuperato.' : 'Risposta non generata per assenza di contextText.'),
-      {
-        provider: generatedAnswer?.provider || null,
-        model: generatedAnswer?.model || null,
-        error: generatedAnswer?.error || null,
-        skipped_reason: generatedAnswer?.skipped_reason || null,
-      }
     ),
     ...(warnings.length > 0
       ? [buildLogStep('warnings', 'Warning', 'warning', 'Il processo ha prodotto avvisi non bloccanti.', { warnings })]
@@ -311,7 +269,6 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet, generatedAnswer })
 function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
   const embedding = packet?.embedding || {};
   const warnings = Array.isArray(packet?.warnings) ? packet.warnings : [];
-  const itemCounts = countPacketItems(packet);
   return [
     buildLogStep('request', 'Richiesta test', 'completed', 'Prompt ricevuto come informazione candidata da salvare.', {
       prompt,
@@ -321,51 +278,35 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
     }),
     buildLogStep(
       'after-start',
-      'afterMemory',
+      'Agente afterMemory',
       packet?.enabled === false ? 'skipped' : 'completed',
       packet?.enabled === false
         ? `afterMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'afterMemory ha preparato episodi, tool e candidate riutilizzabili.'
+        : 'afterMemory ha delegato valutazione e aggiornamento all agente memorie.'
     ),
     buildLogStep('episodes', 'Salvataggio episodi', packet?.episodes?.saved ? 'completed' : 'skipped', 'Persistenza degli eventi immutabili della run di test.', {
       episodes_saved: packet?.episodes?.saved || 0,
       tool_uses_saved: packet?.episodes?.tools || 0,
     }),
     buildLogStep(
-      'extraction',
-      'Estrazione memorie',
-      items.length > 0 ? 'completed' : 'skipped',
-      items.length > 0
-        ? 'Il modulo di estrazione ha prodotto memorie operative candidate.'
-        : `Nessuna memoria riutilizzabile prodotta${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
+      'memory-agent',
+      'runCypherQuery',
+      packet?.skipped_reason === 'agent_error' ? 'error' : 'completed',
+      'L agente memorie ha cercato il contenuto esistente e applicato eventuali query di scrittura.',
       {
-        item_counts: itemCounts,
-        total_items: items.length,
-        request_summary: packet?.request?.summary || packet?.process?.request_summary || null,
-        topics: packet?.request?.topics || packet?.process?.topics || [],
+        tool_calls: embedding.agent_tool_calls || packet?.episodes?.tools || 0,
+        request_summary: packet?.request?.summary || null,
       }
     ),
     buildLogStep(
-      'semantic-graph',
-      'Collegamenti semantici',
-      hasWarning(packet, 'grafo semantico') || hasWarning(packet, 'collegamento semantico') ? 'warning' : 'completed',
-      'Aggiornamento di request, topic, tool e relazioni Neo4j collegate alle memorie.',
+      'structured-output',
+      'memoryStatus',
+      packet?.contextText ? 'completed' : 'skipped',
+      packet?.contextText
+        ? 'L agente ha restituito output strutturato memoryStatus.'
+        : `Nessuno status restituito${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
       {
-        tool_sequence: packet?.process?.tool_sequence || [],
-        reusable_info: packet?.process?.reusable_info || [],
-      }
-    ),
-    buildLogStep(
-      'embedding-upsert',
-      'Embedding e upsert',
-      hasWarning(packet, 'embedding/salvataggio') ? 'warning' : (embedding.saved_items || embedding.updated_items || embedding.unchanged_items ? 'completed' : 'skipped'),
-      'Calcolo embedding e salvataggio della versione corrente dei MemoryItem.',
-      {
-        provider: embedding.provider || null,
-        model: embedding.model || null,
-        saved_items: embedding.saved_items || 0,
-        updated_items: embedding.updated_items || 0,
-        unchanged_items: embedding.unchanged_items || 0,
+        memoryStatus: packet?.contextText || '',
       }
     ),
     buildLogStep('classification', 'Esito set', items.length > 0 ? 'completed' : 'skipped', 'Classificazione visuale delle memorie restituite alla console.', {
@@ -378,41 +319,6 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
       ? [buildLogStep('warnings', 'Warning', 'warning', 'Il processo ha prodotto avvisi non bloccanti.', { warnings })]
       : []),
   ];
-}
-
-async function generateGetAnswer(messages = [], packet = {}) {
-  const settings = getMemoryEngineSettingsSync();
-  const contextText = String(packet?.contextText || '').trim();
-  if (!contextText) {
-    return {
-      text: '',
-      skipped_reason: 'no_memory_context',
-    };
-  }
-
-  try {
-    const text = await callMemoryChatText([
-      {
-        role: 'system',
-        content: [
-          'Sei un agente di test della console Memory Engine.',
-          'Rispondi alla richiesta utente usando il Memory context gia inserito nei messaggi, se rilevante.',
-          'Mantieni la risposta breve e pratica.',
-        ].join('\n'),
-      },
-      ...messages,
-    ], settings);
-    return {
-      text,
-      provider: settings.analysis_model_provider || null,
-      model: settings.analysis_model || null,
-    };
-  } catch (error) {
-    return {
-      text: '',
-      error: String(error?.message || error),
-    };
-  }
 }
 
 router.post('/get', async (req, res) => {
@@ -432,14 +338,13 @@ router.post('/get', async (req, res) => {
       userKey: getRequesterLabel(req.user),
       modelConfig: null,
     });
-    const generatedAnswer = await generateGetAnswer(messages, packet);
 
     return res.json({
       action: 'getMemories',
       prompt,
       packet,
-      generated_answer: generatedAnswer,
-      process_log: buildBeforeMemoryProcessLog({ prompt, agent, packet, generatedAnswer }),
+      generated_answer: null,
+      process_log: buildBeforeMemoryProcessLog({ prompt, agent, packet }),
       items: packetToItems(packet, getRequesterLabel(req.user)),
     });
   } catch (error) {

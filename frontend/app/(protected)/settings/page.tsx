@@ -103,6 +103,9 @@ type MemoryEngineSettings = {
   neo4j_password_configured?: boolean;
   graph_dashboard_password?: string;
   graph_dashboard_password_configured?: boolean;
+  memory_agent_system_prompt: string;
+  before_memory_prompt: string;
+  after_memory_prompt: string;
 };
 
 type ControlEngineSettings = {
@@ -1654,146 +1657,149 @@ export default function SettingsPage() {
           {memoryEngine ? (
             <div className="mt-6 space-y-6">
               <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
-                <h3 className="text-sm font-semibold text-white">Modelli memoria</h3>
-                <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(18rem,36rem)_minmax(16rem,28rem)]">
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Modello chat analisi</span>
-                    <select
-                      value={memoryModelValue}
-                      onChange={(event) => {
-                        const [provider, model] = event.target.value.split('::');
-                        setMemoryEngine((current) => current ? {
-                          ...current,
-                          analysis_model_provider: provider === 'ollama' ? 'ollama' : 'openai',
-                          analysis_model: model || current.analysis_model,
-                          ollama_server_id: provider === 'ollama' ? current.ollama_server_id : null,
-                        } : current);
-                      }}
-                      className="w-full max-w-[36rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                    >
-                      {memoryModelOptions.length === 0 ? (
-                        <option value="" disabled>Nessun modello disponibile</option>
+                <h3 className="text-sm font-semibold text-white">Generale</h3>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+                    <h4 className="text-sm font-semibold text-white">Modelli memoria</h4>
+                    <div className="mt-4 grid gap-y-4">
+                      <label className="min-w-0 text-sm text-gray-200">
+                        <span className="mb-1 block">Modello chat analisi</span>
+                        <select
+                          value={memoryModelValue}
+                          onChange={(event) => {
+                            const [provider, model] = event.target.value.split('::');
+                            setMemoryEngine((current) => current ? {
+                              ...current,
+                              analysis_model_provider: provider === 'ollama' ? 'ollama' : 'openai',
+                              analysis_model: model || current.analysis_model,
+                              ollama_server_id: provider === 'ollama' ? current.ollama_server_id : null,
+                            } : current);
+                          }}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        >
+                          {memoryModelOptions.length === 0 ? (
+                            <option value="" disabled>Nessun modello disponibile</option>
+                          ) : null}
+                          {memoryModelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      {memoryEngine.analysis_model_provider === 'ollama' ? (
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Server Ollama chat</span>
+                          <select
+                            value={memoryEngine.ollama_server_id || ''}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              ollama_server_id: event.target.value || null,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="">Seleziona server</option>
+                            {(ollamaRuntime?.connections || []).map((connection) => (
+                              <option key={connection.id} value={connection.id}>{connection.name}</option>
+                            ))}
+                          </select>
+                        </label>
                       ) : null}
-                      {memoryModelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
 
-                  {memoryEngine.analysis_model_provider === 'ollama' ? (
-                    <label className="min-w-0 text-sm text-gray-200">
-                      <span className="mb-1 block">Server Ollama chat</span>
-                      <select
-                        value={memoryEngine.ollama_server_id || ''}
-                        onChange={(event) => setMemoryEngine((current) => current ? {
-                          ...current,
-                          ollama_server_id: event.target.value || null,
-                        } : current)}
-                        className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      >
-                        <option value="">Seleziona server</option>
-                        {(ollamaRuntime?.connections || []).map((connection) => (
-                          <option key={connection.id} value={connection.id}>{connection.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : (
-                    <div className="hidden sm:block" />
-                  )}
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Provider embedding</span>
+                          <select
+                            value={memoryEngine.embedding_model_provider}
+                            onChange={(event) => {
+                              const provider = event.target.value === 'openai' ? 'openai' : 'ollama';
+                              setMemoryEngine((current) => current ? {
+                                ...current,
+                                embedding_model_provider: provider,
+                                embedding_model: provider === 'openai' && !current.embedding_model
+                                  ? 'text-embedding-3-small'
+                                  : current.embedding_model,
+                                embedding_ollama_server_id: provider === 'ollama' ? current.embedding_ollama_server_id : null,
+                              } : current);
+                            }}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="ollama">Ollama</option>
+                            <option value="openai">OpenAI</option>
+                          </select>
+                        </label>
 
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Provider embedding</span>
-                    <select
-                      value={memoryEngine.embedding_model_provider}
-                      onChange={(event) => {
-                        const provider = event.target.value === 'openai' ? 'openai' : 'ollama';
-                        setMemoryEngine((current) => current ? {
-                          ...current,
-                          embedding_model_provider: provider,
-                          embedding_model: provider === 'openai' && !current.embedding_model
-                            ? 'text-embedding-3-small'
-                            : current.embedding_model,
-                          embedding_ollama_server_id: provider === 'ollama' ? current.embedding_ollama_server_id : null,
-                        } : current);
-                      }}
-                      className="w-full max-w-[18rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                    >
-                      <option value="ollama">Ollama</option>
-                      <option value="openai">OpenAI</option>
-                    </select>
-                  </label>
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Nome modello embedding</span>
+                          <input
+                            value={memoryEngine.embedding_model}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              embedding_model: event.target.value,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                            placeholder={memoryEngine.embedding_model_provider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
+                          />
+                        </label>
+                      </div>
 
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Nome modello embedding</span>
-                    <input
-                      value={memoryEngine.embedding_model}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        embedding_model: event.target.value,
-                      } : current)}
-                      className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder={memoryEngine.embedding_model_provider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
-                    />
-                  </label>
-
-                  {memoryEngine.embedding_model_provider === 'ollama' ? (
-                    <label className="min-w-0 text-sm text-gray-200">
-                      <span className="mb-1 block">Server Ollama embedding</span>
-                      <select
-                        value={memoryEngine.embedding_ollama_server_id || ''}
-                        onChange={(event) => setMemoryEngine((current) => current ? {
-                          ...current,
-                          embedding_ollama_server_id: event.target.value || null,
-                        } : current)}
-                        className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      >
-                        <option value="">Seleziona server</option>
-                        {(ollamaRuntime?.connections || []).map((connection) => (
-                          <option key={connection.id} value={connection.id}>{connection.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">Neo4j</h3>
+                      {memoryEngine.embedding_model_provider === 'ollama' ? (
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Server Ollama embedding</span>
+                          <select
+                            value={memoryEngine.embedding_ollama_server_id || ''}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              embedding_ollama_server_id: event.target.value || null,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="">Seleziona server</option>
+                            {(ollamaRuntime?.connections || []).map((connection) => (
+                              <option key={connection.id} value={connection.id}>{connection.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-200">
-                    <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
-                    <span>{memoryStatusMeta.label}</span>
-                  </div>
-                </div>
 
-                <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-[minmax(12rem,42rem)_minmax(12rem,22rem)]">
-                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
-                    <span className="mb-1 block">URL Bolt</span>
-                    <input
-                      value={memoryEngine.neo4j_url}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        neo4j_url: event.target.value,
-                      } : current)}
-                      className="w-full max-w-[42rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="bolt://neo4j:7687"
-                    />
-                  </label>
+                  <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Neo4j</h4>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-gray-200">
+                        <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
+                        <span>{memoryStatusMeta.label}</span>
+                      </div>
+                    </div>
 
-                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
-                    <span className="mb-1 block">URL pagina web Neo4j</span>
-                    <input
-                      value={memoryEngine.neo4j_browser_url}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        neo4j_browser_url: event.target.value,
-                      } : current)}
-                      className="w-full max-w-[42rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="http://127.0.0.1:7474"
-                    />
-                  </label>
+                    <div className="mt-4 grid gap-x-4 gap-y-4 lg:grid-cols-2">
+                      <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                        <span className="mb-1 block">URL Bolt</span>
+                        <input
+                          value={memoryEngine.neo4j_url}
+                          onChange={(event) => setMemoryEngine((current) => current ? {
+                            ...current,
+                            neo4j_url: event.target.value,
+                          } : current)}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          placeholder="bolt://neo4j:7687"
+                        />
+                      </label>
+
+                      <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
+                        <span className="mb-1 block">URL pagina web Neo4j</span>
+                        <input
+                          value={memoryEngine.neo4j_browser_url}
+                          onChange={(event) => setMemoryEngine((current) => current ? {
+                            ...current,
+                            neo4j_browser_url: event.target.value,
+                          } : current)}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          placeholder="http://127.0.0.1:7474"
+                        />
+                      </label>
 
                   <label className="min-w-0 text-sm text-gray-200">
                     <span className="mb-1 block">Username</span>
@@ -1803,14 +1809,14 @@ export default function SettingsPage() {
                         ...current,
                         neo4j_username: event.target.value,
                       } : current)}
-                      className="w-full max-w-[18rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                       placeholder="neo4j"
                     />
                   </label>
 
                   <label className="min-w-0 text-sm text-gray-200">
                     <span className="mb-1 block">Password</span>
-                    <div className="flex max-w-[28rem] gap-2">
+                    <div className="flex gap-2">
                       <input
                         type={revealedSecrets['memory.neo4j_password'] ? 'text' : 'password'}
                         value={memoryEngine.neo4j_password}
@@ -1835,7 +1841,7 @@ export default function SettingsPage() {
                     </div>
                   </label>
 
-                  <label className="min-w-0 text-sm text-gray-200 md:col-span-2">
+                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
                     <span className="mb-1 block">Password dashboard grafo</span>
                     <input
                       type="password"
@@ -1844,7 +1850,7 @@ export default function SettingsPage() {
                         ...current,
                         graph_dashboard_password: event.target.value,
                       } : current)}
-                      className="w-full max-w-[28rem] rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                       placeholder={memoryEngine.graph_dashboard_password_configured ? 'Gia configurata; cambia per invalidare le sessioni dashboard' : 'Password per aprire /graph-live senza ChrisBot'}
                     />
                     <p className="mt-1 text-xs text-gray-500">
@@ -1866,6 +1872,49 @@ export default function SettingsPage() {
                       : ''}
                   </div>
                 ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <h3 className="text-sm font-semibold text-white">Agente memorie</h3>
+                <div className="mt-4 space-y-4">
+                  <label className="block text-sm text-gray-200">
+                    <span className="mb-1 block">System prompt agente</span>
+                    <textarea
+                      value={memoryEngine.memory_agent_system_prompt || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        memory_agent_system_prompt: event.target.value,
+                      } : current)}
+                      className="min-h-36 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+
+                  <label className="block text-sm text-gray-200">
+                    <span className="mb-1 block">Prompt beforeMemory</span>
+                    <textarea
+                      value={memoryEngine.before_memory_prompt || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        before_memory_prompt: event.target.value,
+                      } : current)}
+                      className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+
+                  <label className="block text-sm text-gray-200">
+                    <span className="mb-1 block">Prompt afterMemory</span>
+                    <textarea
+                      value={memoryEngine.after_memory_prompt || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        after_memory_prompt: event.target.value,
+                      } : current)}
+                      className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           ) : (

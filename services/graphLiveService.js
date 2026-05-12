@@ -6,6 +6,7 @@ const { isSuperAdminUser } = require('../utils/adminAccess');
 
 const EMBEDDING_KEYS = new Set(['embedding', 'vector']);
 const GRAPH_DASHBOARD_SCOPE = 'graph_dashboard';
+const MEMORY_GRAPH_ID = 'memory_engine';
 
 function normalizeLimit(value) {
   const numeric = Number(value || 600);
@@ -163,7 +164,10 @@ async function runGraphQuery(engine, limit) {
   const neo4j = loadNeo4jDriver();
   const session = driver.session({ defaultAccessMode: neo4j.session.READ });
   try {
-    const params = { limit: neo4j.int(limit), graphId: CONTROL_GRAPH_ID };
+    const params = {
+      limit: neo4j.int(limit),
+      graphId: engine === 'control' ? CONTROL_GRAPH_ID : MEMORY_GRAPH_ID,
+    };
     const query = engine === 'control'
       ? `
         MATCH (g:EngineGraph {id: $graphId})
@@ -179,9 +183,13 @@ async function runGraphQuery(engine, limit) {
         RETURN nodes, collect(DISTINCT r) AS relationships
         `
       : `
-        MATCH (n)
-        WHERE any(label IN labels(n) WHERE label STARTS WITH 'Memory')
-        WITH n LIMIT $limit
+        MATCH (g:EngineGraph {id: $graphId})
+        OPTIONAL MATCH (g)-[:OWNS]->(root)
+        OPTIONAL MATCH path = (root)-[*0..8]->(n)
+        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
+        UNWIND [g] + branchNodes AS n
+        WITH DISTINCT n LIMIT $limit
         WITH collect(n) AS nodes
         OPTIONAL MATCH (a)-[r]-(b)
         WHERE a IN nodes AND b IN nodes

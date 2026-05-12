@@ -176,6 +176,70 @@ function buildDefaultMemoryEngineSettings() {
     neo4j_password: '',
     graph_dashboard_password_hash: '',
     graph_dashboard_password_version: crypto.randomUUID(),
+    memory_agent_system_prompt: `## Scopo
+
+Questo database grafo contiene conoscenze operative persistenti.
+Non salva cronologia delle run o stato temporaneo, ma informazioni utili a eseguire correttamente processi futuri.
+
+## Nodi
+
+User
+- username
+- alias[]
+
+Request
+- summary
+- alias[]
+
+Process
+- name
+- alias[]
+
+Topic
+- name
+- alias[]
+
+Knowledge
+- name
+- rules[]
+
+## Relazioni
+
+(User)-[:MADE]->(Request)
+
+(Request)-[:TRIGGERS]->(Process)
+
+(User)-[:HAS_PROCESS]->(Process)
+
+(Process)-[:ABOUT]->(Topic)
+
+(Process)-[:USES_KNOWLEDGE]->(Knowledge)
+
+(Knowledge)-[:ABOUT]->(Topic)
+
+## Significato
+
+- Request rappresenta cosa è stato richiesto.
+- Process rappresenta il processo operativo attivato.
+- Knowledge contiene informazioni o regole utili a eseguire il processo.
+- Topic raggruppa semanticamente processi e conoscenze correlate.
+
+## Esempio
+
+Process: "stampa etichetta"
+
+Knowledge:
+- name: "asset tag"
+- rules:
+  - "Necessario per stampare l'etichetta"
+  - "Se manca, cercarlo nell'inventario"
+
+Knowledge:
+- name: "limite batch utenti"
+- rules:
+  - "Gestire massimo 3 utenti alla volta"`,
+    before_memory_prompt: "Cerca nel database se ci sono informazioni necessarie a risolvere la richiesta e restituiscine un riassunto solo di quelle necessarie. se non ci sono informazioni restituisci, nessuna memoria sull'argomento.",
+    after_memory_prompt: 'Basandoti sul contesto attuale, valuta se ci sono infomazioni importanti per il futuro, cerca nel database quali informazioni sono già presenti e inseriscile se non presenti opppure aggiornale se contrastanti con le nuove',
   };
 }
 
@@ -250,6 +314,9 @@ function normalizeMemoryEngineSettings(value) {
     neo4j_password: String(value?.neo4j_password || '').trim(),
     graph_dashboard_password_hash: String(value?.graph_dashboard_password_hash || '').trim(),
     graph_dashboard_password_version: String(value?.graph_dashboard_password_version || '').trim() || crypto.randomUUID(),
+    memory_agent_system_prompt: String(value?.memory_agent_system_prompt || defaults.memory_agent_system_prompt).trim() || defaults.memory_agent_system_prompt,
+    before_memory_prompt: String(value?.before_memory_prompt || defaults.before_memory_prompt).trim() || defaults.before_memory_prompt,
+    after_memory_prompt: String(value?.after_memory_prompt || defaults.after_memory_prompt).trim() || defaults.after_memory_prompt,
   };
 }
 

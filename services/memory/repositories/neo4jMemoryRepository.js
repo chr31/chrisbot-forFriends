@@ -18,6 +18,8 @@ const {
 } = require('../memorySchema');
 
 const schemaCache = new Set();
+const MEMORY_GRAPH_ID = 'memory_engine';
+const MEMORY_BRANCH_LABELS = ['User', 'Request', 'Process', 'Topic', 'Knowledge'];
 const LEXICAL_STOP_WORDS = new Set([
   'about',
   'agent',
@@ -54,6 +56,7 @@ const LEXICAL_STOP_WORDS = new Set([
 ]);
 
 const SCHEMA_STATEMENTS = [
+  'CREATE CONSTRAINT memory_engine_graph_id IF NOT EXISTS FOR (n:EngineGraph) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_episode_id IF NOT EXISTS FOR (n:MemoryEpisode) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_item_id IF NOT EXISTS FOR (n:MemoryItem) REQUIRE n.id IS UNIQUE',
   'CREATE CONSTRAINT memory_run_id IF NOT EXISTS FOR (n:MemoryRun) REQUIRE n.id IS UNIQUE',
@@ -89,6 +92,93 @@ function mapNodeProperties(node) {
     }
   }
   return mapped;
+}
+
+function getNeo4jIdentity(value) {
+  if (value === null || value === undefined) return null;
+  const identity = value.identity ?? value.elementId;
+  if (identity === null || identity === undefined) return null;
+  return typeof identity?.toNumber === 'function' ? identity.toNumber() : String(identity);
+}
+
+function getNeo4jRelationshipEndpoint(value, side) {
+  const legacy = value?.[side];
+  if (legacy !== null && legacy !== undefined) {
+    return typeof legacy?.toNumber === 'function' ? legacy.toNumber() : String(legacy);
+  }
+  const elementId = side === 'start' ? value?.startNodeElementId : value?.endNodeElementId;
+  return elementId === null || elementId === undefined ? null : String(elementId);
+}
+
+function serializeCypherValue(value, options = {}) {
+  if (value === null || value === undefined) return value;
+  if (typeof value?.toNumber === 'function') return value.toNumber();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => serializeCypherValue(entry, options))
+      .filter((entry) => entry !== undefined);
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== 'object') return value;
+  if (value.labels && value.properties) {
+    if (options.allowedNodeIds && !options.allowedNodeIds.has(getNeo4jIdentity(value))) return undefined;
+    return {
+      labels: value.labels,
+      properties: mapNodeProperties(value),
+    };
+  }
+  if (value.type && value.properties) {
+    const start = getNeo4jRelationshipEndpoint(value, 'start');
+    const end = getNeo4jRelationshipEndpoint(value, 'end');
+    if (options.allowedNodeIds && (!options.allowedNodeIds.has(start) || !options.allowedNodeIds.has(end))) {
+      return undefined;
+    }
+    return {
+      type: value.type,
+      start,
+      end,
+      properties: mapNodeProperties(value),
+    };
+  }
+  if (value.segments) {
+    const segments = value.segments
+      .map((segment) => serializeCypherValue(segment, options))
+      .filter((segment) => segment !== undefined);
+    if (options.allowedNodeIds && segments.length === 0) return undefined;
+    return {
+      start: serializeCypherValue(value.start, options),
+      end: serializeCypherValue(value.end, options),
+      segments,
+      length: segments.length,
+    };
+  }
+  const output = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const serialized = serializeCypherValue(entry, options);
+    if (serialized !== undefined) output[key] = serialized;
+  }
+  return output;
+}
+
+function summarizeCypherResult(result, options = {}) {
+  return {
+    summary: {
+      query_type: result.summary?.queryType || null,
+      counters: result.summary?.counters?.updates?.() || {},
+    },
+    records: result.records.map((record) => {
+      const row = {};
+      for (const key of record.keys) {
+        const value = serializeCypherValue(record.get(key), options);
+        if (value !== undefined) row[key] = value;
+      }
+      return row;
+    }),
+  };
+}
+
+function isWriteCypher(query = '') {
+  return /\b(CREATE|MERGE|SET|DELETE|DETACH\s+DELETE|REMOVE|DROP)\b/i.test(String(query || ''));
 }
 
 function normalizeScope(value) {
@@ -225,6 +315,15 @@ class Neo4jMemoryRepository {
     for (const statement of SCHEMA_STATEMENTS) {
       await session.run(statement);
     }
+    await session.run(
+      `
+      MERGE (g:EngineGraph {id: $graphId})
+      ON CREATE SET g.created_at = datetime()
+      SET g.name = 'Memory Engine', g.graph_key = $graphId, g.updated_at = datetime()
+      `,
+      { graphId: MEMORY_GRAPH_ID }
+    );
+    await this.attachMemoryBranchNodes(session);
     schemaCache.add(cacheKey);
   }
 
@@ -237,13 +336,18 @@ class Neo4jMemoryRepository {
 
   async clearAllMemoryData() {
     return this.withSession('write', async (session) => {
-      const result = await session.run(`
-        MATCH (n)
-        WHERE any(label IN labels(n) WHERE label STARTS WITH 'Memory')
-        WITH collect(n) AS nodes, count(n) AS deleted
+      const result = await session.run(
+        `
+        MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
+        MATCH path = (root)-[*0..8]->(n)
+        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+        WITH collect(DISTINCT root) + collect(DISTINCT n) AS nodes
+        WITH nodes, size(nodes) AS deleted
         FOREACH (node IN nodes | DETACH DELETE node)
         RETURN deleted
-      `);
+        `,
+        { graphId: MEMORY_GRAPH_ID }
+      );
       const deleted = result.records[0]?.get('deleted');
       return {
         deleted: deleted && typeof deleted.toNumber === 'function' ? deleted.toNumber() : Number(deleted || 0),
@@ -257,6 +361,10 @@ class Neo4jMemoryRepository {
 
     await session.run(
       `
+      MERGE (g:EngineGraph {id: $graphId})
+      ON CREATE SET g.created_at = datetime()
+      SET g.name = 'Memory Engine', g.graph_key = $graphId, g.updated_at = datetime()
+      WITH g
       MERGE (r:MemoryRun {id: $runKey})
       ON CREATE SET r.created_at = datetime()
       SET
@@ -269,8 +377,9 @@ class Neo4jMemoryRepository {
         r.started_at = coalesce($startedAt, r.started_at),
         r.finished_at = coalesce($finishedAt, r.finished_at),
         r.updated_at = datetime()
+      MERGE (g)-[:OWNS]->(r)
       `,
-      params
+      { ...params, graphId: MEMORY_GRAPH_ID }
     );
 
     if (params.agentId) {
@@ -288,6 +397,118 @@ class Neo4jMemoryRepository {
     }
 
     return params.runKey;
+  }
+
+  async attachMemoryBranchNodes(session) {
+    await session.run(
+      `
+      MATCH (g:EngineGraph {id: $graphId})
+      MATCH (n)
+      WHERE any(label IN labels(n) WHERE label STARTS WITH 'Memory' OR label IN $branchLabels)
+      MERGE (g)-[:OWNS]->(n)
+      `,
+      { graphId: MEMORY_GRAPH_ID, branchLabels: MEMORY_BRANCH_LABELS }
+    );
+  }
+
+  async getMemoryBranchNodeIds(session) {
+    const result = await session.run(
+      `
+      MATCH (:EngineGraph {id: $graphId})-[:OWNS]->(root)
+      OPTIONAL MATCH path = (root)-[*0..8]->(n)
+      WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+      WITH collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
+      UNWIND branchNodes AS branchNode
+      RETURN DISTINCT id(branchNode) AS id
+      `,
+      { graphId: MEMORY_GRAPH_ID }
+    );
+    return new Set(result.records.map((record) => {
+      const id = record.get('id');
+      return id && typeof id.toNumber === 'function' ? id.toNumber() : String(id);
+    }));
+  }
+
+  async getMemoryBranchSnapshot(limit = 600) {
+    return this.withSession('read', async (session) => {
+      const result = await session.run(
+        `
+        MATCH (g:EngineGraph {id: $graphId})
+        OPTIONAL MATCH (g)-[:OWNS]->(root)
+        OPTIONAL MATCH path = (root)-[*0..8]->(n)
+        WHERE none(rel IN relationships(path) WHERE type(rel) = 'OWNS')
+        WITH g, collect(DISTINCT root) + collect(DISTINCT n) AS branchNodes
+        UNWIND [g] + branchNodes AS n
+        WITH DISTINCT n LIMIT $limit
+        WITH collect(n) AS nodes
+        OPTIONAL MATCH (a)-[r]-(b)
+        WHERE a IN nodes AND b IN nodes
+        RETURN nodes, collect(DISTINCT r) AS relationships
+        `,
+        { graphId: MEMORY_GRAPH_ID, limit }
+      );
+      const record = result.records[0];
+      return {
+        rawNodes: (record?.get('nodes') || []).filter(Boolean),
+        rawRelationships: (record?.get('relationships') || []).filter(Boolean),
+      };
+    });
+  }
+
+  async getMemoryRootSummary() {
+    return this.withSession('read', async (session) => {
+      const result = await session.run(
+        `
+        MATCH (g:EngineGraph {id: $graphId})
+        OPTIONAL MATCH (g)-[:OWNS]->(root)
+        RETURN g.id AS id, g.name AS name, count(root) AS roots
+        `,
+        { graphId: MEMORY_GRAPH_ID }
+      );
+      const record = result.records[0];
+      const roots = record?.get('roots');
+      return {
+        id: record?.get('id') || null,
+        name: record?.get('name') || null,
+        roots: roots && typeof roots.toNumber === 'function' ? roots.toNumber() : Number(roots || 0),
+      };
+    });
+  }
+
+  async explainCypherQuery(session, query) {
+    await session.run(`EXPLAIN ${query}`, { graphId: MEMORY_GRAPH_ID });
+  }
+
+  async runReadCypherQuery(session, cypher) {
+    await this.explainCypherQuery(session, cypher);
+    const result = await session.run(cypher, { graphId: MEMORY_GRAPH_ID });
+    const allowedNodeIds = await this.getMemoryBranchNodeIds(session);
+    return summarizeCypherResult(result, { allowedNodeIds });
+  }
+
+  async runWriteCypherQuery(session, cypher) {
+    const transaction = session.beginTransaction();
+    try {
+      const result = await transaction.run(cypher, { graphId: MEMORY_GRAPH_ID });
+      await transaction.commit();
+      await this.attachMemoryBranchNodes(session);
+      return summarizeCypherResult(result);
+    } catch (error) {
+      await transaction.rollback().catch(() => null);
+      throw error;
+    }
+  }
+
+  async runCypherQuery(query) {
+    const cypher = normalizeText(query, 20000);
+    if (!cypher) throw new Error('query mancante.');
+    const mode = isWriteCypher(cypher) ? 'write' : 'read';
+    return this.withSession('write', async (session) => {
+      if (mode === 'write') {
+        return this.runWriteCypherQuery(session, cypher);
+      }
+      return this.runReadCypherQuery(session, cypher);
+    });
   }
 
   async recordRunSemantics(input = {}) {

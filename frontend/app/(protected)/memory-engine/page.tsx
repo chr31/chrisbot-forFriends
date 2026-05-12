@@ -64,6 +64,7 @@ type MemoryPacket = {
     topics?: Array<string | { name?: string; key?: string; category?: string }>;
     candidate_count?: number;
     selected_ids?: string[];
+    agent_tool_calls?: number;
     embedding_provider?: string | null;
     embedding_model?: string | null;
     embedding_error?: string | null;
@@ -74,6 +75,7 @@ type MemoryPacket = {
     saved_items?: number;
     unchanged_items?: number;
     updated_items?: number;
+    agent_tool_calls?: number;
   };
   episodes?: {
     saved?: number;
@@ -257,6 +259,8 @@ function getPacketMetric(packet: MemoryPacket | null) {
   if (!packet) return '';
   const parts = [
     typeof packet.retrieval?.candidate_count === 'number' ? `candidate ${packet.retrieval.candidate_count}` : '',
+    typeof packet.retrieval?.agent_tool_calls === 'number' ? `tool ${packet.retrieval.agent_tool_calls}` : '',
+    typeof packet.embedding?.agent_tool_calls === 'number' ? `tool ${packet.embedding.agent_tool_calls}` : '',
     typeof packet.embedding?.saved_items === 'number' ? `salvate ${packet.embedding.saved_items}` : '',
     typeof packet.embedding?.updated_items === 'number' ? `aggiornate ${packet.embedding.updated_items}` : '',
     typeof packet.embedding?.unchanged_items === 'number' ? `immutate ${packet.embedding.unchanged_items}` : '',
@@ -587,7 +591,7 @@ export default function MemoryEnginePage() {
     });
     return {
       engine: 'memory' as const,
-      title: action === 'getMemories' ? 'Grafo getMemories' : 'Grafo setMemories',
+      title: action === 'getMemories' ? 'Grafo beforeMemory' : 'Grafo afterMemory',
       ids,
       terms: terms.filter(Boolean),
     };
@@ -706,7 +710,7 @@ export default function MemoryEnginePage() {
               <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Engine monitor</p>
               <h1 className="mt-2 text-3xl font-bold text-white">Graph engine access</h1>
               <p className="mt-2 max-w-3xl text-sm text-gray-300">
-                Console admin per recuperare, aggiornare e verificare i grafi Memory Engine e Control Engine.
+                Console admin per testare beforeMemory, afterMemory e le funzioni Control Engine sui grafi dedicati.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -850,7 +854,7 @@ export default function MemoryEnginePage() {
                 onChange={(event) => setPrompt(event.target.value)}
                 rows={activeEngineTab === 'control' ? 6 : 4}
                 placeholder={activeEngineTab === 'memory'
-                  ? 'Scrivi un prompt per cercare o proporre memorie...'
+                  ? 'Scrivi il contesto di test per beforeMemory o afterMemory...'
                   : 'Scrivi un prompt per interrogare o aggiornare il grafo control...'}
                 className={`w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500 ${
                   activeEngineTab === 'control' ? 'min-h-[8.25rem]' : 'min-h-[4.75rem]'
@@ -867,7 +871,7 @@ export default function MemoryEnginePage() {
                     className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <CircleStackIcon className="h-5 w-5" />
-                    {isRunning === 'getMemories' ? 'get...' : 'getMemories'}
+                    {isRunning === 'getMemories' ? 'before...' : 'beforeMemory'}
                   </button>
                   <button
                     type="button"
@@ -876,7 +880,7 @@ export default function MemoryEnginePage() {
                     className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <SparklesIcon className="h-5 w-5" />
-                    {isRunning === 'setMemories' ? 'set...' : 'setMemories'}
+                    {isRunning === 'setMemories' ? 'after...' : 'afterMemory'}
                   </button>
                 </>
               ) : (
@@ -968,31 +972,10 @@ export default function MemoryEnginePage() {
               </div>
               {String(lastPacket.contextText || '').trim() ? (
                 <div className="md:col-span-2">
-                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">ContextText iniettato</p>
+                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">
+                    {lastAction === 'setMemories' ? 'memoryStatus' : 'availableMemories'}
+                  </p>
                   <p className="mt-1 whitespace-pre-wrap text-gray-200">{String(lastPacket.contextText).trim()}</p>
-                </div>
-              ) : null}
-              {lastAction === 'getMemories' ? (
-                <div className="md:col-span-2">
-                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Risposta LLM generata</p>
-                  <div className="mt-1 rounded-xl border border-sky-900/60 bg-sky-950/20 px-4 py-3 text-gray-100">
-                    {generatedAnswer?.text ? (
-                      <p className="whitespace-pre-wrap">{generatedAnswer.text}</p>
-                    ) : (
-                      <p className="text-gray-400">
-                        {generatedAnswer?.error
-                          ? `Generazione non riuscita: ${generatedAnswer.error}`
-                          : generatedAnswer?.skipped_reason === 'no_memory_context'
-                            ? 'Nessuna risposta generata perche non e stato recuperato contextText.'
-                            : 'Nessuna risposta generata.'}
-                      </p>
-                    )}
-                    {generatedAnswer?.provider || generatedAnswer?.model ? (
-                      <p className="mt-2 text-xs text-sky-200/80">
-                        {['provider', generatedAnswer.provider, 'model', generatedAnswer.model].filter(Boolean).join(' ')}
-                      </p>
-                    ) : null}
-                  </div>
                 </div>
               ) : null}
             </div>
