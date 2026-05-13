@@ -474,7 +474,7 @@ export default function AgentsPage() {
       .filter((toolName) => !availableByName.has(toolName))
       .map((toolName) => ({
         name: toolName,
-        description: 'Tool attualmente non disponibile sul server MCP.',
+        description: 'Tool attualmente non disponibile sul server MCP. Puoi deselezionarlo per rimuoverlo dall\'agente.',
         available: false,
         selected: true,
       }));
@@ -554,21 +554,6 @@ export default function AgentsPage() {
     () => buildModelOptions(aiOptions?.catalog, form.default_model_config),
     [aiOptions?.catalog, form.default_model_config]
   );
-  const ollamaServerNameById = useMemo(
-    () => new Map(ollamaOptions.map((option) => [option.id, option.name])),
-    [ollamaOptions]
-  );
-  const getAgentOllamaServerLabel = useCallback((agent: Agent) => {
-    const effectiveConfig = agent.use_portal_default_model
-      ? agent.default_model_config
-      : (agent.specific_model_config || agent.default_model_config);
-    if (effectiveConfig.provider !== 'ollama') return '-';
-
-    const serverId = String(effectiveConfig.ollama_server_id || aiOptions?.ollama?.default_connection_id || '').trim();
-    if (!serverId) return 'Default globale';
-    return ollamaServerNameById.get(serverId) || serverId;
-  }, [aiOptions?.ollama?.default_connection_id, ollamaServerNameById]);
-
   const setGuardrailField = (field: keyof GuardrailForm, value: string | boolean | number) => {
     setForm((current) => ({
       ...current,
@@ -1000,7 +985,7 @@ export default function AgentsPage() {
           <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.1fr)_150px_minmax(0,1fr)_150px_96px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
             <div>Attivo</div>
             <div>Nome</div>
-            <div>Server Ollama</div>
+            <div>Modello default</div>
             <div>Modello</div>
             <div>Visibilità</div>
             <div>Chat</div>
@@ -1033,24 +1018,15 @@ export default function AgentsPage() {
                   </div>
 
                   <div className="min-w-0 space-y-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Server Ollama</div>
-                    <div className="min-h-10 rounded-xl border border-gray-800 bg-gray-950/50 px-3 py-2 text-sm text-gray-200">
-                      <span className="block truncate">{getAgentOllamaServerLabel(agent)}</span>
-                      {agent.use_portal_default_model ? (
-                        <span className="mt-1 block text-[11px] text-sky-300">Default portale</span>
-                      ) : null}
-                    </div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Modello default</div>
+                    <Toggle
+                      checked={agent.use_portal_default_model}
+                      onChange={() => handleQuickUpdate(agent, { use_portal_default_model: !agent.use_portal_default_model })}
+                    />
                   </div>
 
                   <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Modello</div>
-                    <label className="mb-2 flex items-center gap-2 text-xs text-gray-300">
-                      <Toggle
-                        checked={agent.use_portal_default_model}
-                        onChange={() => handleQuickUpdate(agent, { use_portal_default_model: !agent.use_portal_default_model })}
-                      />
-                      <span>Default portale</span>
-                    </label>
                     <select
                       value={encodeModelValue(
                         agent.use_portal_default_model
@@ -1494,24 +1470,27 @@ export default function AgentsPage() {
                             {filteredTools.length === 0 && (
                               <div className="text-sm text-gray-400">Nessun tool corrisponde alla ricerca.</div>
                             )}
-                            {filteredTools.map((tool) => (
-                              <label key={tool.name} className={`flex items-start gap-3 text-sm ${tool.available ? 'text-gray-200' : 'text-gray-500'}`}>
-                                <input
-                                  type="checkbox"
-                                  checked={tool.selected}
-                                  disabled={!tool.available}
-                                  onChange={() => toggleTool(tool.name)}
-                                  className="mt-1 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-                                />
-                                <span>
-                                  <span className="block font-medium text-white">
-                                    {tool.name}
-                                    {!tool.available ? ' · non disponibile' : ''}
+                            {filteredTools.map((tool) => {
+                              const canToggleTool = tool.available || tool.selected;
+                              return (
+                                <label key={tool.name} className={`flex items-start gap-3 text-sm ${canToggleTool ? 'cursor-pointer' : 'cursor-not-allowed'} ${tool.available ? 'text-gray-200' : 'text-gray-500'}`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={tool.selected}
+                                    disabled={!canToggleTool}
+                                    onChange={() => toggleTool(tool.name)}
+                                    className="mt-1 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                  />
+                                  <span>
+                                    <span className="block font-medium text-white">
+                                      {tool.name}
+                                      {!tool.available ? ' · non disponibile' : ''}
+                                    </span>
+                                    <span className="text-xs text-gray-400">{tool.description}</span>
                                   </span>
-                                  <span className="text-xs text-gray-400">{tool.description}</span>
-                                </span>
-                              </label>
-                            ))}
+                                </label>
+                              );
+                            })}
                           </div>
                         </div>
 
