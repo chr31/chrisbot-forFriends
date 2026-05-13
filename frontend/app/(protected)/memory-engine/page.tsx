@@ -22,8 +22,10 @@ type AgentOption = {
   slug?: string;
   kind?: string;
   is_active?: boolean;
+  direct_chat_enabled?: boolean;
   memory_engine_enabled?: boolean;
   memory_scope?: 'shared' | 'dedicated';
+  tool_names?: string[];
 };
 
 type SettingsPayload = {
@@ -116,11 +118,26 @@ type MemoryResponse = {
 };
 
 type EngineTab = 'memory' | 'control';
-type ControlAction = 'retrieveInfo' | 'updateSchema' | 'executeAction';
-type ControlResult = {
-  ok?: boolean;
-  tool?: string;
-  result?: any;
+type ControlChatMessage = {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  event_type?: string;
+  metadata_json?: {
+    tool_name?: string;
+    tool_call_id?: string | null;
+    arguments?: Record<string, unknown> | null;
+    run_id?: number | null;
+  } | null;
+  agent_name?: string | null;
+};
+type ControlTestResult = {
+  ok: boolean;
+  chat_id: string;
+  run_id?: number | null;
+  agent_id: number;
+  agent_name: string;
+  response: string;
+  messages: ControlChatMessage[];
   error?: string;
 };
 
@@ -308,6 +325,33 @@ function formatDetails(details: unknown) {
   }
 }
 
+function createClientUuid(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 function getStatusToneClass(tone: StatusTone) {
   if (tone === 'green') return 'border-emerald-700/60 bg-emerald-600/10 text-emerald-200';
   if (tone === 'yellow') return 'border-amber-700/60 bg-amber-600/10 text-amber-200';
@@ -440,17 +484,17 @@ export default function MemoryEnginePage() {
   const [controlExecutionEnabled, setControlExecutionEnabled] = useState(false);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [prompt, setPrompt] = useState('');
-  const [controlResult, setControlResult] = useState<ControlResult | null>(null);
-  const [controlAction, setControlAction] = useState<ControlAction | null>(null);
+  const [controlTestResult, setControlTestResult] = useState<ControlTestResult | null>(null);
   const [memoryScope, setMemoryScope] = useState<'shared' | 'dedicated'>('shared');
   const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedControlAgentId, setSelectedControlAgentId] = useState('');
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [lastPacket, setLastPacket] = useState<MemoryPacket | null>(null);
   const [lastAction, setLastAction] = useState<MemoryResponse['action'] | null>(null);
   const [generatedAnswer, setGeneratedAnswer] = useState<MemoryResponse['generated_answer'] | null>(null);
   const [processLog, setProcessLog] = useState<ProcessLogStep[]>([]);
   const [isRunning, setIsRunning] = useState<MemoryResponse['action'] | null>(null);
-  const [isControlRunning, setIsControlRunning] = useState<ControlAction | null>(null);
+  const [isControlRunning, setIsControlRunning] = useState(false);
   const [activatedGraphSource, setActivatedGraphSource] = useState<ActivatedGraphSource | null>(null);
   const [graphPreview, setGraphPreview] = useState<GraphPreview | null>(null);
   const [isGraphLoading, setIsGraphLoading] = useState(false);
@@ -482,6 +526,8 @@ export default function MemoryEnginePage() {
             const activeAgents = agentsBody.filter((agent) => agent?.id && agent?.is_active !== false);
             setAgents(activeAgents);
             if (activeAgents[0]?.id) setSelectedAgentId(String(activeAgents[0].id));
+            const firstControlAgent = activeAgents.find((agent) => agent.direct_chat_enabled !== false);
+            setSelectedControlAgentId(firstControlAgent?.id ? String(firstControlAgent.id) : '');
           }
           if (settingsResponse.ok) {
             const settingsBody = await settingsResponse.json().catch(() => ({})) as SettingsPayload;
@@ -505,9 +551,17 @@ export default function MemoryEnginePage() {
     () => Boolean(prompt.trim()) && !isRunning && (memoryScope === 'shared' || Boolean(selectedAgentId)),
     [prompt, isRunning, memoryScope, selectedAgentId]
   );
+  const controlAgents = useMemo(
+    () => agents.filter((agent) => agent.is_active !== false && agent.direct_chat_enabled !== false),
+    [agents]
+  );
+  const selectedControlAgent = useMemo(
+    () => controlAgents.find((agent) => String(agent.id) === String(selectedControlAgentId)) || null,
+    [controlAgents, selectedControlAgentId]
+  );
   const canRunControl = useMemo(
-    () => Boolean(prompt.trim()) && !isControlRunning && controlEnabled,
-    [prompt, isControlRunning, controlEnabled]
+    () => Boolean(prompt.trim()) && !isControlRunning && controlEnabled && Boolean(selectedControlAgent),
+    [prompt, isControlRunning, controlEnabled, selectedControlAgent]
   );
   const memoryTargetValue = memoryScope === 'shared' ? 'shared' : `agent:${selectedAgentId}`;
 
@@ -538,12 +592,12 @@ export default function MemoryEnginePage() {
       ? {
           tone: 'green',
           label: 'Control attivo',
-          description: 'Control Engine attivo: gli agenti possono vedere retrieveInfo e updateSchema.',
+          description: 'Control Engine attivo: gli agenti possono usare getSessions, getGraph e updateGraph.',
         }
       : {
           tone: 'red',
           label: 'Control disattivo',
-          description: 'Control Engine disattivo: retrieveInfo e updateSchema non sono esposti agli agenti.',
+          description: 'Control Engine disattivo: i tool Control Engine non sono esposti agli agenti.',
         }
   ), [controlEnabled]);
 
@@ -559,13 +613,13 @@ export default function MemoryEnginePage() {
       return {
         tone: 'green',
         label: 'Azioni attive',
-        description: 'Esecuzione azioni attiva: executeAction e le azioni reali sui device sono abilitate.',
+        description: 'Esecuzione azioni attiva: getGraph puo eseguire i comandi quando runCommands e true.',
       };
     }
     return {
       tone: 'red',
       label: 'Azioni disattive',
-      description: 'Esecuzione azioni disattiva: executeAction resta bloccato e non esegue comandi sui device.',
+      description: 'Esecuzione azioni disattiva: getGraph restituisce il grafo ma blocca runCommands=true.',
     };
   }, [controlEnabled, controlExecutionEnabled]);
 
@@ -597,13 +651,13 @@ export default function MemoryEnginePage() {
     };
   };
 
-  const buildControlGraphSource = (action: ControlAction, result: ControlResult) => {
+  const buildControlGraphSource = (result: ControlTestResult) => {
     const ids = new Set<string>();
     const terms: string[] = [];
-    collectGraphIds(result?.result || result, ids, terms);
+    collectGraphIds(result, ids, terms);
     return {
       engine: 'control' as const,
-      title: `Grafo ${action}`,
+      title: `Grafo test ${result.agent_name}`,
       ids,
       terms: terms.filter(Boolean),
     };
@@ -659,41 +713,46 @@ export default function MemoryEnginePage() {
     }
   };
 
-  const parseControlPayload = () => {
-    return {};
-  };
-
-  const runControlAction = async (action: ControlAction) => {
-    setIsControlRunning(action);
+  const runControlAgentTest = async () => {
+    const cleanPrompt = prompt.trim();
+    const agent = selectedControlAgent;
+    if (!cleanPrompt || !agent) return;
+    setIsControlRunning(true);
     setError(null);
-    setControlResult(null);
+    setControlTestResult(null);
     setActivatedGraphSource(null);
     setGraphPreview(null);
     try {
-      const extraPayload = parseControlPayload();
-      const endpoint = action === 'retrieveInfo'
-        ? '/api/control-engine/retrieve'
-        : action === 'updateSchema'
-          ? '/api/control-engine/schema'
-          : '/api/control-engine/execute';
-      const response = await authFetch(endpoint, {
+      const chatId = createClientUuid();
+      const response = await authFetch('/api/agent-chats', {
         method: 'POST',
         body: JSON.stringify({
-          query: prompt.trim(),
-          instruction: prompt.trim(),
-          dry_run: false,
-          ...extraPayload,
+          chat_id: chatId,
+          agent_id: Number(agent.id),
+          messages: [{ role: 'user', content: cleanPrompt }],
         }),
       });
-      const body = await response.json().catch(() => ({})) as ControlResult;
-      if (!response.ok) throw new Error(body?.error || 'Operazione Control Engine non riuscita.');
-      setControlResult(body);
-      setControlAction(action);
-      setActivatedGraphSource(buildControlGraphSource(action, body));
+      const body = await response.json().catch(() => ({})) as Partial<ControlTestResult> & { error?: string };
+      if (!response.ok) throw new Error(body?.error || 'Test agente Control Engine non riuscito.');
+
+      const messagesResponse = await authFetch(`/api/agent-chats/${body.chat_id || chatId}`);
+      const messagesBody = await messagesResponse.json().catch(() => []) as ControlChatMessage[] | { error?: string };
+      const messages = messagesResponse.ok && Array.isArray(messagesBody) ? messagesBody : [];
+      const result: ControlTestResult = {
+        ok: true,
+        chat_id: String(body.chat_id || chatId),
+        run_id: body.run_id ?? null,
+        agent_id: Number(body.agent_id || agent.id),
+        agent_name: agent.name,
+        response: String(body.response || ''),
+        messages,
+      };
+      setControlTestResult(result);
+      setActivatedGraphSource(buildControlGraphSource(result));
     } catch (err: any) {
       setError(err?.message || 'Errore durante il test Control Engine.');
     } finally {
-      setIsControlRunning(null);
+      setIsControlRunning(false);
     }
   };
 
@@ -710,7 +769,7 @@ export default function MemoryEnginePage() {
               <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Engine monitor</p>
               <h1 className="mt-2 text-3xl font-bold text-white">Graph engine access</h1>
               <p className="mt-2 max-w-3xl text-sm text-gray-300">
-                Console admin per testare beforeMemory, afterMemory e le funzioni Control Engine sui grafi dedicati.
+                Console admin per testare beforeMemory, afterMemory e il Control Engine tramite gli stessi agenti usati in chat.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -843,7 +902,26 @@ export default function MemoryEnginePage() {
                   </optgroup>
                 </select>
               </label>
-            ) : null}
+            ) : (
+              <label className="block max-w-sm text-xs font-semibold uppercase tracking-normal text-gray-500">
+                Agente di test
+                <select
+                  value={selectedControlAgentId}
+                  onChange={(event) => setSelectedControlAgentId(event.target.value)}
+                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
+                >
+                  {controlAgents.length === 0 ? (
+                    <option value="" disabled>Nessun agente chat attivo</option>
+                  ) : (
+                    controlAgents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            )}
 
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
               <div className={`flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600 ${
@@ -855,7 +933,7 @@ export default function MemoryEnginePage() {
                 rows={activeEngineTab === 'control' ? 6 : 4}
                 placeholder={activeEngineTab === 'memory'
                   ? 'Scrivi il contesto di test per beforeMemory o afterMemory...'
-                  : 'Scrivi un prompt per interrogare o aggiornare il grafo control...'}
+                  : 'Scrivi il prompt da inviare all agente di test Control Engine...'}
                 className={`w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500 ${
                   activeEngineTab === 'control' ? 'min-h-[8.25rem]' : 'min-h-[4.75rem]'
                 }`}
@@ -884,35 +962,15 @@ export default function MemoryEnginePage() {
                   </button>
                 </>
               ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => runControlAction('retrieveInfo')}
-                    disabled={!canRunControl}
-                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <CircleStackIcon className="h-5 w-5" />
-                    {isControlRunning === 'retrieveInfo' ? 'retrieve...' : 'retrieveInfo'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runControlAction('updateSchema')}
-                    disabled={!canRunControl}
-                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <SparklesIcon className="h-5 w-5" />
-                    {isControlRunning === 'updateSchema' ? 'schema...' : 'updateSchema'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runControlAction('executeAction')}
-                    disabled={!canRunControl || !controlExecutionEnabled}
-                    className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <BoltIcon className="h-5 w-5" />
-                    {isControlRunning === 'executeAction' ? 'execute...' : 'executeAction'}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={runControlAgentTest}
+                  disabled={!canRunControl}
+                  className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <BoltIcon className="h-5 w-5" />
+                  {isControlRunning ? 'test...' : 'Esegui test'}
+                </button>
               )}
               </div>
             </div>
@@ -922,29 +980,53 @@ export default function MemoryEnginePage() {
             <div className="mt-6 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>
           ) : null}
 
-          {activeEngineTab === 'control' && controlResult ? (
+          {activeEngineTab === 'control' && controlTestResult ? (
             <div className="mt-6 rounded-2xl border border-gray-800 bg-gray-950/70 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Control result</p>
-                  <h2 className="mt-1 text-lg font-semibold text-white">{controlAction || controlResult.tool || 'Control Engine'}</h2>
+                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Control agent test</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">{controlTestResult.agent_name}</h2>
                 </div>
-                <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                  controlResult.ok === false
-                    ? 'border-rose-800 bg-rose-950/40 text-rose-200'
-                    : 'border-emerald-800 bg-emerald-950/40 text-emerald-200'
-                }`}>
-                  {controlResult.ok === false ? 'error' : 'ok'}
-                </span>
+                <a
+                  href={`/agent-chat/${controlTestResult.chat_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+                  Apri chat
+                </a>
               </div>
-              {controlResult.error ? (
+              {controlTestResult.error ? (
                 <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
-                  {controlResult.error}
+                  {controlTestResult.error}
                 </div>
               ) : null}
-              <pre className="mt-4 max-h-[32rem] overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs leading-relaxed text-gray-200">
-                {formatDetails(controlResult.result || controlResult)}
-              </pre>
+              <div className="mt-4 rounded-xl border border-gray-800 bg-gray-950 p-4">
+                <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Risposta agente</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-gray-100">
+                  {controlTestResult.response || 'Nessuna risposta testuale.'}
+                </p>
+              </div>
+              {(() => {
+                const toolMessages = controlTestResult.messages.filter((message) => message.role === 'tool');
+                if (toolMessages.length === 0) return null;
+                return (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Tool result</p>
+                    {toolMessages.map((message, index) => (
+                      <details key={`${message.metadata_json?.tool_call_id || index}`} className="rounded-xl border border-gray-800 bg-gray-950">
+                        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-100">
+                          {message.metadata_json?.tool_name || `Tool ${index + 1}`}
+                        </summary>
+                        <pre className="max-h-[28rem] overflow-auto border-t border-gray-800 p-4 text-xs leading-relaxed text-gray-200">
+                          {formatDetails(message.content)}
+                        </pre>
+                      </details>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           ) : null}
 

@@ -281,9 +281,7 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
   const embedding = packet?.embedding || {};
   const warnings = Array.isArray(packet?.warnings) ? packet.warnings : [];
   const toolCalls = embedding.agent_tool_calls || packet?.episodes?.tools || 0;
-  const persistedItems = Number(embedding.saved_items || 0)
-    + Number(embedding.updated_items || 0)
-    + Number(embedding.unchanged_items || 0);
+  const hasMemoryToolCalls = toolCalls > 0;
   return [
     buildLogStep('request', 'Richiesta test', 'completed', 'Prompt ricevuto come informazione candidata da salvare.', {
       prompt,
@@ -297,21 +295,18 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
       packet?.enabled === false ? 'skipped' : 'completed',
       packet?.enabled === false
         ? `afterMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'afterMemory ha valutato il contesto e preparato eventuali aggiornamenti memoria.'
+        : 'afterMemory ha delegato eventuali aggiornamenti all agente memorie.'
     ),
-    buildLogStep('persistence', 'Persistenza Neo4j', persistedItems > 0 ? 'completed' : 'skipped', 'Scrittura o conferma delle memorie operative nel grafo.', {
-      saved_items: embedding.saved_items || 0,
-      updated_items: embedding.updated_items || 0,
-      unchanged_items: embedding.unchanged_items || 0,
-      tool_uses_saved: packet?.episodes?.tools || 0,
+    buildLogStep('persistence', 'Persistenza Neo4j', hasMemoryToolCalls ? 'completed' : 'skipped', 'Persistenza consentita solo tramite query libere runCypherQuery generate dall agente memorie.', {
+      tool_calls: toolCalls,
     }),
     buildLogStep(
       'memory-agent',
-      toolCalls > 0 ? 'runCypherQuery' : 'scrittura diretta',
+      'runCypherQuery',
       packet?.skipped_reason === 'agent_error' ? 'error' : 'completed',
-      toolCalls > 0
+      hasMemoryToolCalls
         ? 'L agente memorie ha applicato eventuali query tramite runCypherQuery.'
-        : 'Il backend ha persistito le memorie strutturate senza tool-call del modello.',
+        : 'Nessuna query eseguita: il backend non applica piu scritture strutturate di fallback.',
       {
         tool_calls: toolCalls,
         request_summary: packet?.request?.summary || null,
@@ -324,7 +319,7 @@ function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
       packet?.contextText
         ? 'L agente ha restituito output strutturato memoryStatus.'
         : items.length > 0
-          ? 'Il packet contiene memorie persistite anche senza testo memoryStatus.'
+          ? 'Il packet contiene dettagli restituiti dall agente memorie.'
           : `Nessuno status restituito${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
       {
         memoryStatus: packet?.contextText || '',
