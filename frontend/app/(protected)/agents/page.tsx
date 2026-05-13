@@ -554,6 +554,20 @@ export default function AgentsPage() {
     () => buildModelOptions(aiOptions?.catalog, form.default_model_config),
     [aiOptions?.catalog, form.default_model_config]
   );
+  const ollamaServerNameById = useMemo(
+    () => new Map(ollamaOptions.map((option) => [option.id, option.name])),
+    [ollamaOptions]
+  );
+  const getAgentOllamaServerLabel = useCallback((agent: Agent) => {
+    const effectiveConfig = agent.use_portal_default_model
+      ? agent.default_model_config
+      : (agent.specific_model_config || agent.default_model_config);
+    if (effectiveConfig.provider !== 'ollama') return '-';
+
+    const serverId = String(effectiveConfig.ollama_server_id || aiOptions?.ollama?.default_connection_id || '').trim();
+    if (!serverId) return 'Default globale';
+    return ollamaServerNameById.get(serverId) || serverId;
+  }, [aiOptions?.ollama?.default_connection_id, ollamaServerNameById]);
 
   const setGuardrailField = (field: keyof GuardrailForm, value: string | boolean | number) => {
     setForm((current) => ({
@@ -983,9 +997,10 @@ export default function AgentsPage() {
             </div>
           </div>
 
-          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.1fr)_150px_minmax(0,1fr)_150px_96px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
             <div>Attivo</div>
             <div>Nome</div>
+            <div>Server Ollama</div>
             <div>Modello</div>
             <div>Visibilità</div>
             <div>Chat</div>
@@ -1001,7 +1016,7 @@ export default function AgentsPage() {
             )}
             {filteredAgents.map((agent) => (
               <div key={agent.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] lg:items-start">
+                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.1fr)_150px_minmax(0,1fr)_150px_96px_176px] lg:items-start">
                   <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                     <Toggle
@@ -1014,6 +1029,16 @@ export default function AgentsPage() {
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Nome</div>
                     <div>
                       <p className="text-sm font-semibold text-white">{agent.name}</p>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 space-y-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Server Ollama</div>
+                    <div className="min-h-10 rounded-xl border border-gray-800 bg-gray-950/50 px-3 py-2 text-sm text-gray-200">
+                      <span className="block truncate">{getAgentOllamaServerLabel(agent)}</span>
+                      {agent.use_portal_default_model ? (
+                        <span className="mt-1 block text-[11px] text-sky-300">Default portale</span>
+                      ) : null}
                     </div>
                   </div>
 
