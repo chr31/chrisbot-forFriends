@@ -77,16 +77,19 @@ function slugify(value) {
 function hydrateAgent(row) {
   if (!row) return null;
   const {
+    use_portal_default_model: _usePortalDefaultModel,
     default_model_provider: _defaultModelProvider,
     default_model_name: _defaultModelName,
     default_ollama_server_id: _defaultOllamaServerId,
     ...rest
   } = row;
-  const defaultModelConfig = normalizeModelConfig({
+  const specificModelConfig = normalizeModelConfig({
     model_provider: _defaultModelProvider,
     model_name: _defaultModelName,
     ollama_server_id: _defaultOllamaServerId,
   }, getDefaultModelConfig());
+  const usePortalDefaultModel = Number(_usePortalDefaultModel) === 1;
+  const defaultModelConfig = usePortalDefaultModel ? getDefaultModelConfig() : specificModelConfig;
   return {
     ...rest,
     user_description: String(row.user_description || '').trim(),
@@ -109,6 +112,8 @@ function hydrateAgent(row) {
     improve_memories_enabled: Number(row.improve_memories_enabled) === 1,
     memory_scope: normalizeMemoryScope(row.memory_scope),
     guardrails_json: sanitizeGuardrailsConfig(row.guardrails_json),
+    use_portal_default_model: usePortalDefaultModel,
+    specific_model_config: specificModelConfig,
     default_model_config: defaultModelConfig,
   };
 }
@@ -123,6 +128,7 @@ async function initAgentsTables() {
       user_description TEXT NULL,
       allowed_group_names_csv TEXT NULL,
       system_prompt LONGTEXT NOT NULL,
+      use_portal_default_model TINYINT(1) NOT NULL DEFAULT 0,
       default_model_provider VARCHAR(32) NOT NULL DEFAULT 'ollama',
       default_model_name VARCHAR(128) NOT NULL DEFAULT 'qwen3.5',
       default_ollama_server_id VARCHAR(128) NULL,
@@ -178,6 +184,17 @@ async function initAgentsTables() {
       ALTER TABLE agents
       ADD COLUMN allowed_group_names_csv TEXT NULL AFTER user_description
     `);
+  }
+
+  try {
+    await pool.query(`
+      ALTER TABLE agents
+      ADD COLUMN use_portal_default_model TINYINT(1) NOT NULL DEFAULT 0 AFTER system_prompt
+    `);
+  } catch (error) {
+    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
+      throw error;
+    }
   }
 
   try {
@@ -415,8 +432,8 @@ async function insertAgent(input) {
   const defaultModelConfig = normalizeModelConfig(input, getDefaultModelConfig());
   const [result] = await pool.query(
     `INSERT INTO agents
-      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_alive, alive_loop_seconds, alive_prompt, alive_context_messages, alive_include_goals, goals, memory_engine_enabled, improve_memories_enabled, memory_scope, is_active, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, use_portal_default_model, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_alive, alive_loop_seconds, alive_prompt, alive_context_messages, alive_include_goals, goals, memory_engine_enabled, improve_memories_enabled, memory_scope, is_active, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       name,
       slug,
@@ -424,6 +441,7 @@ async function insertAgent(input) {
       String(input?.user_description || '').trim() || null,
       String(input?.allowed_group_names_csv || '').trim() || null,
       systemPrompt,
+      normalizeBooleanFlag(input?.use_portal_default_model, 0),
       defaultModelConfig.provider,
       defaultModelConfig.model,
       defaultModelConfig.ollama_server_id,
@@ -473,6 +491,10 @@ async function updateAgent(id, updates) {
   if (updates.system_prompt !== undefined) {
     entries.push('system_prompt = ?');
     values.push(String(updates.system_prompt || '').trim());
+  }
+  if (updates.use_portal_default_model !== undefined) {
+    entries.push('use_portal_default_model = ?');
+    values.push(normalizeBooleanFlag(updates.use_portal_default_model, 0));
   }
   if (
     updates.default_model_config !== undefined

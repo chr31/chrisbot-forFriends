@@ -42,6 +42,8 @@ type Agent = {
   user_description: string;
   allowed_group_names_csv?: string;
   system_prompt: string;
+  use_portal_default_model: boolean;
+  specific_model_config?: ModelConfig;
   default_model_config: ModelConfig;
   guardrails_json: Record<string, unknown>;
   visibility_scope: VisibilityScope;
@@ -66,6 +68,7 @@ type QuickAgentUpdates = {
   direct_chat_enabled?: boolean;
   visibility_scope?: VisibilityScope;
   model_config?: ModelConfig;
+  use_portal_default_model?: boolean;
 };
 
 type Tool = {
@@ -104,6 +107,7 @@ type FormState = {
   user_description: string;
   allowed_group_names_csv: string;
   system_prompt: string;
+  use_portal_default_model: boolean;
   default_model_config: ModelConfig;
   visibility_scope: VisibilityScope;
   direct_chat_enabled: boolean;
@@ -148,6 +152,7 @@ const EMPTY_FORM: FormState = {
   user_description: '',
   allowed_group_names_csv: '',
   system_prompt: '',
+  use_portal_default_model: false,
   default_model_config: { provider: 'ollama', model: 'qwen3.5', ollama_server_id: null },
   visibility_scope: 'public',
   direct_chat_enabled: true,
@@ -354,7 +359,8 @@ function formFromAgent(agent: Agent): FormState {
     user_description: agent.user_description || '',
     allowed_group_names_csv: agent.allowed_group_names_csv || '',
     system_prompt: agent.system_prompt,
-    default_model_config: normalizeModelConfig(agent.default_model_config),
+    use_portal_default_model: Boolean(agent.use_portal_default_model),
+    default_model_config: normalizeModelConfig(agent.specific_model_config || agent.default_model_config),
     visibility_scope: agent.visibility_scope,
     direct_chat_enabled: agent.direct_chat_enabled,
     is_alive: agent.is_alive,
@@ -445,7 +451,10 @@ export default function AgentsPage() {
       setOllamaOptions(Array.isArray(nextAiOptions?.ollama?.connections) ? nextAiOptions.ollama.connections : []);
       setForm((current) => ({
         ...current,
-        default_model_config: normalizeModelConfig(current.default_model_config, nextAiOptions?.default_selection || EMPTY_FORM.default_model_config),
+        default_model_config: normalizeModelConfig(
+          current.default_model_config,
+          nextAiOptions?.default_selection || EMPTY_FORM.default_model_config
+        ),
       }));
     } catch (err: any) {
       setError(err?.message || 'Errore inatteso.');
@@ -662,6 +671,7 @@ export default function AgentsPage() {
         user_description: form.user_description,
         system_prompt: form.system_prompt,
         allowed_group_names_csv: form.allowed_group_names_csv,
+        use_portal_default_model: form.use_portal_default_model,
         default_model_config: form.default_model_config,
         visibility_scope: form.visibility_scope,
         direct_chat_enabled: form.direct_chat_enabled,
@@ -756,7 +766,8 @@ export default function AgentsPage() {
         user_description: agent.user_description,
         system_prompt: agent.system_prompt,
         allowed_group_names_csv: agent.allowed_group_names_csv || '',
-        default_model_config: updates.model_config ?? agent.default_model_config,
+        use_portal_default_model: updates.use_portal_default_model ?? agent.use_portal_default_model,
+        default_model_config: updates.model_config ?? agent.specific_model_config ?? agent.default_model_config,
         visibility_scope: updates.visibility_scope ?? agent.visibility_scope,
         direct_chat_enabled: updates.direct_chat_enabled ?? agent.direct_chat_enabled,
         is_active: updates.is_active ?? agent.is_active,
@@ -824,7 +835,8 @@ export default function AgentsPage() {
         user_description: agent.user_description,
         system_prompt: agent.system_prompt,
         allowed_group_names_csv: agent.allowed_group_names_csv || '',
-        default_model_config: agent.default_model_config,
+        use_portal_default_model: agent.use_portal_default_model,
+        default_model_config: agent.specific_model_config || agent.default_model_config,
         visibility_scope: agent.visibility_scope,
         direct_chat_enabled: agent.direct_chat_enabled,
         is_alive: agent.direct_chat_enabled ? agent.is_alive : false,
@@ -1007,17 +1019,33 @@ export default function AgentsPage() {
 
                   <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Modello</div>
+                    <label className="mb-2 flex items-center gap-2 text-xs text-gray-300">
+                      <Toggle
+                        checked={agent.use_portal_default_model}
+                        onChange={() => handleQuickUpdate(agent, { use_portal_default_model: !agent.use_portal_default_model })}
+                      />
+                      <span>Default portale</span>
+                    </label>
                     <select
-                      value={encodeModelValue(agent.default_model_config)}
+                      value={encodeModelValue(
+                        agent.use_portal_default_model
+                          ? agent.default_model_config
+                          : (agent.specific_model_config || agent.default_model_config)
+                      )}
                       onChange={(e) => handleQuickUpdate(agent, {
+                        use_portal_default_model: false,
                         model_config: normalizeModelConfig(
-                          decodeModelValue(e.target.value, agent.default_model_config),
-                          agent.default_model_config
+                          decodeModelValue(e.target.value, agent.specific_model_config || agent.default_model_config),
+                          agent.specific_model_config || agent.default_model_config
                         ),
                       })}
+                      disabled={agent.use_portal_default_model}
                       className="min-h-10 w-full min-w-0 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 outline-none transition focus:border-sky-500"
                     >
-                      {buildModelOptions(aiOptions?.catalog, agent.default_model_config).map((option) => (
+                      {buildModelOptions(
+                        aiOptions?.catalog,
+                        agent.use_portal_default_model ? agent.default_model_config : (agent.specific_model_config || agent.default_model_config)
+                      ).map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -1159,7 +1187,7 @@ export default function AgentsPage() {
 
                     {configTab === 'properties' ? (
                       <>
-                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.5fr)_minmax(0,0.45fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
                           <label className="text-sm text-gray-200">
                             <span className="mb-1 flex items-center gap-2">Nome <InfoHint label="Nome" description="Etichetta leggibile dell'agente. E usata in UI, timeline e strumenti di delega." /></span>
                             <input
@@ -1180,8 +1208,20 @@ export default function AgentsPage() {
                               <option value="orchestrator">orchestrator</option>
                             </select>
                           </label>
+                          <div className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Default portale <InfoHint label="Default portale" description="Quando e attivo, l'agente usa sempre il modello predefinito nelle impostazioni del portale. Disattivalo per scegliere un modello specifico per questo agente." /></span>
+                            <div className="flex min-h-10 items-center">
+                              <Toggle
+                                checked={form.use_portal_default_model}
+                                onChange={() => setForm((current) => ({
+                                  ...current,
+                                  use_portal_default_model: !current.use_portal_default_model,
+                                }))}
+                              />
+                            </div>
+                          </div>
                           <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello predefinito usato per le nuove chat di questo agente, salvo override manuale." /></span>
+                            <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello specifico usato da questo agente quando Default portale e disattivo." /></span>
                             <select
                               value={encodeModelValue(form.default_model_config)}
                               onChange={(e) => setForm((current) => ({
@@ -1191,7 +1231,8 @@ export default function AgentsPage() {
                                   current.default_model_config
                                 ),
                               }))}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              disabled={form.use_portal_default_model}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
                             >
                               {modelOptions.map((option) => (
                                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -1209,7 +1250,7 @@ export default function AgentsPage() {
                                   ollama_server_id: e.target.value || null,
                                 },
                               }))}
-                              disabled={form.default_model_config.provider !== 'ollama'}
+                              disabled={form.use_portal_default_model || form.default_model_config.provider !== 'ollama'}
                               className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
                             >
                               <option value="">Default globale</option>

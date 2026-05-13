@@ -64,8 +64,12 @@ function normalizeModelConfig(input, fallback = null) {
 }
 
 function getAgentDefaultModelConfig(agent) {
+  if (agent?.use_portal_default_model) {
+    return getDefaultModelConfig();
+  }
+
   return normalizeModelConfig(
-    agent?.default_model_config || {
+    agent?.specific_model_config || agent?.default_model_config || {
       model_provider: agent?.default_model_provider,
       model_name: agent?.default_model_name,
       ollama_server_id: agent?.default_ollama_server_id,

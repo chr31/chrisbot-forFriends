@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS agents (
   user_description TEXT NULL,
   allowed_group_names_csv TEXT NULL,
   system_prompt LONGTEXT NOT NULL,
+  use_portal_default_model TINYINT(1) NOT NULL DEFAULT 0,
   default_model_provider VARCHAR(32) NOT NULL DEFAULT 'ollama',
   default_model_name VARCHAR(128) NOT NULL DEFAULT 'qwen3.5',
   default_ollama_server_id VARCHAR(128) NULL,
