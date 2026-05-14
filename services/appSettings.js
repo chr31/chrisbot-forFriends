@@ -582,9 +582,13 @@ function normalizeOllamaRuntimeSettings(value) {
   ].filter(Boolean)));
   const requestedDefaultModel = String(effectiveValue?.default_model || '').trim();
   const normalizedModels = normalizeOllamaModelList(effectiveValue?.models, fallbackModels);
-  const defaultModel = requestedDefaultModel && normalizedModels.some((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
-    ? normalizedModels.find((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
-    : (normalizedModels[0] || '');
+  const defaultModel = requestedDefaultModel
+    ? (
+        normalizedModels.some((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
+          ? normalizedModels.find((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
+          : (normalizedModels[0] || '')
+      )
+    : '';
 
   return {
     timeout_ms: parseInteger(value?.timeout_ms, defaults.timeout_ms),

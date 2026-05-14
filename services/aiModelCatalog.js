@@ -19,9 +19,12 @@ function normalizeModelName(value, fallback = '') {
 
 function getOllamaDefaultModelConfig() {
   const settings = getOllamaRuntimeSettingsSync();
+  const firstConfiguredModel = Array.isArray(settings?.models)
+    ? settings.models.map((entry) => String(entry || '').trim()).find(Boolean)
+    : '';
   return {
     provider: MODEL_PROVIDERS.OLLAMA,
-    model: String(settings?.default_model || 'qwen3.5').trim() || 'qwen3.5',
+    model: String(settings?.default_model || firstConfiguredModel || 'qwen3.5').trim() || 'qwen3.5',
     ollama_server_id: String(settings?.default_connection_id || '').trim() || null,
   };
 }
@@ -128,19 +131,7 @@ function getAiOptionsSnapshot() {
           default_model: connection.default_model || null,
         })),
     },
-    default_selection: normalizeModelConfig(
-      ollamaModels.length > 0
-        ? {
-            provider: MODEL_PROVIDERS.OLLAMA,
-            model: ollamaSettings?.default_model || ollamaModels[0],
-            ollama_server_id: ollamaSettings?.default_connection_id || null,
-          }
-        : (openAiEnabled ? {
-            provider: MODEL_PROVIDERS.OPENAI,
-            model: openAiModel,
-          } : null),
-      getDefaultModelConfig()
-    ),
+    default_selection: getDefaultModelConfig(),
   };
 }
 
