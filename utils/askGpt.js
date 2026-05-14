@@ -19,16 +19,22 @@ async function askOllamaChatCompletions(messages, tools = null, model = DEFAULT_
       ];
 
   try {
-    const result = await callOllamaChatCompletions(messagePayload, tools, resolveOllamaModel(model), options);
+    const providerType = String(options?.providerType || options?.provider || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
+    const resolvedModel = providerType === 'exo' ? model : resolveOllamaModel(model);
+    const result = await callOllamaChatCompletions(messagePayload, tools, resolvedModel, {
+      ...options,
+      providerType,
+    });
     if (result?.message) {
       return {
         ...result.message,
         _ollama: result.connection,
       };
     }
-    throw new Error('No message returned from Ollama chat completions.');
+    throw new Error(`No message returned from ${providerType === 'exo' ? 'EXO' : 'Ollama'} chat completions.`);
   } catch (error) {
-    throw new Error('Ollama Chat Completions error: ' + (error?.message || error));
+    const providerType = String(options?.providerType || options?.provider || 'ollama').trim().toLowerCase() === 'exo' ? 'EXO' : 'Ollama';
+    throw new Error(`${providerType} Chat Completions error: ` + (error?.message || error));
   }
 }
 

@@ -23,6 +23,7 @@ function buildConnectionStatusShape(connection) {
   return {
     id: connection.id,
     name: connection.name,
+    provider_type: connection.provider_type || 'ollama',
     base_url: connection.base_url,
     enabled: connection.enabled !== false,
     available: false,
@@ -65,10 +66,19 @@ function resolveOllamaEmbeddingModel(model, fallbackModel) {
   return String(model || fallbackModel || '').trim();
 }
 
-function getEnabledConnections() {
+function getConnectionProviderType(connection) {
+  return String(connection?.provider_type || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
+}
+
+function getEnabledConnections(providerType = null) {
+  const requestedProvider = providerType ? getConnectionProviderType({ provider_type: providerType }) : null;
   const settings = getOllamaRuntimeSettingsSync();
   const allConnections = Array.isArray(settings?.connections) ? settings.connections : [];
-  const enabledConnections = allConnections.filter((connection) => connection.enabled !== false && connection.base_url);
+  const enabledConnections = allConnections.filter((connection) => (
+    connection.enabled !== false
+    && connection.base_url
+    && (!requestedProvider || getConnectionProviderType(connection) === requestedProvider)
+  ));
   return {
     settings,
     allConnections,
@@ -76,17 +86,19 @@ function getEnabledConnections() {
   };
 }
 
-function getOrderedCandidateConnections(ollamaServerId = null) {
-  const { settings, enabledConnections } = getEnabledConnections();
+function getOrderedCandidateConnections(ollamaServerId = null, providerType = 'ollama') {
+  const localProviderType = getConnectionProviderType({ provider_type: providerType });
+  const providerLabel = localProviderType === 'exo' ? 'EXO' : 'Ollama';
+  const { settings, enabledConnections } = getEnabledConnections(localProviderType);
   if (enabledConnections.length === 0) {
-    throw new Error('Nessun server Ollama configurato nelle impostazioni.');
+    throw new Error(`Nessun server ${providerLabel} configurato nelle impostazioni.`);
   }
 
   const requestedId = String(ollamaServerId || '').trim();
   if (requestedId) {
     const preferred = enabledConnections.find((connection) => connection.id === requestedId);
     if (!preferred) {
-      throw new Error(`Server Ollama non trovato o disabilitato: ${requestedId}`);
+      throw new Error(`Server ${providerLabel} non trovato o disabilitato: ${requestedId}`);
     }
     return [
       preferred,
@@ -112,7 +124,10 @@ async function probeSingleConnection(connection) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), getProbeTimeoutMs(settings));
   try {
-    const url = `${normalizeBaseUrl(connection.base_url)}/api/ps`;
+    const isExo = getConnectionProviderType(connection) === 'exo';
+    const url = isExo
+      ? `${normalizeBaseUrl(connection.base_url)}/v1/models`
+      : `${normalizeBaseUrl(connection.base_url)}/api/ps`;
     const response = await fetch(url, {
       signal: controller.signal,
     });
@@ -120,12 +135,14 @@ async function probeSingleConnection(connection) {
       throw new Error(`HTTP ${response.status}`);
     }
     const payload = await response.json().catch(() => ({}));
-    const models = Array.isArray(payload?.models) ? payload.models : [];
+    const models = Array.isArray(payload?.models)
+      ? payload.models
+      : (Array.isArray(payload?.data) ? payload.data : []);
     status.available = true;
     status.current_load = models.length;
-    status.load_level = getLoadLevel(models.length);
+    status.load_level = isExo ? 'unknown' : getLoadLevel(models.length);
     status.active_models = models
-      .map((entry) => String(entry?.name || '').trim())
+      .map((entry) => String(entry?.name || entry?.id || '').trim())
       .filter(Boolean);
   } catch (error) {
     status.last_error = String(error?.message || error);
@@ -261,7 +278,7 @@ function shouldTryLegacyEmbeddingsEndpoint(error) {
 async function callOllamaEmbeddings(input, model, options = {}) {
   const settings = getOllamaRuntimeSettingsSync();
   const inputs = normalizeEmbeddingInputs(input);
-  const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null);
+  const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null, 'ollama');
   const candidates = await getRankedConnections(settings, baseCandidates);
   const attempts = [];
 
@@ -316,7 +333,9 @@ async function callOllamaEmbeddings(input, model, options = {}) {
 
 async function callOllamaChatCompletions(messages, tools = null, model, options = {}) {
   const settings = getOllamaRuntimeSettingsSync();
-  const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null);
+  const providerType = getConnectionProviderType({ provider_type: options?.providerType || options?.provider || 'ollama' });
+  const providerLabel = providerType === 'exo' ? 'EXO' : 'Ollama';
+  const baseCandidates = getOrderedCandidateConnections(options?.ollamaServerId || null, providerType);
   const candidates = await getRankedConnections(settings, baseCandidates);
   const attempts = [];
 
@@ -324,13 +343,15 @@ async function callOllamaChatCompletions(messages, tools = null, model, options 
     const connection = candidates[index];
     const client = new OpenAI({
       baseURL: `${normalizeBaseUrl(connection.base_url)}/v1`,
-      apiKey: 'ollama',
+      apiKey: providerType,
       timeout: settings.timeout_ms,
     });
     try {
       const runtimeDefaultModel = String(settings?.default_model || '').trim();
       const params = {
-        model: resolveOllamaModelAlias(model, runtimeDefaultModel || connection.default_model),
+        model: providerType === 'exo'
+          ? (String(model || runtimeDefaultModel || connection.default_model || '').trim() || 'qwen3.5')
+          : resolveOllamaModelAlias(model, runtimeDefaultModel || connection.default_model),
         messages,
       };
       if (tools) params.tools = tools;
@@ -356,12 +377,12 @@ async function callOllamaChatCompletions(messages, tools = null, model, options 
       });
       const canFallback = settings.fallback_on_unavailable !== false && index < candidates.length - 1;
       if (!canFallback || !isLikelyAvailabilityError(error)) {
-        throw new Error(`Ollama Chat Completions error su ${connection.name}: ${error?.message || error}`);
+        throw new Error(`${providerLabel} Chat Completions error su ${connection.name}: ${error?.message || error}`);
       }
     }
   }
 
-  throw new Error('Tutti i server Ollama configurati risultano non disponibili.');
+  throw new Error(`Tutti i server ${providerLabel} configurati risultano non disponibili.`);
 }
 
 module.exports = {

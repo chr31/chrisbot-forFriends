@@ -58,24 +58,28 @@ async function callOpenAiMemoryText(messages, settings = {}) {
   return String(response.choices?.[0]?.message?.content || '').trim();
 }
 
-async function callOllamaMemoryJson(messages, settings = {}) {
+async function callLocalMemoryJson(messages, settings = {}) {
+  const provider = String(settings.analysis_model_provider || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
   const model = String(settings.analysis_model || '').trim();
   if (!model) {
-    throw new Error('Modello chat memoria Ollama non configurato.');
+    throw new Error(`Modello chat memoria ${provider === 'exo' ? 'EXO' : 'Ollama'} non configurato.`);
   }
   const result = await callOllamaChatCompletions(messages, null, model, {
     ollamaServerId: settings.ollama_server_id || null,
+    providerType: provider,
   });
   return extractJsonObject(result?.message?.content || '');
 }
 
-async function callOllamaMemoryText(messages, settings = {}) {
+async function callLocalMemoryText(messages, settings = {}) {
+  const provider = String(settings.analysis_model_provider || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
   const model = String(settings.analysis_model || '').trim();
   if (!model) {
-    throw new Error('Modello chat memoria Ollama non configurato.');
+    throw new Error(`Modello chat memoria ${provider === 'exo' ? 'EXO' : 'Ollama'} non configurato.`);
   }
   const result = await callOllamaChatCompletions(messages, null, model, {
     ollamaServerId: settings.ollama_server_id || null,
+    providerType: provider,
   });
   return String(result?.message?.content || '').trim();
 }
@@ -85,8 +89,8 @@ async function callMemoryChatJson(messages, settings = {}) {
   if (provider === 'openai') {
     return callOpenAiMemoryJson(messages, settings);
   }
-  if (provider === 'ollama') {
-    return callOllamaMemoryJson(messages, settings);
+  if (provider === 'ollama' || provider === 'exo') {
+    return callLocalMemoryJson(messages, settings);
   }
   throw new Error(`Provider chat memoria non supportato: ${provider || 'non configurato'}`);
 }
@@ -96,8 +100,8 @@ async function callMemoryChatText(messages, settings = {}) {
   if (provider === 'openai') {
     return callOpenAiMemoryText(messages, settings);
   }
-  if (provider === 'ollama') {
-    return callOllamaMemoryText(messages, settings);
+  if (provider === 'ollama' || provider === 'exo') {
+    return callLocalMemoryText(messages, settings);
   }
   throw new Error(`Provider chat memoria non supportato: ${provider || 'non configurato'}`);
 }

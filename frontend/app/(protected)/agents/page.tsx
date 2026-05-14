@@ -1241,7 +1241,7 @@ export default function AgentsPage() {
                             </select>
                           </label>
                           <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Server Ollama <InfoHint label="Server Ollama" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama." /></span>
+                            <span className="mb-1 flex items-center gap-2">Server locale <InfoHint label="Server locale" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama o EXO." /></span>
                             <select
                               value={form.default_model_config.ollama_server_id || ''}
                               onChange={(e) => setForm((current) => ({
@@ -1251,11 +1251,11 @@ export default function AgentsPage() {
                                   ollama_server_id: e.target.value || null,
                                 },
                               }))}
-                              disabled={form.use_portal_default_model || form.default_model_config.provider !== 'ollama'}
+                              disabled={form.use_portal_default_model || (form.default_model_config.provider !== 'ollama' && form.default_model_config.provider !== 'exo')}
                               className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
                             >
                               <option value="">Default globale</option>
-                              {ollamaOptions.map((option) => (
+                              {ollamaOptions.filter((option) => (option.provider_type || 'ollama') === form.default_model_config.provider).map((option) => (
                                 <option key={option.id} value={option.id}>{option.name}</option>
                               ))}
                             </select>

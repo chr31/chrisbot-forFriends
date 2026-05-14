@@ -4,12 +4,14 @@ const { getDefaultOpenAiModel, isOpenAiConfigured } = require('./openaiRuntime')
 const MODEL_PROVIDERS = {
   OPENAI: 'openai',
   OLLAMA: 'ollama',
+  EXO: 'exo',
 };
 
 function normalizeModelProvider(value, fallback = MODEL_PROVIDERS.OLLAMA) {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === MODEL_PROVIDERS.OPENAI) return MODEL_PROVIDERS.OPENAI;
   if (normalized === MODEL_PROVIDERS.OLLAMA) return MODEL_PROVIDERS.OLLAMA;
+  if (normalized === MODEL_PROVIDERS.EXO) return MODEL_PROVIDERS.EXO;
   return fallback;
 }
 
@@ -19,13 +21,20 @@ function normalizeModelName(value, fallback = '') {
 
 function getOllamaDefaultModelConfig() {
   const settings = getOllamaRuntimeSettingsSync();
+  const provider = String(settings?.default_provider || '').trim().toLowerCase() === MODEL_PROVIDERS.EXO
+    ? MODEL_PROVIDERS.EXO
+    : MODEL_PROVIDERS.OLLAMA;
   const firstConfiguredModel = Array.isArray(settings?.models)
     ? settings.models.map((entry) => String(entry || '').trim()).find(Boolean)
     : '';
+  const defaultConnectionId = String(settings?.default_connection_id || '').trim();
+  const defaultConnection = (settings?.connections || []).find((connection) => connection.id === defaultConnectionId);
+  const defaultConnectionMatchesProvider = defaultConnection
+    && String(defaultConnection.provider_type || 'ollama').trim().toLowerCase() === provider;
   return {
-    provider: MODEL_PROVIDERS.OLLAMA,
+    provider,
     model: String(settings?.default_model || firstConfiguredModel || 'qwen3.5').trim() || 'qwen3.5',
-    ollama_server_id: String(settings?.default_connection_id || '').trim() || null,
+    ollama_server_id: defaultConnectionMatchesProvider ? defaultConnectionId : null,
   };
 }
 
@@ -60,8 +69,8 @@ function normalizeModelConfig(input, fallback = null) {
   return {
     provider,
     model,
-    ollama_server_id: provider === MODEL_PROVIDERS.OLLAMA
-      ? (String(source.ollama_server_id || fallbackConfig?.ollama_server_id || '').trim() || null)
+    ollama_server_id: provider === MODEL_PROVIDERS.OLLAMA || provider === MODEL_PROVIDERS.EXO
+      ? (String(source.ollama_server_id || (fallbackConfig?.provider === provider ? fallbackConfig?.ollama_server_id : '') || '').trim() || null)
       : null,
   };
 }
@@ -86,6 +95,9 @@ function formatModelDisplayLabel(config) {
   if (normalized.provider === MODEL_PROVIDERS.OPENAI) {
     return `ChatGPT (${normalized.model})`;
   }
+  if (normalized.provider === MODEL_PROVIDERS.EXO) {
+    return `EXO (${normalized.model})`;
+  }
   return normalized.model;
 }
 
@@ -108,6 +120,11 @@ function getAiOptionsSnapshot() {
       model,
       label: model,
     })),
+    ...ollamaModels.map((model) => ({
+      provider: MODEL_PROVIDERS.EXO,
+      model,
+      label: `EXO (${model})`,
+    })),
   ];
 
   return {
@@ -120,6 +137,7 @@ function getAiOptionsSnapshot() {
       default_connection_id: ollamaSettings?.default_connection_id || null,
       fallback_on_unavailable: ollamaSettings?.fallback_on_unavailable !== false,
       routing_strategy: ollamaSettings?.routing_strategy || 'least_loaded',
+      default_provider: ollamaSettings?.default_provider || MODEL_PROVIDERS.OLLAMA,
       models: ollamaModels,
       default_model: ollamaSettings?.default_model || null,
       connections: (ollamaSettings?.connections || [])
@@ -127,6 +145,7 @@ function getAiOptionsSnapshot() {
         .map((connection) => ({
           id: connection.id,
           name: connection.name,
+          provider_type: connection.provider_type || 'ollama',
           base_url: connection.base_url,
           default_model: connection.default_model || null,
         })),

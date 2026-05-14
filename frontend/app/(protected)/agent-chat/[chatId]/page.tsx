@@ -107,7 +107,7 @@ type AgentRun = {
   parent_run_id?: number | null;
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   model_name: string;
-  model_provider?: 'openai' | 'ollama' | null;
+  model_provider?: 'openai' | 'ollama' | 'exo' | null;
   depth: number;
   started_at: string;
   finished_at?: string | null;
@@ -1494,10 +1494,13 @@ export default function AgentChatPage() {
               ) : null}
               <select
                 value={encodeModelValue(selectedModelConfig)}
-                onChange={(e) => setSelectedModelConfig((current) => normalizeModelConfig({
-                  ...decodeModelValue(e.target.value, current),
-                  ollama_server_id: current.ollama_server_id,
-                }, current))}
+                onChange={(e) => setSelectedModelConfig((current) => {
+                  const decoded = decodeModelValue(e.target.value, current);
+                  return normalizeModelConfig({
+                    ...decoded,
+                    ollama_server_id: decoded.provider === current.provider ? current.ollama_server_id : null,
+                  }, current);
+                })}
                 className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
               >
                 {modelOptions.map((option) => (
@@ -1510,11 +1513,11 @@ export default function AgentChatPage() {
                   ...current,
                   ollama_server_id: e.target.value || null,
                 }))}
-                disabled={selectedModelConfig.provider !== 'ollama' || ollamaOptions.length === 0}
+                disabled={(selectedModelConfig.provider !== 'ollama' && selectedModelConfig.provider !== 'exo') || ollamaOptions.length === 0}
                 className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
               >
-                <option value="">Server Ollama di default</option>
-                {ollamaOptions.map((option) => (
+                <option value="">Server {selectedModelConfig.provider === 'exo' ? 'EXO' : 'Ollama'} di default</option>
+                {ollamaOptions.filter((option) => (option.provider_type || 'ollama') === selectedModelConfig.provider).map((option) => (
                   <option key={option.id} value={option.id}>{option.name}</option>
                 ))}
               </select>

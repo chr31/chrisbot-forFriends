@@ -133,9 +133,10 @@ async function callMemoryModel(messages, settings, output = {}) {
     const response = await createOpenAiClient().chat.completions.create(params);
     return response.choices?.[0]?.message || { role: 'assistant', content: '' };
   }
-  if (provider === 'ollama') {
+  if (provider === 'ollama' || provider === 'exo') {
     const result = await callOllamaChatCompletions(messages, [RUN_CYPHER_TOOL], model, {
       ollamaServerId: settings.ollama_server_id || null,
+      providerType: provider,
     });
     return result?.message || { role: 'assistant', content: '' };
   }

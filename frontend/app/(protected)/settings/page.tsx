@@ -57,6 +57,7 @@ type McpRuntimeSettings = {
 
 type OllamaConnection = {
   id: string;
+  provider_type?: 'ollama' | 'exo';
   name: string;
   base_url: string;
   default_model: string;
@@ -68,6 +69,7 @@ type OllamaRuntimeSettings = {
   timeout_ms: number;
   fallback_on_unavailable: boolean;
   routing_strategy: 'priority' | 'least_loaded';
+  default_provider?: 'ollama' | 'exo';
   default_connection_id: string | null;
   models: string[];
   default_model: string;
@@ -90,7 +92,7 @@ type TelegramRuntimeSettings = {
 
 type MemoryEngineSettings = {
   enabled: boolean;
-  analysis_model_provider: 'openai' | 'ollama';
+  analysis_model_provider: 'openai' | 'ollama' | 'exo';
   analysis_model: string;
   ollama_server_id: string | null;
   embedding_model_provider: 'openai' | 'ollama';
@@ -702,11 +704,11 @@ export default function SettingsPage() {
         body: JSON.stringify(payload),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni Ollama fallito.');
+      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni server locali fallito.');
       await loadSettings();
       await loadOllamaStatuses();
     } catch (err: any) {
-      alert(err?.message || 'Errore salvataggio impostazioni Ollama.');
+      alert(err?.message || 'Errore salvataggio impostazioni server locali.');
     } finally {
       setIsSavingOllama(false);
     }
@@ -1005,6 +1007,7 @@ export default function SettingsPage() {
           ...current.connections,
           {
             id: `ollama_${Date.now()}`,
+            provider_type: 'ollama',
             name: 'Nuovo server Ollama',
             base_url: '',
             default_model: '',
@@ -1054,6 +1057,12 @@ export default function SettingsPage() {
       value: `ollama::${model}`,
       label: model,
       provider: 'ollama' as const,
+      model,
+    }))),
+    ...((ollamaRuntime?.models || []).map((model) => ({
+      value: `exo::${model}`,
+      label: `EXO (${model})`,
+      provider: 'exo' as const,
       model,
     }))),
   ];
@@ -1388,7 +1397,7 @@ export default function SettingsPage() {
         <div className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-xl font-semibold text-white">Ollama</h2>
+              <h2 className="text-xl font-semibold text-white">Server locali</h2>
             </div>
             <div className="flex gap-3">
               <button
@@ -1397,7 +1406,7 @@ export default function SettingsPage() {
                 disabled={isSavingOllama || !ollamaRuntime}
                 className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
               >
-                {isSavingOllama ? 'Salvataggio...' : 'Salva Ollama'}
+                {isSavingOllama ? 'Salvataggio...' : 'Salva server'}
               </button>
             </div>
           </div>
@@ -1406,7 +1415,7 @@ export default function SettingsPage() {
           <>
             <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
               <label className="flex h-full flex-col text-sm text-gray-200">
-                <span className="mb-1 block">Modelli Ollama disponibili</span>
+                <span className="mb-1 block">Modelli locali disponibili</span>
                 <textarea
                   value={ollamaModelsDraft}
                   onChange={(event) => setOllamaModelsDraft(event.target.value)}
@@ -1414,11 +1423,23 @@ export default function SettingsPage() {
                   placeholder={'qwen3.5\ngpt-oss\ngemma:e4b'}
                 />
                 <span className="mt-1 block text-xs text-gray-400">
-                  Un modello per riga. Esempio `gemma4:e4b`.
+                  Un modello per riga. La lista viene usata sia per Ollama sia per EXO.
                 </span>
               </label>
 
               <div className="space-y-6">
+                <label className="text-sm text-gray-200">
+                  <span className="mb-1 block">Provider locale di default</span>
+                  <select
+                    value={ollamaRuntime.default_provider || 'ollama'}
+                    onChange={(event) => setOllamaRuntime((current) => current ? { ...current, default_provider: event.target.value === 'exo' ? 'exo' : 'ollama' } : current)}
+                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                  >
+                    <option value="ollama">Ollama</option>
+                    <option value="exo">EXO</option>
+                  </select>
+                </label>
+
                 <label className="text-sm text-gray-200">
                   <span className="mb-1 block">Server di default</span>
                   <select
@@ -1427,7 +1448,9 @@ export default function SettingsPage() {
                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                   >
                     <option value="">Seleziona server</option>
-                    {ollamaRuntime.connections.map((connection) => (
+                    {ollamaRuntime.connections
+                      .filter((connection) => (connection.provider_type || 'ollama') === (ollamaRuntime.default_provider || 'ollama'))
+                      .map((connection) => (
                       <option key={connection.id} value={connection.id}>{connection.name}</option>
                     ))}
                   </select>
@@ -1488,7 +1511,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={addOllamaConnection}
-                  aria-label="Aggiungi server Ollama"
+                  aria-label="Aggiungi server locale"
                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-700 text-gray-100 hover:bg-gray-800"
                 >
                   <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 stroke-current">
@@ -1497,9 +1520,10 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              <div className="mt-4 hidden grid-cols-[120px_140px_200px_minmax(240px,1fr)_96px_56px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+              <div className="mt-4 hidden grid-cols-[120px_140px_130px_200px_minmax(240px,1fr)_96px_56px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
                 <div>Attivo</div>
                 <div>Stato</div>
+                <div>Tipo</div>
                 <div>Nome</div>
                 <div>URL</div>
                 <div>Priorita</div>
@@ -1509,7 +1533,7 @@ export default function SettingsPage() {
               <div className="mt-4 space-y-4">
                 {ollamaRuntime.connections.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-gray-700 px-4 py-5 text-sm text-gray-400">
-                    Nessun server Ollama configurato.
+                    Nessun server locale configurato.
                   </div>
                 ) : (
                   ollamaRuntime.connections.map((connection, index) => {
@@ -1517,7 +1541,7 @@ export default function SettingsPage() {
                     const statusMeta = getOllamaStatusMeta(connection, status);
                     return (
                       <div key={connection.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                        <div className="grid gap-3 lg:grid-cols-[120px_140px_200px_minmax(240px,1fr)_96px_56px] lg:items-start">
+                        <div className="grid gap-3 lg:grid-cols-[120px_140px_130px_200px_minmax(240px,1fr)_96px_56px] lg:items-start">
                           <div className="space-y-2">
                             <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                             <Toggle
@@ -1548,6 +1572,21 @@ export default function SettingsPage() {
                           </div>
 
                           <label className="text-sm text-gray-200">
+                            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Tipo</span>
+                            <select
+                              value={connection.provider_type || 'ollama'}
+                              onChange={(event) => setOllamaRuntime((current) => current ? ({
+                                ...current,
+                                connections: current.connections.map((row) => row.id === connection.id ? { ...row, provider_type: event.target.value === 'exo' ? 'exo' : 'ollama' } : row),
+                              }) : current)}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                            >
+                              <option value="ollama">Ollama</option>
+                              <option value="exo">EXO</option>
+                            </select>
+                          </label>
+
+                          <label className="text-sm text-gray-200">
                             <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Nome</span>
                             <input
                               value={connection.name}
@@ -1567,7 +1606,7 @@ export default function SettingsPage() {
                                 ...current,
                                 connections: current.connections.map((row) => row.id === connection.id ? { ...row, base_url: event.target.value } : row),
                               }) : current)}
-                              placeholder="http://host:11434"
+                              placeholder={(connection.provider_type || 'ollama') === 'exo' ? 'http://host:52415' : 'http://host:11434'}
                               className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                             />
                           </label>
@@ -1675,9 +1714,9 @@ export default function SettingsPage() {
                             const [provider, model] = event.target.value.split('::');
                             setMemoryEngine((current) => current ? {
                               ...current,
-                              analysis_model_provider: provider === 'ollama' ? 'ollama' : 'openai',
+                              analysis_model_provider: provider === 'exo' ? 'exo' : provider === 'ollama' ? 'ollama' : 'openai',
                               analysis_model: model || current.analysis_model,
-                              ollama_server_id: provider === 'ollama' ? current.ollama_server_id : null,
+                              ollama_server_id: provider === 'ollama' || provider === 'exo' ? current.ollama_server_id : null,
                             } : current);
                           }}
                           className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
@@ -1691,9 +1730,9 @@ export default function SettingsPage() {
                         </select>
                       </label>
 
-                      {memoryEngine.analysis_model_provider === 'ollama' ? (
+                      {memoryEngine.analysis_model_provider === 'ollama' || memoryEngine.analysis_model_provider === 'exo' ? (
                         <label className="min-w-0 text-sm text-gray-200">
-                          <span className="mb-1 block">Server Ollama chat</span>
+                          <span className="mb-1 block">Server {memoryEngine.analysis_model_provider === 'exo' ? 'EXO' : 'Ollama'} chat</span>
                           <select
                             value={memoryEngine.ollama_server_id || ''}
                             onChange={(event) => setMemoryEngine((current) => current ? {
@@ -1703,7 +1742,9 @@ export default function SettingsPage() {
                             className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                           >
                             <option value="">Seleziona server</option>
-                            {(ollamaRuntime?.connections || []).map((connection) => (
+                            {(ollamaRuntime?.connections || [])
+                              .filter((connection) => (connection.provider_type || 'ollama') === memoryEngine.analysis_model_provider)
+                              .map((connection) => (
                               <option key={connection.id} value={connection.id}>{connection.name}</option>
                             ))}
                           </select>

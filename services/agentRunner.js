@@ -443,7 +443,10 @@ async function executeAgentRun(agent, messages, context) {
         sanitizedMessages,
         allTools.length > 0 ? allTools : null,
         modelConfig.model,
-        { ollamaServerId: modelConfig.ollama_server_id || context.ollamaServerId || null }
+        {
+          ollamaServerId: modelConfig.ollama_server_id || context.ollamaServerId || null,
+          providerType: modelConfig.provider,
+        }
       );
 
   return { responseMessage, guardrails, childByToolName };

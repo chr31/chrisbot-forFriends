@@ -1,4 +1,4 @@
-export type ModelProvider = 'openai' | 'ollama';
+export type ModelProvider = 'openai' | 'ollama' | 'exo';
 
 export type ModelConfig = {
   provider: ModelProvider;
@@ -15,6 +15,7 @@ export type ModelCatalogEntry = {
 export type OllamaConnectionOption = {
   id: string;
   name: string;
+  provider_type?: 'ollama' | 'exo';
   base_url: string;
   default_model?: string | null;
 };
@@ -30,6 +31,7 @@ export type AiOptionsResponse = {
     default_connection_id: string | null;
     fallback_on_unavailable: boolean;
     routing_strategy: 'priority' | 'least_loaded' | string;
+    default_provider?: 'ollama' | 'exo';
     models: string[];
     default_model: string | null;
     connections: OllamaConnectionOption[];
@@ -37,13 +39,19 @@ export type AiOptionsResponse = {
 };
 
 export function normalizeModelConfig(input: Partial<ModelConfig> | null | undefined, fallback?: ModelConfig | null): ModelConfig {
-  const provider = input?.provider === 'openai' ? 'openai' : input?.provider === 'ollama' ? 'ollama' : (fallback?.provider || 'ollama');
+  const provider = input?.provider === 'openai'
+    ? 'openai'
+    : input?.provider === 'exo'
+      ? 'exo'
+      : input?.provider === 'ollama'
+        ? 'ollama'
+        : (fallback?.provider || 'ollama');
   const model = String(input?.model || fallback?.model || '').trim();
   return {
     provider,
     model,
-    ollama_server_id: provider === 'ollama'
-      ? (String(input?.ollama_server_id || fallback?.ollama_server_id || '').trim() || null)
+    ollama_server_id: provider === 'ollama' || provider === 'exo'
+      ? (String(input?.ollama_server_id || (fallback?.provider === provider ? fallback?.ollama_server_id : '') || '').trim() || null)
       : null,
   };
 }
@@ -56,7 +64,7 @@ export function encodeModelValue(config: Partial<ModelConfig> | null | undefined
 export function decodeModelValue(value: string, fallback?: ModelConfig | null) {
   const [providerRaw, ...modelParts] = String(value || '').split(':');
   return normalizeModelConfig({
-    provider: providerRaw === 'openai' ? 'openai' : 'ollama',
+    provider: providerRaw === 'openai' ? 'openai' : providerRaw === 'exo' ? 'exo' : 'ollama',
     model: modelParts.join(':'),
   }, fallback);
 }
@@ -64,9 +72,9 @@ export function decodeModelValue(value: string, fallback?: ModelConfig | null) {
 export function getModelLabel(config: Partial<ModelConfig> | null | undefined) {
   const normalized = normalizeModelConfig(config);
   if (!normalized.model) return '';
-  return normalized.provider === 'openai'
-    ? `ChatGPT (${normalized.model})`
-    : normalized.model;
+  if (normalized.provider === 'openai') return `ChatGPT (${normalized.model})`;
+  if (normalized.provider === 'exo') return `EXO (${normalized.model})`;
+  return normalized.model;
 }
 
 export function buildModelOptions(catalog: ModelCatalogEntry[] | null | undefined, currentConfig?: Partial<ModelConfig> | null) {

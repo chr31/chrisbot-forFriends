@@ -145,6 +145,7 @@ function buildDefaultOllamaRuntimeSettings() {
     timeout_ms: 1200000,
     fallback_on_unavailable: true,
     routing_strategy: 'least_loaded',
+    default_provider: 'ollama',
     default_connection_id: null,
     models: [],
     default_model: '',
@@ -296,13 +297,21 @@ function normalizeMemoryModelProvider(value, fallback = 'openai') {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'openai') return 'openai';
   if (normalized === 'ollama') return 'ollama';
+  if (normalized === 'exo') return 'exo';
+  return fallback;
+}
+
+function normalizeEmbeddingModelProvider(value, fallback = 'openai') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'ollama') return 'ollama';
   return fallback;
 }
 
 function normalizeMemoryEngineSettings(value) {
   const defaults = buildDefaultMemoryEngineSettings();
   const provider = normalizeMemoryModelProvider(value?.analysis_model_provider, defaults.analysis_model_provider);
-  const embeddingProvider = normalizeMemoryModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider);
+  const embeddingProvider = normalizeEmbeddingModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider);
   const fallbackModel = provider === 'openai'
     ? defaults.analysis_model
     : String(value?.analysis_model || '').trim();
@@ -313,7 +322,7 @@ function normalizeMemoryEngineSettings(value) {
     enabled: parseBoolean(value?.enabled, defaults.enabled),
     analysis_model_provider: provider,
     analysis_model: String(value?.analysis_model || fallbackModel).trim() || fallbackModel,
-    ollama_server_id: provider === 'ollama'
+    ollama_server_id: provider === 'ollama' || provider === 'exo'
       ? (String(value?.ollama_server_id || '').trim() || null)
       : null,
     embedding_model_provider: embeddingProvider,
@@ -515,11 +524,15 @@ function normalizeMcpRuntimeSettings(value) {
 }
 
 function normalizeOllamaConnection(connection, index) {
-  const id = String(connection?.id || `ollama_${index + 1}`).trim() || `ollama_${index + 1}`;
+  const providerType = String(connection?.provider_type || connection?.type || 'ollama').trim().toLowerCase() === 'exo'
+    ? 'exo'
+    : 'ollama';
+  const id = String(connection?.id || `${providerType}_${index + 1}`).trim() || `${providerType}_${index + 1}`;
   const priority = Number.parseInt(String(connection?.priority ?? index + 1), 10);
   return {
     id,
-    name: String(connection?.name || `Ollama ${index + 1}`).trim() || `Ollama ${index + 1}`,
+    provider_type: providerType,
+    name: String(connection?.name || `${providerType === 'exo' ? 'EXO' : 'Ollama'} ${index + 1}`).trim() || `${providerType === 'exo' ? 'EXO' : 'Ollama'} ${index + 1}`,
     base_url: String(connection?.base_url || '').trim().replace(/\/+$/, ''),
     default_model: String(connection?.default_model || '').trim(),
     enabled: connection?.enabled !== false,
@@ -596,6 +609,9 @@ function normalizeOllamaRuntimeSettings(value) {
     routing_strategy: String(value?.routing_strategy || defaults.routing_strategy).trim() === 'priority'
       ? 'priority'
       : 'least_loaded',
+    default_provider: String(value?.default_provider || defaults.default_provider).trim().toLowerCase() === 'exo'
+      ? 'exo'
+      : 'ollama',
     default_connection_id: defaultConnectionId,
     models: normalizedModels,
     default_model: defaultModel,
