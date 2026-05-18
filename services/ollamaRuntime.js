@@ -5,6 +5,10 @@ function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isLikelyAvailabilityError(error) {
   const status = Number(error?.status || error?.code || 0);
   const message = String(error?.message || '').toLowerCase();
@@ -245,6 +249,149 @@ async function postOllamaJson(connection, path, body, timeoutMs) {
   }
 }
 
+async function fetchExoJson(connection, path, settings, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), settings.timeout_ms);
+  try {
+    const response = await fetch(`${normalizeBaseUrl(connection.base_url)}${path}`, {
+      method: options.method || 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.error?.message || payload?.error || payload?.detail || payload?.message || `HTTP ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function getExoInstances(payload) {
+  const instances = payload?.instances || payload?.state?.instances || payload;
+  if (!instances || typeof instances !== 'object' || Array.isArray(instances)) return [];
+  return Object.entries(instances).map(([id, instance]) => ({
+    id,
+    ...(instance && typeof instance === 'object' ? instance : {}),
+  }));
+}
+
+function getExoInstanceModelId(instance) {
+  return String(
+    instance?.shard_assignments?.model_id
+    || instance?.shardAssignments?.modelId
+    || instance?.model_id
+    || instance?.model
+    || ''
+  ).trim();
+}
+
+function getExoInstanceMeta(instance) {
+  return String(
+    instance?.instance_meta
+    || instance?.instanceMeta
+    || instance?.meta
+    || ''
+  ).trim().toLowerCase();
+}
+
+function getExoInstanceSharding(instance) {
+  return String(
+    instance?.shard_assignments?.sharding
+    || instance?.shardAssignments?.sharding
+    || instance?.sharding
+    || ''
+  ).trim().toLowerCase();
+}
+
+function isExoMlxRingPipelineInstance(instance, model) {
+  return getExoInstanceModelId(instance) === model
+    && getExoInstanceMeta(instance) === 'mlxring'
+    && getExoInstanceSharding(instance) === 'pipeline';
+}
+
+function getExoInstancesForModel(payload, model) {
+  return getExoInstances(payload)
+    .filter((instance) => getExoInstanceModelId(instance) === model);
+}
+
+function pickExoMlxRingPipelinePreview(previews) {
+  return (Array.isArray(previews) ? previews : [])
+    .find((preview) => (
+      !preview?.error
+      && preview?.instance
+      && String(preview?.instance_meta || '').trim().toLowerCase() === 'mlxring'
+      && String(preview?.sharding || '').trim().toLowerCase() === 'pipeline'
+    ));
+}
+
+async function hasExoMlxRingPipelineInstance(connection, model, settings) {
+  const state = await fetchExoJson(connection, '/state', settings);
+  return getExoInstancesForModel(state, model).some((instance) => isExoMlxRingPipelineInstance(instance, model));
+}
+
+async function deleteExoInstance(connection, instanceId, settings) {
+  await fetchExoJson(connection, `/instance/${encodeURIComponent(instanceId)}`, settings, {
+    method: 'DELETE',
+  });
+}
+
+async function removeNonPipelineExoInstances(connection, model, settings) {
+  const state = await fetchExoJson(connection, '/state', settings);
+  const staleInstances = getExoInstancesForModel(state, model)
+    .filter((instance) => !isExoMlxRingPipelineInstance(instance, model));
+
+  for (const instance of staleInstances) {
+    await deleteExoInstance(connection, instance.id, settings);
+  }
+
+  if (staleInstances.length === 0) return;
+
+  const deadline = Date.now() + Math.min(settings.timeout_ms, 15000);
+  while (Date.now() < deadline) {
+    await sleep(500);
+    const nextState = await fetchExoJson(connection, '/state', settings);
+    const remaining = getExoInstancesForModel(nextState, model)
+      .some((instance) => !isExoMlxRingPipelineInstance(instance, model));
+    if (!remaining) return;
+  }
+
+  throw new Error(`Timeout durante la rimozione delle istanze EXO non MlxRing/Pipeline per il modello ${model}.`);
+}
+
+async function ensureExoMlxRingPipelineInstance(connection, model, settings) {
+  await removeNonPipelineExoInstances(connection, model, settings);
+  if (await hasExoMlxRingPipelineInstance(connection, model, settings)) return;
+
+  const previews = await fetchExoJson(
+    connection,
+    `/instance/previews?model_id=${encodeURIComponent(model)}`,
+    settings
+  );
+  const selectedPreview = pickExoMlxRingPipelinePreview(previews?.previews);
+  if (!selectedPreview) {
+    throw new Error(`Nessun placement EXO MlxRing/Pipeline disponibile per il modello ${model}.`);
+  }
+
+  await fetchExoJson(connection, '/instance', settings, {
+    method: 'POST',
+    body: { instance: selectedPreview.instance },
+  });
+
+  const deadline = Date.now() + Math.min(settings.timeout_ms, 15000);
+  while (Date.now() < deadline) {
+    await sleep(500);
+    if (await hasExoMlxRingPipelineInstance(connection, model, settings)) return;
+  }
+
+  throw new Error(`Timeout durante la creazione dell'istanza EXO MlxRing/Pipeline per il modello ${model}.`);
+}
+
 async function callOllamaEmbedEndpoint(connection, model, inputs, settings) {
   const payload = await postOllamaJson(connection, '/api/embed', {
     model,
@@ -354,6 +501,9 @@ async function callOllamaChatCompletions(messages, tools = null, model, options 
           : resolveOllamaModelAlias(model, runtimeDefaultModel || connection.default_model),
         messages,
       };
+      if (providerType === 'exo') {
+        await ensureExoMlxRingPipelineInstance(connection, params.model, settings);
+      }
       if (tools) params.tools = tools;
       const response = await client.chat.completions.create(params);
       return {
