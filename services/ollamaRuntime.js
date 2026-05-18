@@ -281,30 +281,101 @@ function getExoInstances(payload) {
   }));
 }
 
-function getExoInstanceModelId(instance) {
+function getExoInstanceCore(instance) {
+  const candidate = instance?.instance && typeof instance.instance === 'object'
+    ? instance.instance
+    : instance;
+  return unwrapExoTaggedValue(candidate).value;
+}
+
+function unwrapExoTaggedValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { type: '', value };
+  }
+  const explicitType = String(
+    value.type
+    || value.kind
+    || value.tag
+    || value.__type__
+    || value.class
+    || value.name
+    || ''
+  ).trim();
+  if (explicitType) return { type: explicitType, value };
+
+  const keys = Object.keys(value).filter((key) => key !== 'id');
+  if (keys.length === 1 && value[keys[0]] && typeof value[keys[0]] === 'object') {
+    return { type: keys[0], value: value[keys[0]] };
+  }
+
+  return { type: '', value };
+}
+
+function getExoTaggedType(value) {
+  const unwrapped = unwrapExoTaggedValue(value);
   return String(
-    instance?.shard_assignments?.model_id
-    || instance?.shardAssignments?.modelId
-    || instance?.model_id
-    || instance?.model
+    unwrapped.type
+    || ''
+  ).trim().toLowerCase();
+}
+
+function getExoInstanceModelId(instance) {
+  const core = getExoInstanceCore(instance);
+  const shardModelId = getExoShardValues(core)
+    .map((shard) => String(shard?.model_card?.model_id || shard?.modelCard?.modelId || '').trim())
+    .find(Boolean);
+  return String(
+    core?.shard_assignments?.model_id
+    || core?.shardAssignments?.modelId
+    || shardModelId
+    || core?.model_id
+    || core?.model
     || ''
   ).trim();
 }
 
 function getExoInstanceMeta(instance) {
+  const outerTaggedType = getExoTaggedType(instance);
+  if (outerTaggedType.includes('mlxring')) return 'mlxring';
+  if (outerTaggedType.includes('mlxjaccl')) return 'mlxjaccl';
+  const core = getExoInstanceCore(instance);
+  const taggedType = getExoTaggedType(core);
+  if (taggedType.includes('mlxring')) return 'mlxring';
+  if (taggedType.includes('mlxjaccl')) return 'mlxjaccl';
   return String(
-    instance?.instance_meta
-    || instance?.instanceMeta
-    || instance?.meta
+    core?.instance_meta
+    || core?.instanceMeta
+    || core?.meta
     || ''
   ).trim().toLowerCase();
 }
 
+function getExoShardEntries(instance) {
+  const core = getExoInstanceCore(instance);
+  const runnerToShard = core?.shard_assignments?.runner_to_shard
+    || core?.shardAssignments?.runnerToShard
+    || {};
+  if (!runnerToShard || typeof runnerToShard !== 'object') return [];
+  return Object.values(runnerToShard)
+    .filter((shard) => shard && typeof shard === 'object')
+    .map(unwrapExoTaggedValue);
+}
+
+function getExoShardValues(instance) {
+  return getExoShardEntries(instance).map((entry) => entry.value);
+}
+
 function getExoInstanceSharding(instance) {
+  const core = getExoInstanceCore(instance);
+  const shardTypes = getExoShardEntries(core)
+    .map((entry) => String(entry.type || getExoTaggedType(entry.value)).trim().toLowerCase())
+    .filter(Boolean);
+  if (shardTypes.some((type) => type.includes('tensorshard'))) return 'tensor';
+  if (shardTypes.length > 0 && shardTypes.every((type) => type.includes('pipelineshard'))) return 'pipeline';
   return String(
-    instance?.shard_assignments?.sharding
-    || instance?.shardAssignments?.sharding
-    || instance?.sharding
+    core?.shard_assignments?.sharding
+    || core?.shardAssignments?.sharding
+    || core?.sharding
     || ''
   ).trim().toLowerCase();
 }
