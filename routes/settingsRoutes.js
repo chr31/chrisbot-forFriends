@@ -10,9 +10,7 @@ const {
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
   updateMemoryEngineSettings,
-  updateControlEngineSettings,
   getMemoryEngineSettingsSync,
-  getControlEngineSettingsSync,
   revealSettingsSecret,
 } = require('../services/appSettings');
 const { getAiOptionsSnapshot } = require('../services/aiModelCatalog');
@@ -27,9 +25,7 @@ const {
 const { reconnectAndRefreshToolCache, getMcpConnectionStatuses } = require('../utils/mcpClient');
 const { getOllamaConnectionStatuses } = require('../services/ollamaRuntime');
 const { refreshTelegramBotRuntime } = require('../services/telegramBot');
-const { createMemoryRepository } = require('../services/memory/repositories/memoryRepository');
-const { createControlRepository } = require('../services/control/repositories/controlRepository');
-const { initializeControlPersistentConnections } = require('../services/control/connectionManager');
+const { createMem0Provider } = require('../services/memory/providers/mem0Provider');
 
 router.use(authenticateToken);
 
@@ -143,34 +139,13 @@ router.put('/memory', async (req, res) => {
   }
 });
 
-router.put('/control', async (req, res) => {
+router.get('/memory/health', async (_req, res) => {
   try {
-    await updateControlEngineSettings(req.body || {});
-    await initializeControlPersistentConnections();
-    return res.json(getSettingsSnapshot().control_engine);
+    const provider = createMem0Provider(getMemoryEngineSettingsSync());
+    return res.json({ ok: true, health: await provider.health() });
   } catch (error) {
-    console.error('Errore aggiornamento impostazioni Control Engine:', error);
-    return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni Control Engine' });
-  }
-});
-
-router.delete('/memory/values', async (_req, res) => {
-  try {
-    const result = await createMemoryRepository(getMemoryEngineSettingsSync()).clearAllMemoryData();
-    return res.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('Errore eliminazione memorie Neo4j:', error);
-    return res.status(500).json({ error: error.message || 'Impossibile eliminare le memorie Neo4j' });
-  }
-});
-
-router.delete('/control/values', async (_req, res) => {
-  try {
-    const result = await createControlRepository(getControlEngineSettingsSync()).clearAllControlData();
-    return res.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('Errore eliminazione Control Engine Neo4j:', error);
-    return res.status(500).json({ error: error.message || 'Impossibile eliminare i dati Control Engine Neo4j' });
+    console.error('Errore health mem0:', error);
+    return res.status(502).json({ ok: false, error: error.message || 'mem0 non raggiungibile' });
   }
 });
 

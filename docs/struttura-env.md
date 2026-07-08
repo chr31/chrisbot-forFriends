@@ -51,58 +51,19 @@ Con MySQL esterno:
 
 Variabili usate solo da Docker Compose:
 
-- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` quando vuoi il container MySQL incluso. Aggiungi `local-neo4j` per Neo4j Memory Engine e `local-control-neo4j` per Neo4j Control Engine. Lascialo vuoto con database esterni.
+- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` quando vuoi il container MySQL incluso. Lascialo vuoto con database esterni.
 - `MYSQL_ROOT_PASSWORD`: password root del container MySQL.
 - `MYSQL_HOST_PORT`: porta host pubblicata per MySQL. Intero positivo. Default: `3307`.
 
-## Neo4j locali per Memory Engine e Control Engine
+## Memory Engine (mem0)
 
-Il container Neo4j locale e' opzionale e viene avviato solo se `COMPOSE_PROFILES` contiene `local-neo4j`.
-Il container Neo4j del Control Engine e' separato e viene avviato solo se `COMPOSE_PROFILES` contiene `local-control-neo4j`.
+Il Memory Engine usa un'istanza mem0 OSS self-hosted come servizio esterno. Non c'e' alcun container database dedicato alle memorie nel compose: mem0 va avviato separatamente.
 
-Esempi:
+Quasi tutta la configurazione mem0 vive nel database applicativo (tab Impostazioni > Memory Engine) e non richiede env dedicate. L'unica env riconosciuta e' un default di bootstrap:
 
-- `COMPOSE_PROFILES=local-mysql`: avvia MySQL locale, non avvia Neo4j.
-- `COMPOSE_PROFILES=local-mysql,local-neo4j`: avvia MySQL locale e Neo4j Memory locale.
-- `COMPOSE_PROFILES=local-mysql,local-neo4j,local-control-neo4j`: avvia MySQL locale, Neo4j Memory locale e Neo4j Control locale.
-- `COMPOSE_PROFILES=local-neo4j`: usa MySQL esterno e avvia solo Neo4j locale.
-- `COMPOSE_PROFILES=`: non avvia database locali.
+- `MEM0_API_URL`: URL di default dell'istanza mem0 usato solo per inizializzare le impostazioni al primo avvio. Default: `http://127.0.0.1:8888`. Puo' essere sovrascritto dal portale.
 
-Variabili:
-
-- `NEO4J_USER`: username del container Neo4j locale. Default consigliato: `neo4j`.
-- `NEO4J_PASSWORD`: password del container Neo4j locale. Deve essere non vuota. Default esempio: `change-me-neo4j`.
-- `NEO4J_HTTP_HOST_PORT`: porta HTTP pubblicata sull'host per Neo4j Browser. Default: `7474`.
-- `NEO4J_BOLT_HOST_PORT`: porta Bolt pubblicata sull'host. Default: `7687`.
-- `CONTROL_NEO4J_HTTP_HOST_PORT`: porta HTTP pubblicata sull'host per Neo4j Browser del Control Engine. Default: `7475`.
-- `CONTROL_NEO4J_BOLT_HOST_PORT`: porta Bolt pubblicata sull'host per Neo4j Control Engine. Default: `7688`.
-
-Queste variabili cambiano le porte pubblicate sull'host. Dentro la rete Docker i container Neo4j restano raggiungibili sui rispettivi service name e sulla porta interna `7687`: `bolt://neo4j:7687` per Memory Engine e `bolt://neo4j-control:7687` per Control Engine. Il seed delle impostazioni applicative usa `NEO4J_HTTP_HOST_PORT` e `CONTROL_NEO4J_HTTP_HOST_PORT` per costruire le URL browser locali.
-
-Configurazione minima per avviare Neo4j locale insieme a MySQL locale:
-
-```env
-COMPOSE_PROFILES=local-mysql,local-neo4j,local-control-neo4j
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=change-me-neo4j
-```
-
-Le porte possono essere omesse: Docker Compose usa `7474`/`7687` per Memory e `7475`/`7688` per Control.
-
-Configurazione minima per avviare solo Neo4j locale usando un MySQL esterno:
-
-```env
-COMPOSE_PROFILES=local-neo4j
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=change-me-neo4j
-```
-
-Nel network Docker interno il backend raggiunge Neo4j locale con:
-
-- Memory Engine: `bolt://neo4j:7687`
-- Control Engine: `bolt://neo4j-control:7687`
-
-Il portale non avvia o spegne direttamente Docker: l'ON/OFF dei container locali si gestisce con `COMPOSE_PROFILES`. Le impostazioni applicative gestiscono abilitazione e credenziali operative dei singoli engine.
+Le altre impostazioni mem0 (`mem0_api_key`, timeout, limite risultati di ricerca) e i modelli usati dai guardrail semantici si configurano dal portale e vengono salvati nel database, cifrati quando sensibili.
 
 ## Scheduler e routine
 
@@ -146,6 +107,7 @@ Queste integrazioni non dipendono da env dedicate nel bootstrap standard: si con
 - Server Ollama
 - Server MCP
 - Telegram
+- Memory Engine (mem0)
 
 ## Note pratiche
 

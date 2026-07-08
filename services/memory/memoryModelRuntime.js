@@ -4,7 +4,7 @@ const { callOllamaChatCompletions } = require('../ollamaRuntime');
 function extractJsonObject(text) {
   const raw = String(text || '').trim();
   if (!raw) {
-    throw new Error('Risposta memoria vuota.');
+    throw new Error('Risposta JSON vuota.');
   }
 
   try {
@@ -28,7 +28,7 @@ function extractJsonObject(text) {
     return JSON.parse(raw.slice(first, last + 1));
   }
 
-  throw new Error('Risposta memoria non in formato JSON.');
+  throw new Error('Risposta non in formato JSON.');
 }
 
 async function callOpenAiMemoryJson(messages, settings = {}) {
@@ -51,37 +51,17 @@ async function callOpenAiMemoryJson(messages, settings = {}) {
   }
 }
 
-async function callOpenAiMemoryText(messages, settings = {}) {
-  const client = createOpenAiClient();
-  const model = String(settings.analysis_model || 'gpt-5-mini').trim() || 'gpt-5-mini';
-  const response = await client.chat.completions.create({ model, messages });
-  return String(response.choices?.[0]?.message?.content || '').trim();
-}
-
 async function callLocalMemoryJson(messages, settings = {}) {
   const provider = String(settings.analysis_model_provider || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
   const model = String(settings.analysis_model || '').trim();
   if (!model) {
-    throw new Error(`Modello chat memoria ${provider === 'exo' ? 'EXO' : 'Ollama'} non configurato.`);
+    throw new Error(`Modello classificazione ${provider === 'exo' ? 'EXO' : 'Ollama'} non configurato.`);
   }
   const result = await callOllamaChatCompletions(messages, null, model, {
     ollamaServerId: settings.ollama_server_id || null,
     providerType: provider,
   });
   return extractJsonObject(result?.message?.content || '');
-}
-
-async function callLocalMemoryText(messages, settings = {}) {
-  const provider = String(settings.analysis_model_provider || 'ollama').trim().toLowerCase() === 'exo' ? 'exo' : 'ollama';
-  const model = String(settings.analysis_model || '').trim();
-  if (!model) {
-    throw new Error(`Modello chat memoria ${provider === 'exo' ? 'EXO' : 'Ollama'} non configurato.`);
-  }
-  const result = await callOllamaChatCompletions(messages, null, model, {
-    ollamaServerId: settings.ollama_server_id || null,
-    providerType: provider,
-  });
-  return String(result?.message?.content || '').trim();
 }
 
 async function callMemoryChatJson(messages, settings = {}) {
@@ -92,22 +72,10 @@ async function callMemoryChatJson(messages, settings = {}) {
   if (provider === 'ollama' || provider === 'exo') {
     return callLocalMemoryJson(messages, settings);
   }
-  throw new Error(`Provider chat memoria non supportato: ${provider || 'non configurato'}`);
-}
-
-async function callMemoryChatText(messages, settings = {}) {
-  const provider = String(settings.analysis_model_provider || '').trim().toLowerCase();
-  if (provider === 'openai') {
-    return callOpenAiMemoryText(messages, settings);
-  }
-  if (provider === 'ollama' || provider === 'exo') {
-    return callLocalMemoryText(messages, settings);
-  }
-  throw new Error(`Provider chat memoria non supportato: ${provider || 'non configurato'}`);
+  throw new Error(`Provider classificazione non supportato: ${provider || 'non configurato'}`);
 }
 
 module.exports = {
-  callMemoryChatText,
   callMemoryChatJson,
   extractJsonObject,
 };

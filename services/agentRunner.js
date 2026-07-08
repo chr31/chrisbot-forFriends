@@ -331,48 +331,6 @@ function buildDelegatedWorkerSystemPrompt(agent) {
   ].join('\n\n');
 }
 
-function runChildAfterMemoryInBackground({ childAgent, childRun, childMessages, childModelConfig, childMemoryContextPacket, context, userMessage, assistantResponse, processStatus, error = null }) {
-  setImmediate(async () => {
-    let afterMemoryPacket = null;
-    try {
-      afterMemoryPacket = await runAfterMemory({
-        agent: childAgent,
-        chat: {
-          chatId: context.chatId,
-          messages: sanitizeMessages(childMessages),
-          sourceMessages: childMessages,
-          userMessage,
-          assistantResponse: assistantResponse || '',
-          runId: childRun.id,
-          error,
-          userKey: context.userKey || null,
-        },
-        modelConfig: childModelConfig,
-        beforePacket: childMemoryContextPacket,
-        runId: childRun.id,
-        userKey: context.userKey || null,
-        processStatus,
-        error,
-      });
-    } catch (memoryError) {
-      afterMemoryPacket = {
-        enabled: false,
-        scope: childAgent?.memory_scope || 'shared',
-        warnings: [String(memoryError?.message || memoryError)],
-        skipped_reason: 'error',
-      };
-    }
-
-    try {
-      await updateAgentRun(childRun.id, {
-        guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, afterMemoryPacket),
-      });
-    } catch (traceError) {
-      console.error('Errore aggiornamento traccia afterMemory worker:', traceError);
-    }
-  });
-}
-
 async function buildDelegationTools(orchestratorAgent) {
   if (orchestratorAgent.kind !== 'orchestrator') return { tools: [], childByToolName: new Map() };
   const relations = await getAgentRelations(orchestratorAgent.id);
@@ -663,38 +621,21 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         await updateAgentRunIfStatus(childRun.id, {
           status: 'completed',
           finished_at: new Date(),
-          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null, { includePendingAfter: true }),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
         }, 'running');
-        runChildAfterMemoryInBackground({
-          childAgent,
-          childRun,
-          childMessages,
-          childModelConfig,
-          childMemoryContextPacket,
-          context,
+        runAfterMemory({
+          agent: childAgent,
           userMessage: childMessages[1],
-          assistantResponse: childResult,
-          processStatus: 'completed',
-        });
+          response: childResult,
+          runId: childRun.id,
+        }).catch(() => {});
       } catch (error) {
         await updateAgentRunIfStatus(childRun.id, {
           status: 'failed',
           finished_at: new Date(),
           last_error: String(error?.message || error),
-          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null, { includePendingAfter: true }),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
         }, 'running');
-        runChildAfterMemoryInBackground({
-          childAgent,
-          childRun,
-          childMessages,
-          childModelConfig,
-          childMemoryContextPacket,
-          context,
-          userMessage: childMessages[1],
-          assistantResponse: '',
-          processStatus: 'failed',
-          error,
-        });
         childResult = buildDelegatedWorkerErrorText(childAgent, error);
       }
 

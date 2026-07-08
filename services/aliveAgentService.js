@@ -204,28 +204,18 @@ async function runAliveCycle(agentId, options = {}) {
         userKey: null,
         messageWriter: insertAliveAgentMessages,
       });
-      const afterMemoryPacket = await runAfterMemory({
-        agent,
-        chat: {
-          chatId: chat.chat_id,
-          runId: run.id,
-          messages: sanitizeMessages(history),
-          sourceMessages: history,
-          userMessage,
-          assistantResponse: response,
-          userKey: null,
-        },
-        modelConfig: effectiveModelConfig,
-        beforePacket: memoryContextPacket,
-        runId: run.id,
-        processStatus: 'completed',
-      });
-
       await updateAgentRunIfStatus(run.id, {
         status: 'completed',
         finished_at: new Date(),
-        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket),
+        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
       }, 'running');
+      // Scrittura memorie in parallelo: non attesa, non blocca il ciclo alive.
+      runAfterMemory({
+        agent,
+        userMessage,
+        response,
+        runId: run.id,
+      }).catch(() => {});
 
       const refreshedChat = await getAliveAgentChatByAgentId(agent.id);
       const requestedNextLoopStatus = options.next_loop_status === 'pause' ? 'pause' : null;
@@ -245,40 +235,11 @@ async function runAliveCycle(agentId, options = {}) {
         agent_id: agent.id,
       };
     } catch (error) {
-      let memoryTrace = null;
-      try {
-        const afterMemoryPacket = await runAfterMemory({
-          agent,
-          chat: {
-            chatId: chat.chat_id,
-            runId: run.id,
-            messages: sanitizeMessages(history),
-            sourceMessages: history,
-            userMessage,
-            assistantResponse: '',
-            error,
-            userKey: null,
-          },
-          modelConfig: effectiveModelConfig,
-          beforePacket: memoryContextPacket,
-          runId: run.id,
-          processStatus: 'failed',
-          error,
-        });
-        memoryTrace = buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket);
-      } catch (memoryError) {
-        memoryTrace = buildMemoryRunTrace(memoryContextPacket, {
-          enabled: false,
-          scope: agent?.memory_scope || 'shared',
-          warnings: [String(memoryError?.message || memoryError)],
-          skipped_reason: 'error',
-        });
-      }
       await updateAgentRunIfStatus(run.id, {
         status: 'failed',
         finished_at: new Date(),
         last_error: String(error?.message || error),
-        guardrail_result_json: memoryTrace,
+        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
       }, 'running');
       throw error;
     }

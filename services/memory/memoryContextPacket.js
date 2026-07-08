@@ -1,17 +1,9 @@
-function normalizeMemoryScope(value) {
-  return String(value || '').trim().toLowerCase() === 'dedicated' ? 'dedicated' : 'shared';
-}
-
-function getScopedAgentId(agent, scope) {
-  return normalizeMemoryScope(scope) === 'dedicated' ? agent?.id || null : null;
-}
-
 function buildEmptyMemoryContextPacket(input = {}) {
-  const scope = normalizeMemoryScope(input.scope);
   return {
     enabled: Boolean(input.enabled),
-    scope,
-    agent_id: getScopedAgentId(input.agent, scope),
+    provider: input.provider || null,
+    project_id: input.project_id || null,
+    agent_id: input.agent?.id || null,
     facts: [],
     entities: [],
     procedures: [],
@@ -31,12 +23,11 @@ function hasMemoryContext(packet) {
 
 function formatMemoryContextPacket(packet) {
   const text = String(packet?.contextText || '').trim();
-  return text ? `Memory context:\n${text}` : '';
+  return text ? `Memory context (read-only):\n${text}` : '';
 }
 
 module.exports = {
   buildEmptyMemoryContextPacket,
   formatMemoryContextPacket,
   hasMemoryContext,
-  normalizeMemoryScope,
 };

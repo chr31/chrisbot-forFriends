@@ -3,34 +3,7 @@ const router = express.Router();
 const authenticateToken = require('../middleware/authenticateToken');
 const { requireSuperAdmin } = require('../utils/adminAccess');
 const { getAgentById } = require('../database/db_agents');
-const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
-const {
-  createGraphDashboardSession,
-  getLiveGraphSnapshot,
-  requireGraphDashboardAccess,
-} = require('../services/graphLiveService');
-
-router.post('/graph/session', async (req, res) => {
-  try {
-    const session = createGraphDashboardSession(req.body?.password);
-    return res.json(session);
-  } catch (error) {
-    return res.status(error.status || 500).json({ error: error.message || 'Accesso dashboard non riuscito.' });
-  }
-});
-
-router.get('/graph/live', requireGraphDashboardAccess, async (req, res) => {
-  try {
-    const snapshot = await getLiveGraphSnapshot({
-      engine: req.query.engine,
-      limit: req.query.limit,
-    });
-    return res.json(snapshot);
-  } catch (error) {
-    console.error('Errore recupero grafo live:', error);
-    return res.status(500).json({ error: error.message || 'Errore recupero grafo live' });
-  }
-});
+const { runBeforeMemory } = require('../services/memory/memoryOrchestrator');
 
 const MEMORY_TEST_AGENT = {
   id: null,
@@ -38,8 +11,6 @@ const MEMORY_TEST_AGENT = {
   slug: 'memory-engine-access',
   kind: 'worker',
   memory_engine_enabled: true,
-  improve_memories_enabled: true,
-  memory_scope: 'shared',
 };
 
 const MEMORY_SECTIONS = [
@@ -67,10 +38,6 @@ router.use(requireSuperAdmin);
 
 function normalizePrompt(value) {
   return String(value || '').trim();
-}
-
-function normalizeMemoryScope(value) {
-  return String(value || '').trim().toLowerCase() === 'dedicated' ? 'dedicated' : 'shared';
 }
 
 function getRequesterLabel(user = {}) {
@@ -173,16 +140,9 @@ function buildUserMessage(prompt) {
 }
 
 async function resolveMemoryTestAgent(body = {}) {
-  const scope = normalizeMemoryScope(body.scope);
-  if (scope !== 'dedicated') {
-    return { ...MEMORY_TEST_AGENT, memory_scope: 'shared' };
-  }
-
   const agentId = Number(body.agent_id || body.agentId);
   if (!Number.isFinite(agentId) || agentId <= 0) {
-    const error = new Error('Agente richiesto per testare memorie dedicate.');
-    error.status = 400;
-    throw error;
+    return { ...MEMORY_TEST_AGENT };
   }
 
   const agent = await getAgentById(Math.trunc(agentId));
@@ -199,25 +159,7 @@ async function resolveMemoryTestAgent(body = {}) {
     slug: agent.slug || MEMORY_TEST_AGENT.slug,
     kind: agent.kind || MEMORY_TEST_AGENT.kind,
     memory_engine_enabled: true,
-    improve_memories_enabled: true,
-    memory_scope: 'dedicated',
   };
-}
-
-function applySetStatuses(items = [], packet = {}) {
-  const unchangedCount = Number(packet?.embedding?.unchanged_items || 0);
-  const updatedCount = Number(packet?.embedding?.updated_items || 0);
-  const savedCount = Number(packet?.embedding?.saved_items || 0);
-  return items.map((item, index) => ({
-    ...item,
-    status: index < unchangedCount
-      ? 'unchanged'
-      : index < unchangedCount + updatedCount
-        ? 'updated'
-        : savedCount > 0
-          ? 'added'
-          : 'unchanged',
-  }));
 }
 
 function buildLogStep(id, title, status, description, details = null) {
@@ -237,22 +179,26 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet }) {
   return [
     buildLogStep('request', 'Richiesta test', 'completed', 'Prompt ricevuto dalla console Memory Engine.', {
       prompt,
-      scope: packet?.scope || agent?.memory_scope || 'shared',
-      agent: agent?.name || agent?.id || 'shared',
-      agent_id: agent?.memory_scope === 'dedicated' ? agent?.id : null,
+      provider: packet?.provider || retrieval.provider || null,
+      project_id: packet?.project_id || retrieval.project_id || null,
+      agent: agent?.name || agent?.id || 'default',
+      agent_id: agent?.id || null,
     }),
     buildLogStep(
       'before-start',
-      'Agente beforeMemory',
+      'mem0 retrieval',
       packet?.enabled === false ? 'skipped' : 'completed',
       packet?.enabled === false
         ? `beforeMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'beforeMemory ha delegato il recupero all agente memorie.'
+        : 'beforeMemory ha eseguito la ricerca semantica su mem0.'
     ),
-    buildLogStep('memory-agent', 'runCypherQuery', packet?.skipped_reason === 'retrieval_error' ? 'error' : 'completed', 'L agente memorie ha usato il tool runCypherQuery secondo necessita.', {
+    buildLogStep('search', 'Search mem0', packet?.skipped_reason === 'retrieval_error' ? 'error' : 'completed', 'Ricerca semantica tramite API mem0.', {
       summary: packet?.request?.summary || retrieval.request_summary || null,
-      tool_calls: retrieval.agent_tool_calls || 0,
-      selected_ids: retrieval.selected_ids || [],
+      project_id: retrieval.project_id || packet?.project_id || null,
+      queries: retrieval.queries || [],
+      search_result_count: retrieval.search_result_count || 0,
+      hits: retrieval.hits || [],
+      files_read: retrieval.files_read || [],
     }),
     buildLogStep(
       'structured-output',
@@ -271,67 +217,6 @@ function buildBeforeMemoryProcessLog({ prompt, agent, packet }) {
       hasContext ? 'completed' : 'skipped',
       hasContext ? 'Il contextText e stato inserito nei messaggi della richiesta.' : 'Nessuna memoria e stata inserita nei messaggi.'
     ),
-    ...(warnings.length > 0
-      ? [buildLogStep('warnings', 'Warning', 'warning', 'Il processo ha prodotto avvisi non bloccanti.', { warnings })]
-      : []),
-  ];
-}
-
-function buildAfterMemoryProcessLog({ prompt, agent, packet, items }) {
-  const embedding = packet?.embedding || {};
-  const warnings = Array.isArray(packet?.warnings) ? packet.warnings : [];
-  const toolCalls = embedding.agent_tool_calls || packet?.episodes?.tools || 0;
-  const hasMemoryToolCalls = toolCalls > 0;
-  return [
-    buildLogStep('request', 'Richiesta test', 'completed', 'Prompt ricevuto come informazione candidata da salvare.', {
-      prompt,
-      scope: packet?.scope || agent?.memory_scope || 'shared',
-      agent: agent?.name || agent?.id || 'shared',
-      agent_id: agent?.memory_scope === 'dedicated' ? agent?.id : null,
-    }),
-    buildLogStep(
-      'after-start',
-      'Agente afterMemory',
-      packet?.enabled === false ? 'skipped' : 'completed',
-      packet?.enabled === false
-        ? `afterMemory non eseguito: ${packet?.skipped_reason || 'disabilitato'}.`
-        : 'afterMemory ha delegato eventuali aggiornamenti all agente memorie.'
-    ),
-    buildLogStep('persistence', 'Persistenza Neo4j', hasMemoryToolCalls ? 'completed' : 'skipped', 'Persistenza consentita solo tramite query libere runCypherQuery generate dall agente memorie.', {
-      tool_calls: toolCalls,
-    }),
-    buildLogStep(
-      'memory-agent',
-      'runCypherQuery',
-      packet?.skipped_reason === 'agent_error' ? 'error' : 'completed',
-      hasMemoryToolCalls
-        ? 'L agente memorie ha applicato eventuali query tramite runCypherQuery.'
-        : 'Nessuna query eseguita: il backend non applica piu scritture strutturate di fallback.',
-      {
-        tool_calls: toolCalls,
-        request_summary: packet?.request?.summary || null,
-      }
-    ),
-    buildLogStep(
-      'structured-output',
-      packet?.contextText ? 'memoryStatus' : 'packet memorie',
-      packet?.contextText || items.length > 0 ? 'completed' : 'skipped',
-      packet?.contextText
-        ? 'L agente ha restituito output strutturato memoryStatus.'
-        : items.length > 0
-          ? 'Il packet contiene dettagli restituiti dall agente memorie.'
-          : `Nessuno status restituito${packet?.skipped_reason ? `: ${packet.skipped_reason}` : '.'}`,
-      {
-        memoryStatus: packet?.contextText || '',
-        items: items.length,
-      }
-    ),
-    buildLogStep('classification', 'Esito set', items.length > 0 ? 'completed' : 'skipped', 'Classificazione visuale delle memorie restituite alla console.', {
-      added: items.filter((item) => item.status === 'added').length,
-      updated: items.filter((item) => item.status === 'updated').length,
-      deleted: items.filter((item) => item.status === 'deleted').length,
-      unchanged: items.filter((item) => item.status === 'unchanged').length,
-    }),
     ...(warnings.length > 0
       ? [buildLogStep('warnings', 'Warning', 'warning', 'Il processo ha prodotto avvisi non bloccanti.', { warnings })]
       : []),
@@ -367,50 +252,6 @@ router.post('/get', async (req, res) => {
   } catch (error) {
     console.error('Errore Memory Engine getMemories:', error);
     return res.status(error.status || 500).json({ error: error.message || 'Errore recupero memorie.' });
-  }
-});
-
-router.post('/set', async (req, res) => {
-  try {
-    const prompt = normalizePrompt(req.body?.prompt);
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt richiesto.' });
-    }
-    const agent = await resolveMemoryTestAgent(req.body || {});
-    const userMessage = buildUserMessage(prompt);
-    const assistantResponse = [
-      'Informazione operativa candidata dal test admin.',
-      'Valuta se e solo se e riutilizzabile in run future:',
-      prompt,
-    ].join('\n');
-    const messages = [
-      userMessage,
-      { role: 'assistant', content: assistantResponse },
-    ];
-    const packet = await runAfterMemory({
-      agent,
-      chatId: null,
-      messages,
-      userMessage,
-      assistantResponse,
-      toolCalls: [],
-      toolResults: [],
-      userKey: getRequesterLabel(req.user),
-      modelConfig: null,
-    });
-
-    const items = applySetStatuses(packetToItems(packet, getRequesterLabel(req.user)), packet);
-
-    return res.json({
-      action: 'setMemories',
-      prompt,
-      packet,
-      process_log: buildAfterMemoryProcessLog({ prompt, agent, packet, items }),
-      items,
-    });
-  } catch (error) {
-    console.error('Errore Memory Engine setMemories:', error);
-    return res.status(error.status || 500).json({ error: error.message || 'Errore salvataggio memorie.' });
   }
 });
 

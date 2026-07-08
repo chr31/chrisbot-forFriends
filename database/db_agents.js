@@ -4,7 +4,6 @@ const VALID_AGENT_KINDS = new Set(['worker', 'orchestrator']);
 const VALID_VISIBILITY_SCOPES = new Set(['public', 'restricted', 'private']);
 const VALID_PERMISSION_ROLES = new Set(['chat', 'manage']);
 const VALID_PERMISSION_SUBJECT_TYPES = new Set(['user', 'upn']);
-const VALID_MEMORY_SCOPES = new Set(['shared', 'dedicated']);
 const { normalizeModelConfig, getDefaultModelConfig } = require('../services/aiModelCatalog');
 
 function normalizeAgentKind(value) {
@@ -25,11 +24,6 @@ function normalizePermissionRole(value) {
 function normalizePermissionSubjectType(value) {
   const normalized = String(value || 'user').trim().toLowerCase();
   return VALID_PERMISSION_SUBJECT_TYPES.has(normalized) ? normalized : 'user';
-}
-
-function normalizeMemoryScope(value) {
-  const normalized = String(value || 'shared').trim().toLowerCase();
-  return VALID_MEMORY_SCOPES.has(normalized) ? normalized : 'shared';
 }
 
 function normalizeBooleanFlag(value, defaultValue = 0) {
@@ -110,7 +104,6 @@ function hydrateAgent(row) {
     goals: String(row.goals || ''),
     memory_engine_enabled: Number(row.memory_engine_enabled) === 1,
     improve_memories_enabled: Number(row.improve_memories_enabled) === 1,
-    memory_scope: normalizeMemoryScope(row.memory_scope),
     guardrails_json: sanitizeGuardrailsConfig(row.guardrails_json),
     use_portal_default_model: usePortalDefaultModel,
     specific_model_config: specificModelConfig,
@@ -143,7 +136,6 @@ async function initAgentsTables() {
       goals LONGTEXT NULL,
       memory_engine_enabled TINYINT(1) NOT NULL DEFAULT 0,
       improve_memories_enabled TINYINT(1) NOT NULL DEFAULT 0,
-      memory_scope ENUM('shared', 'dedicated') NOT NULL DEFAULT 'shared',
       is_active TINYINT(1) NOT NULL DEFAULT 1,
       created_by VARCHAR(255) NULL,
       created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -310,17 +302,6 @@ async function initAgentsTables() {
   try {
     await pool.query(`
       ALTER TABLE agents
-      ADD COLUMN memory_scope ENUM('shared', 'dedicated') NOT NULL DEFAULT 'shared' AFTER memory_engine_enabled
-    `);
-  } catch (error) {
-    if (error && error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_NO_SUCH_TABLE') {
-      throw error;
-    }
-  }
-
-  try {
-    await pool.query(`
-      ALTER TABLE agents
       ADD COLUMN improve_memories_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER memory_engine_enabled
     `);
   } catch (error) {
@@ -432,8 +413,8 @@ async function insertAgent(input) {
   const defaultModelConfig = normalizeModelConfig(input, getDefaultModelConfig());
   const [result] = await pool.query(
     `INSERT INTO agents
-      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, use_portal_default_model, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_alive, alive_loop_seconds, alive_prompt, alive_context_messages, alive_include_goals, goals, memory_engine_enabled, improve_memories_enabled, memory_scope, is_active, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (name, slug, kind, user_description, allowed_group_names_csv, system_prompt, use_portal_default_model, default_model_provider, default_model_name, default_ollama_server_id, guardrails_json, visibility_scope, direct_chat_enabled, is_alive, alive_loop_seconds, alive_prompt, alive_context_messages, alive_include_goals, goals, memory_engine_enabled, improve_memories_enabled, is_active, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       name,
       slug,
@@ -456,7 +437,6 @@ async function insertAgent(input) {
       String(input?.goals || '') || null,
       normalizeBooleanFlag(input?.memory_engine_enabled, 0),
       normalizeBooleanFlag(input?.improve_memories_enabled, 0),
-      normalizeMemoryScope(input?.memory_scope),
       normalizeBooleanFlag(input?.is_active, 1),
       input?.created_by ? String(input.created_by) : null,
     ]
@@ -565,10 +545,6 @@ async function updateAgent(id, updates) {
   if (updates.improve_memories_enabled !== undefined) {
     entries.push('improve_memories_enabled = ?');
     values.push(normalizeBooleanFlag(updates.improve_memories_enabled, 0));
-  }
-  if (updates.memory_scope !== undefined) {
-    entries.push('memory_scope = ?');
-    values.push(normalizeMemoryScope(updates.memory_scope));
   }
   if (updates.is_active !== undefined) {
     entries.push('is_active = ?');

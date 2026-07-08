@@ -525,7 +525,7 @@ function getRunMemoryEvents(run: AgentRun): MemoryRunEvent[] {
 function hasRunningMemoryEvents(chatRuns: AgentRun[]): boolean {
   return chatRuns.some((run) =>
     getRunMemoryEvents(run).some((event) =>
-      String(event.type || '').toLowerCase() === 'memory_after'
+      String(event.type || '').toLowerCase() === 'memory_before'
       && String(event.status || '').toLowerCase() === 'running'
     )
   );

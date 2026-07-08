@@ -70,6 +70,8 @@ function buildMemoryTraceDetails(packet = {}, phase) {
     : [];
   return {
     phase,
+    provider: packet.provider || packet.retrieval?.provider || null,
+    project_id: packet.project_id || packet.retrieval?.project_id || null,
     request_summary: getDisplayContent(
       packet.request?.summary
         || packet.retrieval?.request_summary
@@ -89,13 +91,15 @@ function buildMemoryTraceDetails(packet = {}, phase) {
 
 function formatMemoryTraceContent(packet = {}, fallback) {
   const parts = [];
-  const scope = String(packet.scope || '').trim();
+  const provider = String(packet.provider || packet.retrieval?.provider || '').trim();
+  const projectId = String(packet.project_id || packet.retrieval?.project_id || '').trim();
   const skippedReason = String(packet.skipped_reason || '').trim();
   const warnings = Array.isArray(packet.warnings) ? packet.warnings.filter(Boolean) : [];
   const entryCount = countPacketEntries(packet);
   const requestSummary = getDisplayContent(packet.request?.summary || packet.retrieval?.request_summary || packet.process?.request_summary || '');
 
-  if (scope) parts.push(`Scope: ${scope}`);
+  if (provider) parts.push(`Provider: ${provider}`);
+  if (projectId) parts.push(`Project: ${projectId}`);
   if (requestSummary) parts.push(`Richiesta: ${requestSummary}`);
   if (packet.enabled === false) parts.push('Memory Engine non eseguito.');
   if (skippedReason) parts.push(`Stato: ${skippedReason}`);
@@ -110,41 +114,10 @@ function buildMemoryRunTrace(beforePacket = null, afterPacket = null, options = 
   if (beforePacket) {
     events.push({
       type: 'memory_before',
-      label: 'Memory retrieve',
-      content: formatMemoryTraceContent(beforePacket, 'Recupero memoria completato.'),
+      label: 'Memory retrieval read-only',
+      content: formatMemoryTraceContent(beforePacket, 'Recupero memoria read-only completato.'),
       status: beforePacket.skipped_reason ? 'skipped' : 'completed',
-      scope: beforePacket.scope || null,
       details: buildMemoryTraceDetails(beforePacket, 'before'),
-    });
-  }
-  if (afterPacket) {
-    events.push({
-      type: 'memory_after',
-      label: 'Memory salvataggio',
-      content: formatMemoryTraceContent(afterPacket, 'Salvataggio memoria completato.'),
-      status: afterPacket.skipped_reason ? 'skipped' : 'completed',
-      scope: afterPacket.scope || null,
-      details: buildMemoryTraceDetails(afterPacket, 'after'),
-    });
-  } else if (options.includePendingAfter) {
-    events.push({
-      type: 'memory_after',
-      label: 'Memory salvataggio',
-      content: 'Salvataggio memoria in corso.',
-      status: 'running',
-      scope: beforePacket?.scope || null,
-      details: {
-        phase: 'after',
-        request_summary: '',
-        topics: [],
-        contextText: '',
-        items: [],
-        reusable_info: [],
-        retrieval: null,
-        embedding: null,
-        episodes: null,
-        warnings: [],
-      },
     });
   }
   return { memory_events: events };

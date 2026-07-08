@@ -91,50 +91,20 @@ type TelegramRuntimeSettings = {
 };
 
 type MemoryEngineSettings = {
+  provider: 'disabled' | 'mem0';
   enabled: boolean;
-  analysis_model_provider: 'openai' | 'ollama' | 'exo';
-  analysis_model: string;
-  ollama_server_id: string | null;
-  embedding_model_provider: 'openai' | 'ollama';
-  embedding_model: string;
-  embedding_ollama_server_id: string | null;
-  neo4j_url: string;
-  neo4j_browser_url: string;
-  neo4j_username: string;
-  neo4j_password: string;
-  neo4j_password_configured?: boolean;
-  graph_dashboard_password?: string;
-  graph_dashboard_password_configured?: boolean;
-  memory_agent_system_prompt: string;
-  before_memory_prompt: string;
-  after_memory_prompt: string;
-};
-
-type ControlEngineSettings = {
-  enabled: boolean;
-  execution_enabled: boolean;
-  neo4j_url: string;
-  neo4j_browser_url: string;
-  neo4j_username: string;
-  neo4j_password: string;
-  neo4j_password_configured?: boolean;
-  persistent_connections: ControlPersistentConnection[];
-};
-
-type ControlPersistentConnection = {
-  ref: string;
-  label: string;
-  protocol: 'telnet' | 'ssh';
-  host: string;
-  port: number;
-  auth: boolean;
-  username: string;
-  password: string;
-  username_configured?: boolean;
-  password_configured?: boolean;
-  persistent: boolean;
-  ready_message: string;
-  enabled: boolean;
+  mem0_api_url: string;
+  mem0_api_key: string;
+  mem0_api_key_configured?: boolean;
+  mem0_timeout_ms: number;
+  mem0_add_timeout_ms: number;
+  mem0_search_limit: number;
+  analysis_model_provider?: 'openai' | 'ollama' | 'exo';
+  analysis_model?: string;
+  ollama_server_id?: string | null;
+  embedding_model_provider?: 'openai' | 'ollama';
+  embedding_model?: string;
+  embedding_ollama_server_id?: string | null;
 };
 
 type TelegramUserLink = {
@@ -205,11 +175,10 @@ type SettingsPayload = {
   openai_runtime: OpenAiRuntimeSettings;
   telegram_runtime: TelegramRuntimeSettings;
   memory_engine: MemoryEngineSettings;
-  control_engine: ControlEngineSettings;
 };
 
 type SecretRevealTarget = {
-  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine' | 'control_engine';
+  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine';
   field: string;
   connection_id?: string;
 };
@@ -219,13 +188,6 @@ type MemoryConnectionStatus = {
   status: 'connected' | 'error' | 'not_configured';
   error?: string;
   checked_at?: string;
-  neo4j?: {
-    ok?: boolean;
-    status?: string;
-    url?: string;
-    error?: string;
-    checked_at?: string;
-  };
   embedding?: {
     ok?: boolean;
     status?: string;
@@ -428,9 +390,7 @@ export default function SettingsPage() {
   const [isSavingOllama, setIsSavingOllama] = useState(false);
   const [isSavingOpenAi, setIsSavingOpenAi] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
-  const [isClearingMemory, setIsClearingMemory] = useState(false);
-  const [isSavingControl, setIsSavingControl] = useState(false);
-  const [isClearingControl, setIsClearingControl] = useState(false);
+  const [isTestingMemory, setIsTestingMemory] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const [revealingSecrets, setRevealingSecrets] = useState<Record<string, boolean>>({});
@@ -461,7 +421,6 @@ export default function SettingsPage() {
   const [ollamaStatuses, setOllamaStatuses] = useState<Record<string, OllamaConnectionStatus>>({});
   const [openAiRuntime, setOpenAiRuntime] = useState<OpenAiRuntimeSettings | null>(null);
   const [memoryEngine, setMemoryEngine] = useState<MemoryEngineSettings | null>(null);
-  const [controlEngine, setControlEngine] = useState<ControlEngineSettings | null>(null);
   const [memoryConnectionStatus, setMemoryConnectionStatus] = useState<MemoryConnectionStatus>({
     ok: false,
     status: 'not_configured',
@@ -586,7 +545,6 @@ export default function SettingsPage() {
       setOpenAiRuntime(payload.openai_runtime || null);
       const loadedMemoryEngine = payload.memory_engine || null;
       setMemoryEngine(loadedMemoryEngine);
-      setControlEngine(payload.control_engine || null);
       setMemoryConnectionStatus({
         ok: false,
         status: 'not_configured',
@@ -753,117 +711,19 @@ export default function SettingsPage() {
     }
   };
 
-  const handleClearMemoryValues = async () => {
-    if (!memoryEngine || isClearingMemory) return;
-    const confirmed = window.confirm('Eliminare tutte le memorie salvate in Neo4j? L\'operazione non puo essere annullata.');
-    if (!confirmed) return;
-    setIsClearingMemory(true);
+  const handleTestMemoryConnection = async () => {
+    setIsTestingMemory(true);
     try {
-      const response = await authFetch('/api/settings/memory/values', {
-        method: 'DELETE',
-      });
+      const response = await authFetch('/api/settings/memory/health');
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error || 'Eliminazione memorie Neo4j fallita.');
-      setMemoryConnectionStatus({
-        ok: false,
-        status: 'not_configured',
-      });
-      alert(`Memorie eliminate: ${Number(body?.deleted || 0).toLocaleString('it-IT')}.`);
+      if (!response.ok || body?.ok === false) {
+        throw new Error(body?.error || 'mem0 non raggiungibile.');
+      }
+      setMemoryConnectionStatus({ ok: true, status: 'connected', checked_at: new Date().toISOString() });
     } catch (err: any) {
-      alert(err?.message || 'Errore eliminazione memorie Neo4j.');
+      setMemoryConnectionStatus({ ok: false, status: 'error', error: err?.message || 'mem0 non raggiungibile.' });
     } finally {
-      setIsClearingMemory(false);
-    }
-  };
-
-  const buildConnectionRef = () => `conn_${Date.now().toString(36)}`;
-
-  const addPersistentConnection = () => {
-    setControlEngine((current) => current ? {
-      ...current,
-      persistent_connections: [
-        ...(current.persistent_connections || []),
-        {
-          ref: buildConnectionRef(),
-          label: 'Nuova connessione',
-          protocol: 'telnet',
-          host: '',
-          port: 23,
-          auth: false,
-          username: '',
-          password: '',
-          persistent: true,
-          ready_message: '',
-          enabled: true,
-        },
-      ],
-    } : current);
-  };
-
-  const updatePersistentConnection = (index: number, patch: Partial<ControlPersistentConnection>) => {
-    setControlEngine((current) => current ? {
-      ...current,
-      persistent_connections: (current.persistent_connections || []).map((connection, itemIndex) => (
-        itemIndex === index ? { ...connection, ...patch } : connection
-      )),
-    } : current);
-  };
-
-  const removePersistentConnection = (index: number) => {
-    setControlEngine((current) => current ? {
-      ...current,
-      persistent_connections: (current.persistent_connections || []).filter((_, itemIndex) => itemIndex !== index),
-    } : current);
-  };
-
-  const handleSaveControl = async () => {
-    if (!controlEngine) return;
-    const invalidConnection = (controlEngine.persistent_connections || []).find((connection) => (
-      connection.enabled && connection.auth
-      && !String(connection.username || '').trim()
-      && !connection.username_configured
-    ) || (
-      connection.enabled && connection.auth
-      && !String(connection.password || '').trim()
-      && !connection.password_configured
-    ));
-    if (invalidConnection) {
-      alert('Username e password sono obbligatori per le connessioni persistenti con auth attivo.');
-      return;
-    }
-    setIsSavingControl(true);
-    try {
-      const response = await authFetch('/api/settings/control', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(controlEngine),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error || 'Salvataggio Control Engine fallito.');
-      await loadSettings();
-    } catch (err: any) {
-      alert(err?.message || 'Errore salvataggio Control Engine.');
-    } finally {
-      setIsSavingControl(false);
-    }
-  };
-
-  const handleClearControlValues = async () => {
-    if (!controlEngine || isClearingControl) return;
-    const confirmed = window.confirm('Eliminare tutti i dati Control Engine salvati in Neo4j? L operazione non puo essere annullata.');
-    if (!confirmed) return;
-    setIsClearingControl(true);
-    try {
-      const response = await authFetch('/api/settings/control/values', {
-        method: 'DELETE',
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error || 'Eliminazione Control Engine Neo4j fallita.');
-      alert(`Dati Control Engine eliminati: ${Number(body?.deleted || 0).toLocaleString('it-IT')}.`);
-    } catch (err: any) {
-      alert(err?.message || 'Errore eliminazione Control Engine Neo4j.');
-    } finally {
-      setIsClearingControl(false);
+      setIsTestingMemory(false);
     }
   };
 
@@ -1665,7 +1525,7 @@ export default function SettingsPage() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-xl font-semibold text-white">Memory Engine</h2>
-              <p className="mt-1 text-sm text-gray-300">Configura il Memory Engine globale, i modelli dedicati e la connessione Neo4j.</p>
+              <p className="mt-1 text-sm text-gray-300">Configura la connessione all'istanza mem0. Il recupero (search) e l'aggiornamento (add) delle memorie passano da mem0.</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {memoryEngine ? (
@@ -1674,19 +1534,10 @@ export default function SettingsPage() {
                   onChange={() => setMemoryEngine((current) => current ? {
                     ...current,
                     enabled: !current.enabled,
+                    provider: !current.enabled ? 'mem0' : 'disabled',
                   } : current)}
                 />
               ) : null}
-              <button
-                type="button"
-                onClick={handleClearMemoryValues}
-                disabled={isClearingMemory || !memoryEngine}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50 disabled:opacity-60"
-                title="Elimina tutte le memorie Neo4j"
-                aria-label="Elimina tutte le memorie Neo4j"
-              >
-                <TrashIcon className="h-5 w-5" />
-              </button>
               <button
                 type="button"
                 onClick={handleSaveMemory}
@@ -1701,6 +1552,117 @@ export default function SettingsPage() {
           {memoryEngine ? (
             <div className="mt-6 space-y-6">
               <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">mem0 provider</h3>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 text-sm text-gray-200">
+                      <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
+                      <span>{memoryStatusMeta.label}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleTestMemoryConnection}
+                      disabled={isTestingMemory || !memoryEngine}
+                      className="rounded-xl border border-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-100 hover:bg-gray-800 disabled:opacity-60"
+                    >
+                      {isTestingMemory ? 'Test in corso...' : 'Test connessione'}
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Salva le impostazioni prima del test: la connessione usa i valori gia' persistiti.</p>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <label className="text-sm text-gray-200 xl:col-span-3">
+                    <span className="mb-1 block">API URL</span>
+                    <input
+                      value={memoryEngine.mem0_api_url || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_api_url: event.target.value,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="http://127.0.0.1:8888"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200 xl:col-span-3">
+                    <span className="mb-1 block">API key</span>
+                    <div className="flex gap-2">
+                      <input
+                        type={revealedSecrets['memory.mem0_api_key'] ? 'text' : 'password'}
+                        value={memoryEngine.mem0_api_key || ''}
+                        onChange={(event) => setMemoryEngine((current) => current ? {
+                          ...current,
+                          mem0_api_key: event.target.value,
+                        } : current)}
+                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        placeholder={memoryEngine.mem0_api_key_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'API key mem0 (X-API-Key)'}
+                      />
+                      <SecretRevealButton
+                        isRevealed={Boolean(revealedSecrets['memory.mem0_api_key'])}
+                        isLoading={Boolean(revealingSecrets['memory.mem0_api_key'])}
+                        disabled={!memoryEngine.mem0_api_key_configured}
+                        onReveal={() => revealSecret(
+                          'memory.mem0_api_key',
+                          { area: 'memory_engine', field: 'mem0_api_key' },
+                          (value) => setMemoryEngine((current) => current ? { ...current, mem0_api_key: value } : current),
+                          (revealedValue) => setMemoryEngine((current) => current?.mem0_api_key === revealedValue ? { ...current, mem0_api_key: '' } : current),
+                        )}
+                      />
+                    </div>
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block">Timeout ms</span>
+                    <input
+                      type="number"
+                      min={1000}
+                      max={60000}
+                      value={memoryEngine.mem0_timeout_ms || 8000}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_timeout_ms: Number(event.target.value) || 8000,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block" title="Scrittura memorie (afterMemory). mem0 estrae con un LLM lato server: puo' richiedere decine di secondi, tienilo alto. Non blocca la chat.">Timeout add ms</span>
+                    <input
+                      type="number"
+                      value={memoryEngine.mem0_add_timeout_ms ?? 60000}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_add_timeout_ms: event.target.value === '' ? 0 : Number(event.target.value),
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block">Max risultati search</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={memoryEngine.mem0_search_limit || 6}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_search_limit: Number(event.target.value) || 6,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                </div>
+                {memoryConnectionStatus.error ? (
+                  <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+                    {memoryConnectionStatus.error}
+                  </div>
+                ) : null}
+                {memoryConnectionStatus.status === 'connected' ? (
+                  <div className="mt-4 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
+                    mem0 raggiungibile e autenticato.
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="hidden rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
                 <h3 className="text-sm font-semibold text-white">Generale</h3>
                 <div className="mt-4 grid gap-4 xl:grid-cols-2">
                   <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
@@ -1808,428 +1770,11 @@ export default function SettingsPage() {
                       ) : null}
                     </div>
                   </div>
-
-                  <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-white">Neo4j</h4>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-gray-200">
-                        <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
-                        <span>{memoryStatusMeta.label}</span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-x-4 gap-y-4 lg:grid-cols-2">
-                      <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
-                        <span className="mb-1 block">URL Bolt</span>
-                        <input
-                          value={memoryEngine.neo4j_url}
-                          onChange={(event) => setMemoryEngine((current) => current ? {
-                            ...current,
-                            neo4j_url: event.target.value,
-                          } : current)}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                          placeholder="bolt://neo4j:7687"
-                        />
-                      </label>
-
-                      <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
-                        <span className="mb-1 block">URL pagina web Neo4j</span>
-                        <input
-                          value={memoryEngine.neo4j_browser_url}
-                          onChange={(event) => setMemoryEngine((current) => current ? {
-                            ...current,
-                            neo4j_browser_url: event.target.value,
-                          } : current)}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                          placeholder="http://127.0.0.1:7474"
-                        />
-                      </label>
-
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Username</span>
-                    <input
-                      value={memoryEngine.neo4j_username}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        neo4j_username: event.target.value,
-                      } : current)}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="neo4j"
-                    />
-                  </label>
-
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Password</span>
-                    <div className="flex gap-2">
-                      <input
-                        type={revealedSecrets['memory.neo4j_password'] ? 'text' : 'password'}
-                        value={memoryEngine.neo4j_password}
-                        onChange={(event) => setMemoryEngine((current) => current ? {
-                          ...current,
-                          neo4j_password: event.target.value,
-                        } : current)}
-                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                        placeholder={memoryEngine.neo4j_password_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password Neo4j'}
-                      />
-                      <SecretRevealButton
-                        isRevealed={Boolean(revealedSecrets['memory.neo4j_password'])}
-                        isLoading={Boolean(revealingSecrets['memory.neo4j_password'])}
-                        disabled={!memoryEngine.neo4j_password_configured}
-                        onReveal={() => revealSecret(
-                          'memory.neo4j_password',
-                          { area: 'memory_engine', field: 'neo4j_password' },
-                          (value) => setMemoryEngine((current) => current ? { ...current, neo4j_password: value } : current),
-                          (revealedValue) => setMemoryEngine((current) => current?.neo4j_password === revealedValue ? { ...current, neo4j_password: '' } : current),
-                        )}
-                      />
-                    </div>
-                  </label>
-
-                  <label className="min-w-0 text-sm text-gray-200 lg:col-span-2">
-                    <span className="mb-1 block">Password dashboard grafo</span>
-                    <input
-                      type="password"
-                      value={memoryEngine.graph_dashboard_password || ''}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        graph_dashboard_password: event.target.value,
-                      } : current)}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder={memoryEngine.graph_dashboard_password_configured ? 'Gia configurata; cambia per invalidare le sessioni dashboard' : 'Password per aprire /graph-live senza ChrisBot'}
-                    />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Ogni cambio password invalida le sessioni gia aperte della dashboard grafo.
-                    </p>
-                  </label>
-                </div>
-
-                {memoryConnectionStatus.error ? (
-                  <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
-                    {memoryConnectionStatus.error}
-                  </div>
-                ) : null}
-                {memoryConnectionStatus.status === 'connected' ? (
-                  <div className="mt-4 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
-                    Neo4j connesso
-                    {memoryConnectionStatus.embedding?.provider && memoryConnectionStatus.embedding?.model
-                      ? ` · embedding ${memoryConnectionStatus.embedding.provider}/${memoryConnectionStatus.embedding.model}${memoryConnectionStatus.embedding.dimensions ? ` (${memoryConnectionStatus.embedding.dimensions} dimensioni)` : ''}`
-                      : ''}
-                  </div>
-                ) : null}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
-                <h3 className="text-sm font-semibold text-white">Agente memorie</h3>
-                <div className="mt-4 space-y-4">
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">System prompt agente</span>
-                    <textarea
-                      value={memoryEngine.memory_agent_system_prompt || ''}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        memory_agent_system_prompt: event.target.value,
-                      } : current)}
-                      className="min-h-36 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Prompt beforeMemory</span>
-                    <textarea
-                      value={memoryEngine.before_memory_prompt || ''}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        before_memory_prompt: event.target.value,
-                      } : current)}
-                      className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-gray-200">
-                    <span className="mb-1 block">Prompt afterMemory</span>
-                    <textarea
-                      value={memoryEngine.after_memory_prompt || ''}
-                      onChange={(event) => setMemoryEngine((current) => current ? {
-                        ...current,
-                        after_memory_prompt: event.target.value,
-                      } : current)}
-                      className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                    />
-                  </label>
                 </div>
               </div>
             </div>
           ) : (
             <div className="mt-6 text-sm text-gray-300">Nessuna configurazione Memory Engine disponibile.</div>
-          )}
-        </section>
-      ) : null}
-
-      {activeTab === 'memory' ? (
-        <section className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-semibold text-white">Control Engine</h2>
-              <p className="mt-1 text-sm text-gray-300">Configura il Control Engine e le connessioni persistenti.</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {controlEngine ? (
-                <Toggle
-                  checked={controlEngine.enabled && controlEngine.execution_enabled}
-                  onChange={() => setControlEngine((current) => {
-                    if (!current) return current;
-                    const enabled = !(current.enabled && current.execution_enabled);
-                    return {
-                      ...current,
-                      enabled,
-                      execution_enabled: enabled,
-                    };
-                  })}
-                />
-              ) : null}
-              <button
-                type="button"
-                onClick={handleClearControlValues}
-                disabled={isClearingControl || !controlEngine}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50 disabled:opacity-60"
-                title="Elimina dati Control Engine Neo4j"
-                aria-label="Elimina dati Control Engine Neo4j"
-              >
-                <TrashIcon className="h-5 w-5" />
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveControl}
-                disabled={isSavingControl || !controlEngine}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-              >
-                {isSavingControl ? 'Salvataggio...' : 'Salva control'}
-              </button>
-            </div>
-          </div>
-
-          {controlEngine ? (
-            <div className="mt-6 space-y-4">
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-white">Neo4j Control Engine</h3>
-                </div>
-                <div className="mt-4 grid max-w-4xl gap-x-4 gap-y-4 sm:grid-cols-2">
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">URL Bolt</span>
-                    <input
-                      value={controlEngine.neo4j_url}
-                      onChange={(event) => setControlEngine((current) => current ? {
-                        ...current,
-                        neo4j_url: event.target.value,
-                      } : current)}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="bolt://neo4j-control:7687"
-                    />
-                  </label>
-
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">URL pagina web Neo4j</span>
-                    <input
-                      value={controlEngine.neo4j_browser_url}
-                      onChange={(event) => setControlEngine((current) => current ? {
-                        ...current,
-                        neo4j_browser_url: event.target.value,
-                      } : current)}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="http://127.0.0.1:7475"
-                    />
-                  </label>
-
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Username</span>
-                    <input
-                      value={controlEngine.neo4j_username}
-                      onChange={(event) => setControlEngine((current) => current ? {
-                        ...current,
-                        neo4j_username: event.target.value,
-                      } : current)}
-                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                      placeholder="neo4j"
-                    />
-                  </label>
-
-                  <label className="min-w-0 text-sm text-gray-200">
-                    <span className="mb-1 block">Password</span>
-                    <div className="flex gap-2">
-                      <input
-                        type={revealedSecrets['control.neo4j_password'] ? 'text' : 'password'}
-                        value={controlEngine.neo4j_password}
-                        onChange={(event) => setControlEngine((current) => current ? {
-                          ...current,
-                          neo4j_password: event.target.value,
-                        } : current)}
-                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
-                        placeholder={controlEngine.neo4j_password_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'Password Neo4j'}
-                      />
-                      <SecretRevealButton
-                        isRevealed={Boolean(revealedSecrets['control.neo4j_password'])}
-                        isLoading={Boolean(revealingSecrets['control.neo4j_password'])}
-                        disabled={!controlEngine.neo4j_password_configured}
-                        onReveal={() => revealSecret(
-                          'control.neo4j_password',
-                          { area: 'control_engine', field: 'neo4j_password' },
-                          (value) => setControlEngine((current) => current ? { ...current, neo4j_password: value } : current),
-                          (revealedValue) => setControlEngine((current) => current?.neo4j_password === revealedValue ? { ...current, neo4j_password: '' } : current),
-                        )}
-                      />
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-white">Connessioni persistenti</h3>
-                  <p className="mt-1 text-xs text-gray-400">Riferimenti usabili dalle action ssh/telnet del Control Engine.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={addPersistentConnection}
-                  className="rounded-xl border border-gray-700 px-3 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-800"
-                >
-                  Aggiungi
-                </button>
-              </div>
-              <div className="mt-4 space-y-3">
-                {(controlEngine.persistent_connections || []).length === 0 ? (
-                  <p className="text-sm text-gray-400">Nessuna connessione persistente configurata.</p>
-                ) : null}
-                {(controlEngine.persistent_connections || []).map((connection, index) => (
-                  <div key={connection.ref || index} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-white">{connection.label || 'Connessione persistente'}</p>
-                        <p className="mt-1 break-all text-xs text-gray-400">ref: {connection.ref}</p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <Toggle
-                          checked={connection.enabled}
-                          onChange={() => updatePersistentConnection(index, { enabled: !connection.enabled })}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removePersistentConnection(index)}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-800/70 text-rose-200 hover:bg-rose-950/50"
-                          title="Rimuovi connessione"
-                          aria-label="Rimuovi connessione"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-4">
-                      <label className="text-sm text-gray-200 md:col-span-2">
-                        <span className="mb-1 block">Label</span>
-                        <input
-                          value={connection.label || ''}
-                          onChange={(event) => updatePersistentConnection(index, { label: event.target.value })}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        />
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 block">Protocollo</span>
-                        <select
-                          value={connection.protocol}
-                          onChange={(event) => updatePersistentConnection(index, {
-                            protocol: event.target.value === 'ssh' ? 'ssh' : 'telnet',
-                            port: event.target.value === 'ssh' ? 22 : 23,
-                            ready_message: event.target.value === 'ssh' ? '' : connection.ready_message,
-                          })}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        >
-                          <option value="telnet">telnet</option>
-                          <option value="ssh">ssh</option>
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-200">
-                        <span className="mb-1 block">Porta</span>
-                        <input
-                          type="number"
-                          value={connection.port || ''}
-                          onChange={(event) => updatePersistentConnection(index, { port: Number(event.target.value || 0) })}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        />
-                      </label>
-                      <label className="text-sm text-gray-200 md:col-span-2">
-                        <span className="mb-1 block">Host</span>
-                        <input
-                          value={connection.host || ''}
-                          onChange={(event) => updatePersistentConnection(index, { host: event.target.value })}
-                          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                        />
-                      </label>
-                      <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-950 px-4 py-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">Auth</p>
-                          <p className="mt-1 text-xs text-gray-400">Username/password cifrati.</p>
-                        </div>
-                        <Toggle
-                          checked={connection.auth}
-                          onChange={() => updatePersistentConnection(index, { auth: !connection.auth })}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between gap-4 rounded-xl border border-gray-800 bg-gray-950 px-4 py-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">Persistente</p>
-                          <p className="mt-1 text-xs text-gray-400">Warmup e reconnect automatico.</p>
-                        </div>
-                        <Toggle
-                          checked={connection.persistent}
-                          onChange={() => updatePersistentConnection(index, { persistent: !connection.persistent })}
-                        />
-                      </div>
-                      {connection.auth ? (
-                        <>
-                          <label className="text-sm text-gray-200 md:col-span-2">
-                            <span className="mb-1 block">Username{connection.username_configured ? ' configurato' : ''}</span>
-                            <input
-                              value={connection.username || ''}
-                              onChange={(event) => updatePersistentConnection(index, { username: event.target.value })}
-                              placeholder={connection.username_configured ? 'Lascia vuoto per mantenere il valore' : ''}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                            />
-                          </label>
-                          <label className="text-sm text-gray-200 md:col-span-2">
-                            <span className="mb-1 block">Password{connection.password_configured ? ' configurata' : ''}</span>
-                            <input
-                              type="password"
-                              value={connection.password || ''}
-                              onChange={(event) => updatePersistentConnection(index, { password: event.target.value })}
-                              placeholder={connection.password_configured ? 'Lascia vuoto per mantenere il valore' : ''}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                            />
-                          </label>
-                        </>
-                      ) : null}
-                      {connection.protocol === 'telnet' ? (
-                        <label className="text-sm text-gray-200 md:col-span-4">
-                          <span className="mb-1 block">Ready message</span>
-                          <input
-                            value={connection.ready_message || ''}
-                            onChange={(event) => updatePersistentConnection(index, { ready_message: event.target.value })}
-                            className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                          />
-                        </label>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-6 text-sm text-gray-300">Nessuna configurazione Control Engine disponibile.</div>
           )}
         </section>
       ) : null}

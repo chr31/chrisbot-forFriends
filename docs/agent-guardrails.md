@@ -9,7 +9,7 @@ I guardrail per agente servono a mantenere ogni agente nel proprio dominio opera
 - Se sono presenti `allowed_intents`, passa solo cio' che combacia con almeno un intent consentito.
 - Se sono presenti solo `blocked_intents`, tutto il resto passa.
 - Se una richiesta viene bloccata, il prompt originale non viene passato all'agente principale.
-- Le richieste bloccate non avviano `afterMemory`, quindi non generano memorie riutilizzabili di dominio.
+- Le richieste bloccate non avviano retrieval memoria; gli inserimenti runtime nel Memory Engine sono dismessi con LLM Wiki.
 - La verifica usa il provider embedding configurato nel Memory Engine. Se i guardrail semantici sono attivi ma gli embedding non sono disponibili, la richiesta viene bloccata in modo restrittivo.
 - Gli embedding degli intent configurati vengono cacheati per evitare di ricalcolare la policy a ogni richiesta.
 - Per richieste lunghe o ambigue viene usato un LLM piccolo cieco, che estrae intent, azioni, topic e segnali di injection senza conoscere allow/block list.

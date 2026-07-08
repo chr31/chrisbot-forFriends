@@ -1,147 +1,88 @@
 const { getMemoryEngineSettingsSync } = require('../appSettings');
-const { buildEmptyMemoryContextPacket, normalizeMemoryScope } = require('./memoryContextPacket');
-const { runMemoryAgent } = require('./memoryAgentRunner');
+const { createMem0Provider } = require('./providers/mem0Provider');
+const { getMemoryChat, getMessageText } = require('./beforeMemory');
 
-const MEMORY_MODEL_TIMEOUT_MS = 45000;
-
-function shouldRunMemory(agent, settings) {
+// La scrittura memorie gira solo se mem0 e attivo a portale e l'agente ha il
+// flag "improve memories". mem0 estrae/deduplica/aggiorna internamente.
+function shouldWriteMemory(agent, settings) {
   return Boolean(settings?.enabled && agent?.improve_memories_enabled);
 }
 
-function getMemoryChat(input = {}) {
-  return input.chat && typeof input.chat === 'object'
-    ? input.chat
-    : {
-        chatId: input.chatId || null,
-        messages: input.messages,
-        sourceMessages: input.messages,
-        userMessage: input.userMessage || null,
-        assistantResponse: input.assistantResponse || '',
-        toolCalls: input.toolCalls || [],
-        toolResults: input.toolResults || [],
-      };
+function getAgentId(agent) {
+  return agent?.id != null && String(agent.id).trim() ? String(agent.id) : null;
 }
 
-function buildAfterMessages(chat = {}) {
-  const messages = Array.isArray(chat.sourceMessages || chat.messages)
-    ? [...(chat.sourceMessages || chat.messages)]
-    : [];
-  const assistantResponse = String(chat.assistantResponse || '').trim();
-  const hasAssistantResponse = assistantResponse
-    && messages.some((message) => message?.role === 'assistant' && String(message.content || '').trim() === assistantResponse);
-  if (assistantResponse && !hasAssistantResponse) {
-    messages.push({ role: 'assistant', content: assistantResponse });
+function extractResponseText(response) {
+  if (!response) return '';
+  if (typeof response === 'string') return response.trim();
+  if (typeof response === 'object') {
+    const text = response.content || response.text || response.message || response.output || '';
+    if (typeof text === 'string' && text.trim()) return text.trim();
+    try {
+      return JSON.stringify(response).trim();
+    } catch (_) {
+      return '';
+    }
   }
+  return String(response).trim();
+}
+
+// Costruisce il turno (user + assistant) da inviare a mem0 per l'estrazione.
+function buildTurnMessages(input = {}) {
+  const chat = getMemoryChat(input);
+  const userText = getMessageText(chat?.userMessage || input.userMessage);
+  const assistantText = extractResponseText(input.response);
+  const messages = [];
+  if (userText) messages.push({ role: 'user', content: userText });
+  if (assistantText) messages.push({ role: 'assistant', content: assistantText });
   return messages;
 }
 
-function appendUserPromptContext(prompt, username) {
-  const cleanPrompt = String(prompt || '').trim();
-  const cleanUsername = String(username || '').trim();
-  if (!cleanUsername) return cleanPrompt;
-  return [cleanPrompt, `Stai parlando con l'utente ${cleanUsername}`].filter(Boolean).join('\n\n');
-}
-
-function withTimeout(promise, timeoutMs, label) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timeout dopo ${timeoutMs}ms`)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 async function afterMemory(input = {}) {
-  const chat = getMemoryChat(input);
   const settings = getMemoryEngineSettingsSync();
-  const scope = normalizeMemoryScope(input.agent?.memory_scope);
-  if (!shouldRunMemory(input.agent, settings)) {
-    return buildEmptyMemoryContextPacket({
-      agent: input.agent,
-      enabled: false,
-      scope,
-      skipped_reason: !settings?.enabled
-        ? 'global_disabled'
-        : 'improve_memories_disabled',
-    });
+  const agentId = getAgentId(input.agent);
+  const result = {
+    enabled: false,
+    provider: 'mem0',
+    agent_id: agentId,
+    written: false,
+    skipped_reason: null,
+    warnings: [],
+  };
+
+  if (!shouldWriteMemory(input.agent, settings)) {
+    result.skipped_reason = !settings?.enabled ? 'global_disabled' : 'agent_disabled';
+    return result;
+  }
+  result.enabled = true;
+
+  if (!agentId) {
+    result.skipped_reason = 'missing_agent_id';
+    result.warnings.push('agent_id mancante: impossibile definire lo scope mem0.');
+    return result;
   }
 
-  const packet = buildEmptyMemoryContextPacket({
-    agent: input.agent,
-    enabled: true,
-    scope,
-    chat_id: chat.chatId || null,
-  });
-  packet.process = {
-    user_key: input.userKey || input.user_key || chat.userKey || chat.owner_username || null,
-    agent: input.agent?.name || input.agent?.id || null,
-    request: chat?.userMessage?.content || '',
-    tool_sequence: ['memory_agent', 'runCypherQuery'],
-    status: input.processStatus || input.process_status || chat.processStatus || 'completed',
-    reusable_info: [],
-  };
-  packet.request = {
-    summary: String(chat?.userMessage?.content || '').slice(0, 220),
-    topics: [],
-  };
+  const messages = buildTurnMessages(input);
+  if (!messages.length) {
+    result.skipped_reason = 'empty_turn';
+    return result;
+  }
 
   try {
-    let result;
-    try {
-      result = await withTimeout(
-        runMemoryAgent({
-          settings,
-          messages: buildAfterMessages(chat),
-          userPrompt: appendUserPromptContext(
-            settings.after_memory_prompt,
-            input.userKey || input.user_key || chat.userKey || chat.owner_username
-          ),
-          scope,
-          agentId: packet.agent_id || null,
-          output: {
-            key: 'memoryStatus',
-            description: 'riassunto delle operazioni di aggiornamento se necessarie',
-          },
-        }),
-        MEMORY_MODEL_TIMEOUT_MS,
-        'Agente memorie'
-      );
-    } catch (error) {
-      result = {
-        text: '',
-        tool_call_count: 0,
-        warning: String(error?.message || error),
-      };
-    }
-    packet.contextText = String(result.text || '').trim();
-    packet.embedding = {
-      saved_items: 0,
-      updated_items: 0,
-      unchanged_items: 0,
-      agent_tool_calls: result.tool_call_count || 0,
-    };
-    packet.episodes = {
-      saved: 0,
-      tools: result.tool_call_count || 0,
-    };
-    if (result.warning) packet.warnings.push(result.warning);
-    if ((result.tool_call_count || 0) === 0 && !packet.contextText) {
-      packet.skipped_reason = 'no_memory_tool_calls';
-    } else if (!packet.contextText) {
-      packet.skipped_reason = 'no_agent_summary';
-    }
+    const provider = createMem0Provider(settings);
+    const scope = { agent_id: agentId };
+    if (input.runId) scope.run_id = String(input.runId);
+    await provider.add(messages, scope);
+    result.written = true;
   } catch (error) {
-    packet.skipped_reason = 'agent_error';
-    packet.process.status = 'failed';
-    packet.warnings.push(`Agente memorie non completato: ${error?.message || error}`);
+    result.skipped_reason = 'add_error';
+    result.warnings.push(`mem0 add fallita: ${error?.message || error}`);
   }
-
-  return packet;
+  return result;
 }
 
 module.exports = {
   afterMemory,
-  getMemoryChat,
-  shouldRunMemory,
+  buildTurnMessages,
+  shouldWriteMemory,
 };

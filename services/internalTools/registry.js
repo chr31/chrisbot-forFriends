@@ -1,11 +1,5 @@
 const { createInternalNotification } = require('./notifications');
 const { getGoals, editGoals } = require('./agentState');
-const { getControlEngineSettingsSync } = require('../appSettings');
-const {
-  getControlGraph,
-  getControlSessions,
-  updateControlGraph,
-} = require('../control/controlOrchestrator');
 
 const DEFAULT_INTERNAL_PREFIX = 'chrisbot_';
 
@@ -67,56 +61,6 @@ const INTERNAL_TOOL_DEFINITIONS = [
   },
 ];
 
-function getControlEngineToolDefinitions() {
-  const settings = getControlEngineSettingsSync();
-  if (!settings.enabled) return [];
-  return [
-    {
-      key: 'controlEngineGetGraph',
-      name: 'ControlEngine_getGraph',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getGraph`,
-      description: 'Tool che permette di ricavare informazioni dalla struttura del grafo di controllo',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          queryGraph: { type: 'string', description: 'Query Cypher di lettura da eseguire su Neo4j senza restrizioni automatiche sui nodi.' },
-          runCommands: { type: 'boolean', description: 'Se true esegue tutti i comandi presenti nei risultati e restituisce i loro output.' },
-        },
-        required: ['queryGraph', 'runCommands'],
-        additionalProperties: false,
-      },
-      handler: getControlGraph,
-    },
-    {
-      key: 'controlEngineGetSessions',
-      name: 'ControlEngine_getSessions',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_getSessions`,
-      description: 'Tool che restiutisce le sessioni disponibili da associare ai comandi singoli',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-        additionalProperties: false,
-      },
-      handler: getControlSessions,
-    },
-    {
-      key: 'controlEngineUpdateGraph',
-      name: 'ControlEngine_updateGraph',
-      publicName: `${DEFAULT_INTERNAL_PREFIX}ControlEngine_updateGraph`,
-      description: 'Tool che permette di aggiornare la struttura del grafo di controllo con nuove informazioni o riscrivendo quelle obsolete.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          queryGraph: { type: 'string', description: 'Query Cypher di aggiornamento da eseguire su Neo4j senza restrizioni automatiche sui nodi.' },
-        },
-        required: ['queryGraph'],
-        additionalProperties: false,
-      },
-      handler: updateControlGraph,
-    },
-  ];
-}
-
 function buildInternalToolRegistry() {
   const tools = [];
   const nameMap = new Map();
@@ -124,7 +68,7 @@ function buildInternalToolRegistry() {
   const handlerMap = new Map();
   const prefixes = new Set();
 
-  for (const definition of [...INTERNAL_TOOL_DEFINITIONS, ...getControlEngineToolDefinitions()]) {
+  for (const definition of INTERNAL_TOOL_DEFINITIONS) {
     const publicName = String(definition.publicName || '').trim();
     if (!publicName) continue;
 

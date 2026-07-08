@@ -233,20 +233,10 @@ async function runTask(task, options = {}) {
         depth: 0,
       }
     );
-    await runAfterMemory({
-      agent: worker,
-      chatId: taskChatId,
-      messages: taskMessages,
-      userMessage,
-      assistantResponse: result,
-      toolCalls: [],
-      toolResults: [],
-      modelConfig,
-      beforePacket: memoryContextPacket,
-    });
-
     const resultText = serializeTaskResult(result);
     const visibleResultText = normalizeTaskResultMessage(resultText);
+
+    runAfterMemory({ agent: worker, userMessage, response: resultText, runId: run.id }).catch(() => {});
 
     await updateTaskRunIfStatus(run.id, {
       status: 'completed',

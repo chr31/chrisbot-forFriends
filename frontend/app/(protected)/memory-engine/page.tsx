@@ -2,12 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowTopRightOnSquareIcon,
-  BoltIcon,
   CheckCircleIcon,
-  ChevronDownIcon,
   CircleStackIcon,
-  SparklesIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 
@@ -22,28 +18,22 @@ type AgentOption = {
   slug?: string;
   kind?: string;
   is_active?: boolean;
-  direct_chat_enabled?: boolean;
   memory_engine_enabled?: boolean;
-  memory_scope?: 'shared' | 'dedicated';
   tool_names?: string[];
 };
 
 type SettingsPayload = {
   memory_engine?: {
     enabled?: boolean;
-    neo4j_url?: string;
-    neo4j_browser_url?: string;
-  };
-  control_engine?: {
-    enabled?: boolean;
-    execution_enabled?: boolean;
+    provider?: string;
   };
 };
 
 type MemoryPacket = {
   enabled?: boolean;
-  scope?: string;
   agent_id?: number | null;
+  provider?: string | null;
+  project_id?: string | null;
   skipped_reason?: string | null;
   contextText?: string;
   warnings?: string[];
@@ -62,14 +52,13 @@ type MemoryPacket = {
     reusable_info?: string[];
   };
   retrieval?: {
+    provider?: string | null;
+    project_id?: string | null;
     request_summary?: string | null;
     topics?: Array<string | { name?: string; key?: string; category?: string }>;
     candidate_count?: number;
     selected_ids?: string[];
     agent_tool_calls?: number;
-    embedding_provider?: string | null;
-    embedding_model?: string | null;
-    embedding_error?: string | null;
   };
   embedding?: {
     provider?: string;
@@ -103,7 +92,7 @@ type ProcessLogStep = {
 };
 
 type MemoryResponse = {
-  action: 'getMemories' | 'setMemories';
+  action: 'getMemories';
   prompt: string;
   packet: MemoryPacket;
   items: MemoryItem[];
@@ -117,60 +106,6 @@ type MemoryResponse = {
   };
 };
 
-type EngineTab = 'memory' | 'control';
-type ControlChatMessage = {
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  event_type?: string;
-  metadata_json?: {
-    tool_name?: string;
-    tool_call_id?: string | null;
-    arguments?: Record<string, unknown> | null;
-    run_id?: number | null;
-  } | null;
-  agent_name?: string | null;
-};
-type ControlTestResult = {
-  ok: boolean;
-  chat_id: string;
-  run_id?: number | null;
-  agent_id: number;
-  agent_name: string;
-  response: string;
-  messages: ControlChatMessage[];
-  error?: string;
-};
-
-type GraphNode = {
-  id: string;
-  labels: string[];
-  title: string;
-  kind: string;
-  properties: Record<string, unknown>;
-  x?: number;
-  y?: number;
-};
-
-type GraphLink = {
-  id: string;
-  source: string;
-  target: string;
-  type: string;
-};
-
-type GraphSnapshot = {
-  engine: 'memory' | 'control';
-  nodes: GraphNode[];
-  links: GraphLink[];
-};
-
-type GraphPreview = {
-  engine: 'memory' | 'control';
-  title: string;
-  nodes: GraphNode[];
-  links: GraphLink[];
-};
-
 type StatusTone = 'green' | 'yellow' | 'red';
 
 type StatusInfo = {
@@ -178,70 +113,6 @@ type StatusInfo = {
   label: string;
   description: string;
 };
-
-type ActivatedGraphSource = {
-  engine: 'memory' | 'control';
-  title: string;
-  ids: Set<string>;
-  terms: string[];
-};
-
-const GRAPH_ID_KEYS = new Set([
-  'id',
-  'key',
-  'canonical_key',
-  'subject_key',
-  'request_key',
-  'topic_key',
-  'run_key',
-  'memory_id',
-  'item_id',
-  'device_id',
-  'action_id',
-  'building_id',
-  'room_id',
-  'capability_key',
-  'adapter_key',
-  'device_type',
-  'adapter_type',
-  'from',
-  'to',
-]);
-
-const GRAPH_TERM_KEYS = new Set([
-  'topic',
-  'information',
-  'summary',
-  'request_summary',
-  'name',
-  'device',
-  'action',
-  'building',
-  'room',
-  'capability',
-  'description',
-]);
-
-const GRAPH_GENERIC_TOKENS = new Set([
-  'true',
-  'false',
-  'null',
-  'none',
-  'shared',
-  'dedicated',
-  'memory',
-  'control',
-  'device',
-  'action',
-  'building',
-  'room',
-  'location',
-  'capability',
-  'adapter',
-  'created',
-  'updated',
-  'unchanged',
-]);
 
 function displayValue(value: unknown) {
   if (value === null || value === undefined) return '';
@@ -325,179 +196,25 @@ function formatDetails(details: unknown) {
   }
 }
 
-function createClientUuid(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-
-  const bytes = new Uint8Array(16);
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20),
-  ].join('-');
-}
-
 function getStatusToneClass(tone: StatusTone) {
   if (tone === 'green') return 'border-emerald-700/60 bg-emerald-600/10 text-emerald-200';
   if (tone === 'yellow') return 'border-amber-700/60 bg-amber-600/10 text-amber-200';
   return 'border-rose-800/70 bg-rose-950/40 text-rose-200';
 }
 
-function normalizeGraphToken(value: unknown) {
-  return String(value ?? '').trim().toLowerCase();
-}
-
-function addGraphId(ids: Set<string>, value: unknown) {
-  if (value == null || typeof value === 'object') return;
-  const token = String(value).trim();
-  if (token && !GRAPH_GENERIC_TOKENS.has(normalizeGraphToken(token))) ids.add(token);
-}
-
-function addGraphTerm(terms: string[], value: unknown) {
-  if (value == null || typeof value === 'object') return;
-  const text = String(value).trim();
-  const normalized = normalizeGraphToken(text);
-  if (text.length > 3 && text.length < 220 && !GRAPH_GENERIC_TOKENS.has(normalized)) terms.push(text);
-}
-
-function collectGraphIds(value: unknown, ids = new Set<string>(), terms: string[] = []) {
-  if (value == null) return { ids, terms };
-  if (Array.isArray(value)) {
-    value.forEach((entry) => collectGraphIds(entry, ids, terms));
-    return { ids, terms };
-  }
-  if (typeof value !== 'object') {
-    return { ids, terms };
-  }
-
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    const normalizedKey = key.toLowerCase();
-    if (GRAPH_ID_KEYS.has(normalizedKey) || normalizedKey.endsWith('_id')) addGraphId(ids, entry);
-    if (GRAPH_TERM_KEYS.has(normalizedKey)) addGraphTerm(terms, entry);
-    collectGraphIds(entry, ids, terms);
-  }
-  return { ids, terms };
-}
-
-function nodeMatchesActivatedSource(node: GraphNode, source: ActivatedGraphSource) {
-  const idValues = [
-    node.id,
-    node.properties?.id,
-    node.properties?.key,
-    node.properties?.canonical_key,
-    node.properties?.subject_key,
-    node.properties?.request_key,
-    node.properties?.device_type,
-    node.properties?.adapter_type,
-  ].map(normalizeGraphToken).filter(Boolean);
-  const textValues = [
-    node.title,
-    node.properties?.name,
-    node.properties?.topic,
-    node.properties?.information,
-    node.properties?.summary,
-    node.properties?.description,
-    ...(Array.isArray(node.properties?.aliases) ? node.properties.aliases : []),
-  ].map(normalizeGraphToken).filter(Boolean);
-  for (const id of source.ids) {
-    const token = normalizeGraphToken(id);
-    if (token && idValues.some((value) => value === token)) return true;
-  }
-  for (const term of source.terms.slice(0, 20)) {
-    const token = normalizeGraphToken(term);
-    if (token.length > 3 && !GRAPH_GENERIC_TOKENS.has(token) && textValues.some((value) => value.includes(token))) return true;
-  }
-  return false;
-}
-
-function buildActivatedGraphPreview(snapshot: GraphSnapshot, source: ActivatedGraphSource): GraphPreview {
-  const directNodeIds = new Set(
-    snapshot.nodes
-      .filter((node) => nodeMatchesActivatedSource(node, source))
-      .map((node) => node.id)
-  );
-  const links = snapshot.links.filter((link) => directNodeIds.has(link.source) && directNodeIds.has(link.target));
-  const linkedNodeIds = new Set<string>();
-  links.forEach((link) => {
-    linkedNodeIds.add(link.source);
-    linkedNodeIds.add(link.target);
-  });
-  const nodes = snapshot.nodes.filter((node) => directNodeIds.has(node.id) || linkedNodeIds.has(node.id));
-  return {
-    engine: source.engine,
-    title: source.title,
-    nodes,
-    links,
-  };
-}
-
-function layoutPreviewGraph(nodes: GraphNode[]) {
-  return nodes.map((node, index) => {
-    const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2;
-    const ring = nodes.length < 6 ? 145 : 120 + Math.floor(index / 12) * 72;
-    return {
-      ...node,
-      x: Math.cos(angle) * ring,
-      y: Math.sin(angle) * ring,
-    };
-  });
-}
-
-function getPreviewNodeColor(node: GraphNode, engine: 'memory' | 'control') {
-  const labels = node.labels.join(' ');
-  if (engine === 'memory') {
-    if (labels.includes('MemoryItem')) return '#38bdf8';
-    if (labels.includes('MemoryTopic')) return '#22c55e';
-    if (labels.includes('MemoryAgent')) return '#f59e0b';
-    return '#94a3b8';
-  }
-  if (labels.includes('ControlDevice')) return '#f59e0b';
-  if (labels.includes('ControlAction')) return '#ef4444';
-  if (labels.includes('ControlLocation')) return '#22c55e';
-  if (labels.includes('ControlCapability')) return '#a78bfa';
-  return '#94a3b8';
-}
-
 export default function MemoryEnginePage() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
-  const [neo4jUrl, setNeo4jUrl] = useState('');
-  const [neo4jBrowserUrl, setNeo4jBrowserUrl] = useState('');
-  const [activeEngineTab, setActiveEngineTab] = useState<EngineTab>('memory');
-  const [controlEnabled, setControlEnabled] = useState(false);
-  const [controlExecutionEnabled, setControlExecutionEnabled] = useState(false);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [prompt, setPrompt] = useState('');
-  const [controlTestResult, setControlTestResult] = useState<ControlTestResult | null>(null);
-  const [memoryScope, setMemoryScope] = useState<'shared' | 'dedicated'>('shared');
   const [selectedAgentId, setSelectedAgentId] = useState('');
-  const [selectedControlAgentId, setSelectedControlAgentId] = useState('');
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [lastPacket, setLastPacket] = useState<MemoryPacket | null>(null);
   const [lastAction, setLastAction] = useState<MemoryResponse['action'] | null>(null);
   const [generatedAnswer, setGeneratedAnswer] = useState<MemoryResponse['generated_answer'] | null>(null);
   const [processLog, setProcessLog] = useState<ProcessLogStep[]>([]);
   const [isRunning, setIsRunning] = useState<MemoryResponse['action'] | null>(null);
-  const [isControlRunning, setIsControlRunning] = useState(false);
-  const [activatedGraphSource, setActivatedGraphSource] = useState<ActivatedGraphSource | null>(null);
-  const [graphPreview, setGraphPreview] = useState<GraphPreview | null>(null);
-  const [isGraphLoading, setIsGraphLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const authFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -526,16 +243,10 @@ export default function MemoryEnginePage() {
             const activeAgents = agentsBody.filter((agent) => agent?.id && agent?.is_active !== false);
             setAgents(activeAgents);
             if (activeAgents[0]?.id) setSelectedAgentId(String(activeAgents[0].id));
-            const firstControlAgent = activeAgents.find((agent) => agent.direct_chat_enabled !== false);
-            setSelectedControlAgentId(firstControlAgent?.id ? String(firstControlAgent.id) : '');
           }
           if (settingsResponse.ok) {
             const settingsBody = await settingsResponse.json().catch(() => ({})) as SettingsPayload;
             setMemoryEnabled(Boolean(settingsBody.memory_engine?.enabled));
-            setNeo4jUrl(String(settingsBody.memory_engine?.neo4j_url || '').trim());
-            setNeo4jBrowserUrl(String(settingsBody.memory_engine?.neo4j_browser_url || '').trim());
-            setControlEnabled(Boolean(settingsBody.control_engine?.enabled));
-            setControlExecutionEnabled(Boolean(settingsBody.control_engine?.execution_enabled));
           }
         }
       } catch (_) {
@@ -548,152 +259,35 @@ export default function MemoryEnginePage() {
   }, [authFetch]);
 
   const canRun = useMemo(
-    () => Boolean(prompt.trim()) && !isRunning && (memoryScope === 'shared' || Boolean(selectedAgentId)),
-    [prompt, isRunning, memoryScope, selectedAgentId]
+    () => Boolean(prompt.trim()) && !isRunning,
+    [prompt, isRunning]
   );
-  const controlAgents = useMemo(
-    () => agents.filter((agent) => agent.is_active !== false && agent.direct_chat_enabled !== false),
-    [agents]
-  );
-  const selectedControlAgent = useMemo(
-    () => controlAgents.find((agent) => String(agent.id) === String(selectedControlAgentId)) || null,
-    [controlAgents, selectedControlAgentId]
-  );
-  const canRunControl = useMemo(
-    () => Boolean(prompt.trim()) && !isControlRunning && controlEnabled && Boolean(selectedControlAgent),
-    [prompt, isControlRunning, controlEnabled, selectedControlAgent]
-  );
-  const memoryTargetValue = memoryScope === 'shared' ? 'shared' : `agent:${selectedAgentId}`;
-
   const memoryStatus = useMemo<StatusInfo>(() => {
     if (!memoryEnabled) {
       return {
         tone: 'red',
         label: 'Memorie disattive',
-        description: 'Memory Engine disattivo: gli agenti non recuperano ne aggiornano memorie.',
-      };
-    }
-    if (!neo4jUrl) {
-      return {
-        tone: 'yellow',
-        label: 'Memorie da verificare',
-        description: 'Memory Engine attivo, ma la configurazione Neo4j sembra incompleta.',
+        description: 'Memory Engine disattivo: gli agenti non recuperano contesto dalle memorie.',
       };
     }
     return {
       tone: 'green',
       label: 'Memorie attive',
-      description: 'Memory Engine attivo: gli agenti possono recuperare e aggiornare memorie secondo scope.',
+      description: 'Memory Engine attivo: gli agenti recuperano contesto tramite il percorso mem0 beforeMemory.',
     };
-  }, [memoryEnabled, neo4jUrl]);
-
-  const controlStatus = useMemo<StatusInfo>(() => (
-    controlEnabled
-      ? {
-          tone: 'green',
-          label: 'Control attivo',
-          description: 'Control Engine attivo: gli agenti possono usare getSessions, getGraph e updateGraph.',
-        }
-      : {
-          tone: 'red',
-          label: 'Control disattivo',
-          description: 'Control Engine disattivo: i tool Control Engine non sono esposti agli agenti.',
-        }
-  ), [controlEnabled]);
-
-  const controlExecutionStatus = useMemo<StatusInfo>(() => {
-    if (controlExecutionEnabled && !controlEnabled) {
-      return {
-        tone: 'yellow',
-        label: 'Azioni da verificare',
-        description: 'Esecuzione azioni abilitata, ma Control Engine e disattivo.',
-      };
-    }
-    if (controlExecutionEnabled) {
-      return {
-        tone: 'green',
-        label: 'Azioni attive',
-        description: 'Esecuzione azioni attiva: getGraph puo eseguire i comandi quando runCommands e true.',
-      };
-    }
-    return {
-      tone: 'red',
-      label: 'Azioni disattive',
-      description: 'Esecuzione azioni disattiva: getGraph restituisce il grafo ma blocca runCommands=true.',
-    };
-  }, [controlEnabled, controlExecutionEnabled]);
-
-  const handleMemoryTargetChange = (value: string) => {
-    if (value === 'shared') {
-      setMemoryScope('shared');
-      return;
-    }
-    if (value.startsWith('agent:')) {
-      setMemoryScope('dedicated');
-      setSelectedAgentId(value.slice('agent:'.length));
-    }
-  };
-
-  const buildMemoryGraphSource = (action: MemoryResponse['action'], packet: MemoryPacket | null, responseItems: MemoryItem[]) => {
-    const ids = new Set<string>();
-    const terms: string[] = [];
-    (packet?.retrieval?.selected_ids || []).forEach((id) => ids.add(String(id)));
-    collectGraphIds(packet, ids, terms);
-    responseItems.forEach((item) => {
-      if (item.id) ids.add(item.id);
-      terms.push(item.topic, item.information);
-    });
-    return {
-      engine: 'memory' as const,
-      title: action === 'getMemories' ? 'Grafo beforeMemory' : 'Grafo afterMemory',
-      ids,
-      terms: terms.filter(Boolean),
-    };
-  };
-
-  const buildControlGraphSource = (result: ControlTestResult) => {
-    const ids = new Set<string>();
-    const terms: string[] = [];
-    collectGraphIds(result, ids, terms);
-    return {
-      engine: 'control' as const,
-      title: `Grafo test ${result.agent_name}`,
-      ids,
-      terms: terms.filter(Boolean),
-    };
-  };
-
-  const openActivatedGraph = async () => {
-    if (!activatedGraphSource) return;
-    setIsGraphLoading(true);
-    setError(null);
-    try {
-      const response = await authFetch(`/api/memory-engine/graph/live?engine=${activatedGraphSource.engine}&limit=900`);
-      const snapshot = await response.json().catch(() => ({})) as GraphSnapshot & { error?: string };
-      if (!response.ok) throw new Error(snapshot?.error || 'Impossibile caricare il sotto-grafo.');
-      setGraphPreview(buildActivatedGraphPreview(snapshot, activatedGraphSource));
-    } catch (err: any) {
-      setError(err?.message || 'Errore durante il caricamento del sotto-grafo.');
-    } finally {
-      setIsGraphLoading(false);
-    }
-  };
+  }, [memoryEnabled]);
 
   const runMemoryAction = async (action: MemoryResponse['action']) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
     setIsRunning(action);
     setError(null);
-    setActivatedGraphSource(null);
-    setGraphPreview(null);
     try {
-      const endpoint = action === 'getMemories' ? '/api/memory-engine/get' : '/api/memory-engine/set';
-      const response = await authFetch(endpoint, {
+      const response = await authFetch('/api/memory-engine/get', {
         method: 'POST',
         body: JSON.stringify({
           prompt: cleanPrompt,
-          scope: memoryScope,
-          agent_id: memoryScope === 'dedicated' ? selectedAgentId : null,
+          agent_id: selectedAgentId || null,
         }),
       });
       const body = await response.json().catch(() => ({})) as Partial<MemoryResponse> & { error?: string };
@@ -705,54 +299,10 @@ export default function MemoryEnginePage() {
       setGeneratedAnswer(body.generated_answer || null);
       setProcessLog(Array.isArray(body.process_log) ? body.process_log : []);
       setLastAction(action);
-      setActivatedGraphSource(buildMemoryGraphSource(action, body.packet || null, Array.isArray(body.items) ? body.items : []));
     } catch (err: any) {
       setError(err?.message || 'Errore durante il test Memory Engine.');
     } finally {
       setIsRunning(null);
-    }
-  };
-
-  const runControlAgentTest = async () => {
-    const cleanPrompt = prompt.trim();
-    const agent = selectedControlAgent;
-    if (!cleanPrompt || !agent) return;
-    setIsControlRunning(true);
-    setError(null);
-    setControlTestResult(null);
-    setActivatedGraphSource(null);
-    setGraphPreview(null);
-    try {
-      const chatId = createClientUuid();
-      const response = await authFetch('/api/agent-chats', {
-        method: 'POST',
-        body: JSON.stringify({
-          chat_id: chatId,
-          agent_id: Number(agent.id),
-          messages: [{ role: 'user', content: cleanPrompt }],
-        }),
-      });
-      const body = await response.json().catch(() => ({})) as Partial<ControlTestResult> & { error?: string };
-      if (!response.ok) throw new Error(body?.error || 'Test agente Control Engine non riuscito.');
-
-      const messagesResponse = await authFetch(`/api/agent-chats/${body.chat_id || chatId}`);
-      const messagesBody = await messagesResponse.json().catch(() => []) as ControlChatMessage[] | { error?: string };
-      const messages = messagesResponse.ok && Array.isArray(messagesBody) ? messagesBody : [];
-      const result: ControlTestResult = {
-        ok: true,
-        chat_id: String(body.chat_id || chatId),
-        run_id: body.run_id ?? null,
-        agent_id: Number(body.agent_id || agent.id),
-        agent_name: agent.name,
-        response: String(body.response || ''),
-        messages,
-      };
-      setControlTestResult(result);
-      setActivatedGraphSource(buildControlGraphSource(result));
-    } catch (err: any) {
-      setError(err?.message || 'Errore durante il test Control Engine.');
-    } finally {
-      setIsControlRunning(false);
     }
   };
 
@@ -767,46 +317,12 @@ export default function MemoryEnginePage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Engine monitor</p>
-              <h1 className="mt-2 text-3xl font-bold text-white">Graph engine access</h1>
+              <h1 className="mt-2 text-3xl font-bold text-white">Memory Engine</h1>
               <p className="mt-2 max-w-3xl text-sm text-gray-300">
-                Console admin per testare beforeMemory, afterMemory e il Control Engine tramite gli stessi agenti usati in chat.
+                Console admin per testare il recupero read-only delle memorie tramite il percorso mem0 beforeMemory.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <details className="group relative">
-                <summary className="inline-flex h-11 cursor-pointer list-none items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20">
-                  <CircleStackIcon className="h-5 w-5" />
-                  Live Dashboard
-                  <ChevronDownIcon className="h-4 w-4 transition-transform group-open:rotate-180" />
-                </summary>
-                <div className="absolute right-0 top-full z-30 mt-2 w-48 overflow-hidden rounded-xl border border-gray-800 bg-gray-950 py-1 shadow-2xl">
-                  <a
-                    href={neo4jBrowserUrl || '#'}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-disabled={!neo4jBrowserUrl}
-                    className={`flex items-center gap-2 px-3 py-2 text-sm font-semibold ${
-                      neo4jBrowserUrl
-                        ? 'text-gray-100 hover:bg-gray-900'
-                        : 'pointer-events-none text-gray-500'
-                    }`}
-                    title={neo4jBrowserUrl ? 'Apri Neo4j Browser' : 'URL pagina web Neo4j non configurato'}
-                  >
-                    <ArrowTopRightOnSquareIcon className="h-5 w-5" />
-                    DB
-                  </a>
-                  <a
-                    href="/graph-live?engine=memory"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-900"
-                    title="Apri Live Dashboard"
-                  >
-                    <CircleStackIcon className="h-5 w-5" />
-                    Dashboard
-                  </a>
-                </div>
-              </details>
               <span className="group relative inline-flex">
                 <span
                   className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(memoryStatus.tone)}`}
@@ -819,159 +335,50 @@ export default function MemoryEnginePage() {
                   {memoryStatus.description}
                 </span>
               </span>
-              <span className="group relative inline-flex">
-                <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(controlStatus.tone)}`}
-                  title={controlStatus.label}
-                  aria-label={controlStatus.label}
-                >
-                  {controlStatus.tone === 'red' ? <XCircleIcon className="h-5 w-5" /> : <CheckCircleIcon className="h-5 w-5" />}
-                </span>
-                <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-                  {controlStatus.description}
-                </span>
-              </span>
-              <span className="group relative inline-flex">
-                <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border ${getStatusToneClass(controlExecutionStatus.tone)}`}
-                  title={controlExecutionStatus.label}
-                  aria-label={controlExecutionStatus.label}
-                >
-                  <BoltIcon className="h-5 w-5" />
-                </span>
-                <span className="pointer-events-none absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-left text-xs font-medium leading-relaxed text-gray-100 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-                  {controlExecutionStatus.description}
-                </span>
-              </span>
             </div>
-          </div>
-
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <div className="inline-flex rounded-xl border border-gray-800 bg-gray-950 p-1">
-              {[
-                { id: 'memory' as const, label: 'Memory Engine' },
-                { id: 'control' as const, label: 'Control Engine' },
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveEngineTab(tab.id)}
-                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                    activeEngineTab === tab.id
-                      ? 'bg-sky-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-900'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-            {activatedGraphSource ? (
-              <button
-                type="button"
-                onClick={openActivatedGraph}
-                disabled={isGraphLoading}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-wait disabled:opacity-60"
-              >
-                <CircleStackIcon className={`h-5 w-5 ${isGraphLoading ? 'animate-pulse' : ''}`} />
-                Graph
-              </button>
-            ) : null}
           </div>
 
           <div className="mt-5 space-y-3">
-            {activeEngineTab === 'memory' ? (
-              <label className="block max-w-sm text-xs font-semibold uppercase tracking-normal text-gray-500">
-                Scope
-                <select
-                  value={memoryTargetValue}
-                  onChange={(event) => handleMemoryTargetChange(event.target.value)}
-                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
-                >
-                  <option value="shared">Memorie condivise</option>
-                  <optgroup label="Memorie agente">
-                    {agents.length === 0 ? (
-                      <option value="" disabled>Nessun agente</option>
-                    ) : (
-                      agents.map((agent) => (
-                        <option key={agent.id} value={`agent:${agent.id}`}>
-                          {agent.name}
-                        </option>
-                      ))
-                    )}
-                  </optgroup>
-                </select>
-              </label>
-            ) : (
-              <label className="block max-w-sm text-xs font-semibold uppercase tracking-normal text-gray-500">
-                Agente di test
-                <select
-                  value={selectedControlAgentId}
-                  onChange={(event) => setSelectedControlAgentId(event.target.value)}
-                  className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
-                >
-                  {controlAgents.length === 0 ? (
-                    <option value="" disabled>Nessun agente chat attivo</option>
-                  ) : (
-                    controlAgents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-            )}
+            <label className="block max-w-sm text-xs font-semibold uppercase tracking-normal text-gray-500">
+              Agente per il test
+              <select
+                value={selectedAgentId}
+                onChange={(event) => setSelectedAgentId(event.target.value)}
+                className="mt-1 h-11 w-full rounded-xl border border-gray-800 bg-gray-950 px-3 text-sm normal-case text-white outline-none focus:border-sky-600"
+              >
+                <option value="">Nessun agente</option>
+                {agents.length === 0 ? (
+                  <option value="" disabled>Nessun agente</option>
+                ) : (
+                  agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
 
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-              <div className={`flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600 ${
-                activeEngineTab === 'control' ? 'lg:min-h-[9.75rem]' : 'lg:min-h-[6.25rem]'
-              }`}>
+              <div className="flex-1 rounded-2xl border border-gray-800 bg-gray-950/70 px-4 py-3 focus-within:border-sky-600 lg:min-h-[6.25rem]">
               <textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                rows={activeEngineTab === 'control' ? 6 : 4}
-                placeholder={activeEngineTab === 'memory'
-                  ? 'Scrivi il contesto di test per beforeMemory o afterMemory...'
-                  : 'Scrivi il prompt da inviare all agente di test Control Engine...'}
-                className={`w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500 ${
-                  activeEngineTab === 'control' ? 'min-h-[8.25rem]' : 'min-h-[4.75rem]'
-                }`}
+                rows={4}
+                placeholder="Scrivi il contesto di test per il recupero delle memorie..."
+                className="w-full resize-y bg-transparent text-sm text-white outline-none placeholder:text-gray-500 min-h-[4.75rem]"
               />
               </div>
               <div className="flex shrink-0 flex-col gap-3">
-              {activeEngineTab === 'memory' ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => runMemoryAction('getMemories')}
-                    disabled={!canRun}
-                    className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <CircleStackIcon className="h-5 w-5" />
-                    {isRunning === 'getMemories' ? 'before...' : 'beforeMemory'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runMemoryAction('setMemories')}
-                    disabled={!canRun}
-                    className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-600/10 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <SparklesIcon className="h-5 w-5" />
-                    {isRunning === 'setMemories' ? 'after...' : 'afterMemory'}
-                  </button>
-                </>
-              ) : (
                 <button
                   type="button"
-                  onClick={runControlAgentTest}
-                  disabled={!canRunControl}
-                  className="inline-flex h-11 min-w-36 items-center justify-center gap-2 rounded-xl border border-amber-700/60 bg-amber-600/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => runMemoryAction('getMemories')}
+                  disabled={!canRun}
+                  className="inline-flex h-11 min-w-32 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <BoltIcon className="h-5 w-5" />
-                  {isControlRunning ? 'test...' : 'Esegui test'}
+                  <CircleStackIcon className="h-5 w-5" />
+                  {isRunning === 'getMemories' ? 'before...' : 'beforeMemory'}
                 </button>
-              )}
               </div>
             </div>
           </div>
@@ -980,57 +387,7 @@ export default function MemoryEnginePage() {
             <div className="mt-6 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>
           ) : null}
 
-          {activeEngineTab === 'control' && controlTestResult ? (
-            <div className="mt-6 rounded-2xl border border-gray-800 bg-gray-950/70 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Control agent test</p>
-                  <h2 className="mt-1 text-lg font-semibold text-white">{controlTestResult.agent_name}</h2>
-                </div>
-                <a
-                  href={`/agent-chat/${controlTestResult.chat_id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-sky-700/60 bg-sky-600/10 px-4 text-sm font-semibold text-sky-100 hover:bg-sky-600/20"
-                >
-                  <ArrowTopRightOnSquareIcon className="h-5 w-5" />
-                  Apri chat
-                </a>
-              </div>
-              {controlTestResult.error ? (
-                <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
-                  {controlTestResult.error}
-                </div>
-              ) : null}
-              <div className="mt-4 rounded-xl border border-gray-800 bg-gray-950 p-4">
-                <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Risposta agente</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-gray-100">
-                  {controlTestResult.response || 'Nessuna risposta testuale.'}
-                </p>
-              </div>
-              {(() => {
-                const toolMessages = controlTestResult.messages.filter((message) => message.role === 'tool');
-                if (toolMessages.length === 0) return null;
-                return (
-                  <div className="mt-4 space-y-3">
-                    <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Tool result</p>
-                    {toolMessages.map((message, index) => (
-                      <details key={`${message.metadata_json?.tool_call_id || index}`} className="rounded-xl border border-gray-800 bg-gray-950">
-                        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-100">
-                          {message.metadata_json?.tool_name || `Tool ${index + 1}`}
-                        </summary>
-                        <pre className="max-h-[28rem] overflow-auto border-t border-gray-800 p-4 text-xs leading-relaxed text-gray-200">
-                          {formatDetails(message.content)}
-                        </pre>
-                      </details>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
-          ) : null}
-
-          {activeEngineTab === 'memory' && lastPacket ? (
+          {lastPacket ? (
             <div className="mt-6 grid gap-3 text-sm md:grid-cols-2">
               <div className="border-b border-gray-800 pb-3">
                 <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Richiesta</p>
@@ -1055,7 +412,7 @@ export default function MemoryEnginePage() {
               {String(lastPacket.contextText || '').trim() ? (
                 <div className="md:col-span-2">
                   <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">
-                    {lastAction === 'setMemories' ? 'memoryStatus' : 'availableMemories'}
+                    availableMemories
                   </p>
                   <p className="mt-1 whitespace-pre-wrap text-gray-200">{String(lastPacket.contextText).trim()}</p>
                 </div>
@@ -1063,13 +420,13 @@ export default function MemoryEnginePage() {
             </div>
           ) : null}
 
-          {activeEngineTab === 'memory' && processLog.length > 0 ? (
+          {processLog.length > 0 ? (
             <div className="mt-6 border-t border-gray-800 pt-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-normal text-gray-500">Process log</p>
                   <h2 className="mt-1 text-lg font-semibold text-white">
-                    {lastAction === 'setMemories' ? 'afterMemory' : 'beforeMemory'}
+                    beforeMemory
                   </h2>
                 </div>
                 <p className="text-xs text-gray-400">{processLog.length} step</p>
@@ -1106,7 +463,6 @@ export default function MemoryEnginePage() {
             </div>
           ) : null}
 
-          {activeEngineTab === 'memory' ? (
           <div className="mt-6 overflow-x-auto rounded-2xl border border-gray-800 bg-gray-950/70">
             <table className="min-w-full divide-y divide-gray-800 text-sm">
               <thead className="bg-gray-950/90 text-left text-xs uppercase tracking-normal text-gray-400">
@@ -1172,15 +528,17 @@ export default function MemoryEnginePage() {
               </tbody>
             </table>
           </div>
-          ) : null}
 
-          {activeEngineTab === 'memory' && lastPacket ? (
+          {lastPacket ? (
             <div className="mt-4 grid gap-3 text-xs text-gray-400 sm:grid-cols-3">
               <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2">
                 Enabled: {String(Boolean(lastPacket.enabled))}
               </div>
               <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2">
-                Scope: {lastPacket.scope || 'shared'}
+                Provider: {lastPacket.provider || lastPacket.retrieval?.provider || 'n/d'}
+              </div>
+              <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2">
+                Project: {lastPacket.project_id || lastPacket.retrieval?.project_id || 'n/d'}
               </div>
               <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2">
                 Skipped: {lastPacket.skipped_reason || 'no'}
@@ -1189,99 +547,6 @@ export default function MemoryEnginePage() {
           ) : null}
         </section>
       </div>
-      {graphPreview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6">
-          <div className="flex h-full max-h-[46rem] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-sky-900/70 bg-gray-950 shadow-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-normal text-sky-300">Graph preview</p>
-                <h2 className="mt-1 text-lg font-semibold text-white">{graphPreview.title}</h2>
-                <p className="mt-1 text-xs text-gray-400">
-                  {graphPreview.nodes.length} nodi / {graphPreview.links.length} relazioni
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setGraphPreview(null)}
-                className="inline-flex h-10 items-center justify-center rounded-xl border border-gray-700 px-4 text-sm font-semibold text-gray-100 hover:bg-gray-900"
-              >
-                Chiudi
-              </button>
-            </div>
-            <div className="relative min-h-0 flex-1 bg-[radial-gradient(circle_at_center,#111827_0,#030712_55%,#000_100%)]">
-              {graphPreview.nodes.length > 0 ? (() => {
-                const nodes = layoutPreviewGraph(graphPreview.nodes);
-                const byId = new Map(nodes.map((node) => [node.id, node]));
-                return (
-                  <svg viewBox="-420 -300 840 600" className="h-full w-full" role="img" aria-label={graphPreview.title}>
-                    <g>
-                      {graphPreview.links.map((link) => {
-                        const source = byId.get(link.source);
-                        const target = byId.get(link.target);
-                        if (!source || !target) return null;
-                        return (
-                          <g key={link.id}>
-                            <line
-                              x1={source.x || 0}
-                              y1={source.y || 0}
-                              x2={target.x || 0}
-                              y2={target.y || 0}
-                              stroke="#38bdf8"
-                              strokeOpacity="0.58"
-                              strokeWidth="2.5"
-                            />
-                            <text
-                              x={((source.x || 0) + (target.x || 0)) / 2}
-                              y={((source.y || 0) + (target.y || 0)) / 2}
-                              fill="#cbd5e1"
-                              fontSize="10"
-                              fontWeight="700"
-                              textAnchor="middle"
-                            >
-                              {link.type}
-                            </text>
-                          </g>
-                        );
-                      })}
-                    </g>
-                    <g>
-                      {nodes.map((node) => (
-                        <g key={node.id} transform={`translate(${node.x || 0} ${node.y || 0})`}>
-                          <circle
-                            r="15"
-                            fill={getPreviewNodeColor(node, graphPreview.engine)}
-                            stroke="#bae6fd"
-                            strokeWidth="2"
-                          />
-                          <g transform="translate(0 30)">
-                            <rect
-                              x={-(Math.min(node.title.length, 32) * 3.8 + 12)}
-                              y="-11"
-                              width={Math.min(node.title.length, 32) * 7.6 + 24}
-                              height="22"
-                              rx="7"
-                              fill="#020617"
-                              fillOpacity="0.9"
-                              stroke="#1e3a5f"
-                            />
-                            <text fill="#f8fafc" fontSize="11" fontWeight="700" textAnchor="middle" dominantBaseline="middle">
-                              {node.title.length > 32 ? `${node.title.slice(0, 31)}...` : node.title}
-                            </text>
-                          </g>
-                        </g>
-                      ))}
-                    </g>
-                  </svg>
-                );
-              })() : (
-                <div className="flex h-full items-center justify-center p-8 text-center text-sm text-gray-400">
-                  Nessun nodo del grafo live corrisponde ai dati restituiti dall&apos;ultima funzione.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

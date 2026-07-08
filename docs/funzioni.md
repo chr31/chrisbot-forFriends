@@ -59,17 +59,15 @@ Pagina: `Impostazioni > Memorie`
 Cosa permette:
 
 - abilitare o disabilitare il Memory Engine globale
-- scegliere il modello dedicato all'analisi delle memorie
-- selezionare il server Ollama quando il modello scelto e' locale
-- configurare URL, username e password Neo4j
-- verificare lo stato della connessione Neo4j
+- configurare URL API, token e progetto LLM Wiki
+- configurare limiti di ricerca, pagine lette e contesto iniettato
+- usare LLM Wiki come sorgente read-only per `beforeMemory`
 
 Per collegare il servizio:
 
-- per Neo4j locale abilita il profilo `local-neo4j` in `COMPOSE_PROFILES`
-- usa come URL interno predefinito `bolt://neo4j:7687`
-- salva username e password dalla tab `Memorie`
-- usa `Test connessione` per verificare che il backend possa raggiungere Neo4j
+- avvia LLM Wiki separatamente con API abilitate
+- imposta `LLM_WIKI_API_URL` o configura l'URL dalla tab `Memorie`
+- imposta il project id default o un override per agente
 
 ## Telegram
 

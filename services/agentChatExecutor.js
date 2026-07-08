@@ -198,48 +198,6 @@ async function prepareAgentChatExecution(input = {}) {
   };
 }
 
-function runAfterMemoryInBackground(prepared, response, processStatus, error = null) {
-  setImmediate(async () => {
-    let afterMemoryPacket = null;
-    try {
-      afterMemoryPacket = await runAfterMemory({
-        agent: prepared.agent,
-        chat: {
-          chatId: prepared.chatId,
-          runId: prepared.run.id,
-          messages: sanitizeMessages(prepared.history),
-          sourceMessages: prepared.history,
-          userMessage: prepared.userMessage,
-          assistantResponse: response || '',
-          error,
-          userKey: prepared.userKey || null,
-        },
-        modelConfig: prepared.modelConfig,
-        beforePacket: prepared.memoryContextPacket,
-        runId: prepared.run.id,
-        userKey: prepared.userKey || null,
-        processStatus,
-        error,
-      });
-    } catch (memoryError) {
-      afterMemoryPacket = {
-        enabled: false,
-        scope: prepared.agent?.memory_scope || 'shared',
-        warnings: [String(memoryError?.message || memoryError)],
-        skipped_reason: 'error',
-      };
-    }
-
-    try {
-      await updateAgentRun(prepared.run.id, {
-        guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, afterMemoryPacket),
-      });
-    } catch (traceError) {
-      console.error('Errore aggiornamento traccia afterMemory:', traceError);
-    }
-  });
-}
-
 async function finalizeAgentChatExecution(prepared) {
   if (prepared.blockedByGuardrail) {
     return {
@@ -267,9 +225,15 @@ async function finalizeAgentChatExecution(prepared) {
     await updateAgentRunIfStatus(prepared.run.id, {
       status: 'completed',
       finished_at: new Date(),
-      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null, { includePendingAfter: true }),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null),
     }, 'running');
-    runAfterMemoryInBackground(prepared, response, 'completed');
+    // Scrittura memorie in parallelo: non attesa, non blocca la risposta.
+    runAfterMemory({
+      agent: prepared.agent,
+      userMessage: prepared.userMessage,
+      response,
+      runId: prepared.run.id,
+    }).catch(() => {});
     return {
       response,
       chat_id: prepared.chatId,
@@ -281,9 +245,8 @@ async function finalizeAgentChatExecution(prepared) {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
-      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null, { includePendingAfter: true }),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null),
     }, 'running');
-    runAfterMemoryInBackground(prepared, response, 'failed', error);
     throw error;
   }
 }

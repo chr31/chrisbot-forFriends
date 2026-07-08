@@ -49,7 +49,7 @@ const MIGRATIONS = [
   },
   {
     id: '20260501_002_agent_memory_engine_flags',
-    description: 'Add per-agent Memory Engine enable flag and memory scope.',
+    description: 'Add per-agent Memory Engine enable flag.',
     async up(db) {
       const [tables] = await db.query(
         `SELECT TABLE_NAME
@@ -66,21 +66,17 @@ const MIGRATIONS = [
            FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE()
             AND TABLE_NAME = 'agents'
-            AND COLUMN_NAME IN ('memory_engine_enabled', 'memory_scope')`
+            AND COLUMN_NAME = 'memory_engine_enabled'
+          LIMIT 1`
       );
-      const existing = new Set((Array.isArray(columns) ? columns : []).map((row) => row.COLUMN_NAME));
 
-      if (!existing.has('memory_engine_enabled')) {
-        await db.query('ALTER TABLE agents ADD COLUMN memory_engine_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER goals');
-      }
-      if (!existing.has('memory_scope')) {
-        await db.query("ALTER TABLE agents ADD COLUMN memory_scope ENUM('shared', 'dedicated') NOT NULL DEFAULT 'shared' AFTER memory_engine_enabled");
-      }
+      if (Array.isArray(columns) && columns.length > 0) return;
+      await db.query('ALTER TABLE agents ADD COLUMN memory_engine_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER goals');
     },
   },
   {
     id: '20260502_001_agent_improve_memories_flag',
-    description: 'Add per-agent Improve memories flag for afterMemory.',
+    description: 'Add legacy per-agent Improve memories flag.',
     async up(db) {
       const [tables] = await db.query(
         `SELECT TABLE_NAME
@@ -104,6 +100,138 @@ const MIGRATIONS = [
       if (Array.isArray(columns) && columns.length > 0) return;
 
       await db.query('ALTER TABLE agents ADD COLUMN improve_memories_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER memory_engine_enabled');
+    },
+  },
+  {
+    id: '20260611_001_agent_llm_wiki_project_id',
+    description: 'Add per-agent LLM Wiki project override for read-only memory retrieval.',
+    async up(db) {
+      const [tables] = await db.query(
+        `SELECT TABLE_NAME
+           FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+          LIMIT 1`
+      );
+
+      if (!Array.isArray(tables) || tables.length === 0) return;
+
+      const [columns] = await db.query(
+        `SELECT COLUMN_NAME
+           FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+            AND COLUMN_NAME = 'llm_wiki_project_id'
+          LIMIT 1`
+      );
+
+      if (Array.isArray(columns) && columns.length > 0) return;
+      await db.query('ALTER TABLE agents ADD COLUMN llm_wiki_project_id VARCHAR(255) NULL AFTER memory_engine_enabled');
+    },
+  },
+  {
+    id: '20260611_002_drop_legacy_memory_runtime_columns',
+    description: 'Drop legacy runtime memory writing agent columns for LLM Wiki read-only memory.',
+    async up(db) {
+      const [tables] = await db.query(
+        `SELECT TABLE_NAME
+           FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+          LIMIT 1`
+      );
+
+      if (!Array.isArray(tables) || tables.length === 0) return;
+
+      const [columns] = await db.query(
+        `SELECT COLUMN_NAME
+           FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+            AND COLUMN_NAME = 'improve_memories_enabled'
+          LIMIT 1`
+      );
+
+      if (!Array.isArray(columns) || columns.length === 0) return;
+      await db.query('ALTER TABLE agents DROP COLUMN improve_memories_enabled');
+    },
+  },
+  {
+    id: '20260707_001_agent_improve_memories_flag_mem0',
+    description: 'Re-add per-agent Improve memories flag for mem0 write path (afterMemory).',
+    async up(db) {
+      const [tables] = await db.query(
+        `SELECT TABLE_NAME
+           FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+          LIMIT 1`
+      );
+
+      if (!Array.isArray(tables) || tables.length === 0) return;
+
+      const [columns] = await db.query(
+        `SELECT COLUMN_NAME
+           FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+            AND COLUMN_NAME = 'improve_memories_enabled'
+          LIMIT 1`
+      );
+
+      if (Array.isArray(columns) && columns.length > 0) return;
+      await db.query('ALTER TABLE agents ADD COLUMN improve_memories_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER memory_engine_enabled');
+    },
+  },
+  {
+    id: '20260708_001_cleanup_neo4j_control_legacy',
+    description: 'Remove Control Engine settings row, legacy memory keys and the per-agent llm_wiki_project_id column.',
+    async up(db) {
+      // Control Engine dismesso: elimina la riga di impostazioni dedicata.
+      await db.query("DELETE FROM app_settings WHERE setting_key = 'control_engine'");
+
+      // Rimuove dal JSON memory_engine le chiavi legacy non piu' prodotte dal
+      // percorso mem0 (LLM Wiki, dashboard grafo, Neo4j memoria, prompt legacy).
+      const [memoryRows] = await db.query(
+        "SELECT setting_key FROM app_settings WHERE setting_key = 'memory_engine' LIMIT 1"
+      );
+      if (Array.isArray(memoryRows) && memoryRows.length > 0) {
+        await db.query(
+          `UPDATE app_settings
+              SET value_json = JSON_REMOVE(
+                value_json,
+                '$.llm_wiki_api_url', '$.llm_wiki_api_token', '$.llm_wiki_default_project_id',
+                '$.llm_wiki_timeout_ms', '$.llm_wiki_max_search_results', '$.llm_wiki_max_pages_to_read',
+                '$.llm_wiki_max_injected_chars', '$.retrieval_context_messages',
+                '$.graph_dashboard_password_hash', '$.graph_dashboard_password_version',
+                '$.neo4j_url', '$.neo4j_browser_url', '$.neo4j_username', '$.neo4j_password',
+                '$.before_memory_prompt', '$.after_memory_prompt', '$.memory_agent_system_prompt'
+              )
+            WHERE setting_key = 'memory_engine'`
+        );
+      }
+
+      // Colonna per-agente legacy dell'era LLM Wiki.
+      const [tables] = await db.query(
+        `SELECT TABLE_NAME
+           FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+          LIMIT 1`
+      );
+      if (!Array.isArray(tables) || tables.length === 0) return;
+
+      const [columns] = await db.query(
+        `SELECT COLUMN_NAME
+           FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'agents'
+            AND COLUMN_NAME = 'llm_wiki_project_id'
+          LIMIT 1`
+      );
+      if (Array.isArray(columns) && columns.length > 0) {
+        await db.query('ALTER TABLE agents DROP COLUMN llm_wiki_project_id');
+      }
     },
   },
 ];

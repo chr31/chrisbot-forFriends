@@ -3,11 +3,12 @@ const {
   buildEmptyMemoryContextPacket,
   formatMemoryContextPacket,
   hasMemoryContext,
-  normalizeMemoryScope,
 } = require('./memoryContextPacket');
-const { normalizeAgentId } = require('./memorySchema');
-const { runMemoryAgent } = require('./memoryAgentRunner');
+const { createMem0Provider } = require('./providers/mem0Provider');
 
+const DEFAULT_MAX_INJECTED_CHARS = 4000;
+
+// La lettura memorie gira solo se mem0 e attivo a portale e l'agente ha il flag.
 function shouldRunMemory(agent, settings) {
   return Boolean(settings?.enabled && agent?.memory_engine_enabled);
 }
@@ -41,22 +42,85 @@ function getMemoryChat(input = {}) {
       };
 }
 
-function appendUserPromptContext(prompt, username) {
-  const cleanPrompt = String(prompt || '').trim();
-  const cleanUsername = String(username || '').trim();
-  if (!cleanUsername) return cleanPrompt;
-  return [cleanPrompt, `Stai parlando con l'utente ${cleanUsername}`].filter(Boolean).join('\n\n');
+function getMessageText(message) {
+  if (!message || typeof message !== 'object') return '';
+  if (typeof message.content === 'string') return message.content.trim();
+  if (Array.isArray(message.content)) {
+    return message.content
+      .map((item) => (typeof item === 'string' ? item : item?.text || item?.content || ''))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+function uniqueStrings(values, limit) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values) {
+    const clean = String(value || '').trim().replace(/\s+/g, ' ');
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(clean);
+    if (limit && output.length >= limit) break;
+  }
+  return output;
+}
+
+function getAgentId(agent) {
+  return agent?.id != null && String(agent.id).trim() ? String(agent.id) : null;
+}
+
+// mem0 e semantico: basta una query. Usa il messaggio utente, con fallback
+// sull'ultimo turno utente presente nella history.
+function buildRetrievalQuery(chat) {
+  const userText = getMessageText(chat?.userMessage);
+  if (userText) return userText.slice(0, 800);
+  const messages = Array.isArray(chat?.sourceMessages || chat?.messages)
+    ? (chat.sourceMessages || chat.messages)
+    : [];
+  const lastUser = [...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'user');
+  return getMessageText(lastUser).slice(0, 800);
+}
+
+// Retrocompatibilita: alcuni test/altri moduli si aspettano una lista di query.
+function buildRetrievalQueries(chat) {
+  const query = buildRetrievalQuery(chat);
+  return query ? [query] : [];
+}
+
+function extractMemoryText(item) {
+  if (!item) return '';
+  if (typeof item === 'string') return item.trim();
+  return String(item.memory || item.text || item.content || item.data || item.name || '').trim();
+}
+
+function buildContextText(facts, maxChars) {
+  const budget = Math.max(500, Number(maxChars || DEFAULT_MAX_INJECTED_CHARS));
+  const lines = [];
+  let used = 0;
+  for (const fact of facts) {
+    const line = `- ${fact}`;
+    if (used + line.length + 1 > budget) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.join('\n').trim();
 }
 
 async function beforeMemory(input = {}) {
   const chat = getMemoryChat(input);
   const settings = getMemoryEngineSettingsSync();
-  const scope = normalizeMemoryScope(input.agent?.memory_scope);
+  const agentId = getAgentId(input.agent);
+
   if (!shouldRunMemory(input.agent, settings)) {
     return buildEmptyMemoryContextPacket({
       agent: input.agent,
       enabled: false,
-      scope,
+      provider: 'mem0',
       skipped_reason: !settings?.enabled ? 'global_disabled' : 'agent_disabled',
     });
   }
@@ -64,50 +128,53 @@ async function beforeMemory(input = {}) {
   const packet = buildEmptyMemoryContextPacket({
     agent: input.agent,
     enabled: true,
-    scope,
+    provider: 'mem0',
   });
-  packet.process = {
-    user_key: input.userKey || input.user_key || chat.userKey || chat.owner_username || null,
-    agent: input.agent?.name || input.agent?.id || null,
-    request: chat?.userMessage?.content || '',
-    tool_sequence: ['memory_agent', 'runCypherQuery'],
-    status: 'running',
-    reusable_info: [],
-  };
+  const query = buildRetrievalQuery(chat);
   packet.request = {
-    summary: String(chat?.userMessage?.content || '').slice(0, 220),
+    summary: getMessageText(chat?.userMessage).slice(0, 220),
     topics: [],
   };
+  packet.retrieval = {
+    provider: 'mem0',
+    agent_id: agentId,
+    query,
+    search_result_count: 0,
+    hits: [],
+    injected: false,
+  };
+
+  if (!agentId) {
+    packet.skipped_reason = 'missing_agent_id';
+    packet.warnings.push('agent_id mancante: impossibile definire lo scope mem0.');
+    return packet;
+  }
+  if (!query) {
+    packet.skipped_reason = 'empty_query';
+    return packet;
+  }
 
   try {
-    const result = await runMemoryAgent({
-      settings,
-      messages: chat.sourceMessages || chat.messages || [],
-      userPrompt: appendUserPromptContext(
-        settings.before_memory_prompt,
-        input.userKey || input.user_key || chat.userKey || chat.owner_username
-      ),
-      scope,
-      agentId: normalizeAgentId(packet.agent_id),
-      output: {
-        key: 'availableMemories',
-        description: 'riassunto solo delle memorie utili al contesto',
-      },
-    });
-    packet.contextText = String(result.text || '').trim();
-    packet.process.status = 'completed';
-    packet.retrieval = {
-      agent_tool_calls: result.tool_call_count || 0,
-      selected_ids: [],
-    };
-    if (!packet.contextText) {
-      packet.skipped_reason = 'no_memory_context';
-    }
-    if (result.warning) packet.warnings.push(result.warning);
+    const provider = createMem0Provider(settings);
+    const limit = Math.max(1, Number(settings.mem0_search_limit || 6));
+    const results = await provider.search(query, { agent_id: agentId, limit });
+    packet.retrieval.search_result_count = Array.isArray(results) ? results.length : 0;
+
+    const memories = (Array.isArray(results) ? results : [])
+      .map((item) => ({ text: extractMemoryText(item), score: Number(item?.score ?? 0) }))
+      .filter((memory) => memory.text);
+
+    packet.retrieval.hits = memories.slice(0, limit).map((memory) => ({
+      snippet: memory.text.slice(0, 300),
+      score: Number.isFinite(memory.score) ? memory.score : 0,
+    }));
+    packet.facts = uniqueStrings(memories.map((memory) => memory.text), limit);
+    packet.contextText = buildContextText(packet.facts, settings.mem0_max_injected_chars);
+    packet.retrieval.injected = Boolean(packet.contextText);
+    if (!packet.contextText) packet.skipped_reason = 'no_memories';
   } catch (error) {
     packet.skipped_reason = 'retrieval_error';
-    packet.process.status = 'failed';
-    packet.warnings.push(`Agente memorie non completato: ${error?.message || error}`);
+    packet.warnings.push(`mem0 search fallita: ${error?.message || error}`);
   }
 
   injectMemoryContext(chat.messages, packet);
@@ -119,7 +186,10 @@ async function beforeMemory(input = {}) {
 
 module.exports = {
   beforeMemory,
+  buildRetrievalQuery,
+  buildRetrievalQueries,
   getMemoryChat,
+  getMessageText,
   injectMemoryContext,
   shouldRunMemory,
 };

@@ -9,7 +9,6 @@ const SETTINGS_KEYS = Object.freeze({
   openaiRuntime: 'openai_runtime',
   telegramRuntime: 'telegram_runtime',
   memoryEngine: 'memory_engine',
-  controlEngine: 'control_engine',
 });
 
 const settingsCache = {
@@ -19,13 +18,10 @@ const settingsCache = {
   openaiRuntime: null,
   telegramRuntime: null,
   memoryEngine: null,
-  controlEngine: null,
 };
 
 const DEFAULT_ADMIN_GROUP = 'chrisbot.admin';
 const DEFAULT_MCP_CLIENT_NAME = 'chrisbot';
-const DEFAULT_MEMORY_NEO4J_HTTP_HOST_PORT = 7474;
-const DEFAULT_CONTROL_NEO4J_HTTP_HOST_PORT = 7475;
 const PORTAL_ACCESS_SENSITIVE_FIELDS = Object.freeze([
   'local_admin_password',
   'azure_client_secret',
@@ -62,27 +58,6 @@ function parseBoolean(value, fallback = false) {
   if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
   if (['false', '0', 'no', 'off'].includes(normalized)) return false;
   return fallback;
-}
-
-function hashGraphDashboardPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.pbkdf2Sync(String(password || ''), salt, 120000, 32, 'sha256').toString('hex');
-  return `pbkdf2_sha256$120000$${salt}$${hash}`;
-}
-
-function verifyGraphDashboardPassword(password, storedHash) {
-  const parts = String(storedHash || '').split('$');
-  if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') return false;
-  const iterations = Number(parts[1]);
-  const salt = parts[2];
-  const hash = parts[3];
-  if (!Number.isFinite(iterations) || !salt || !hash) return false;
-  const candidate = crypto.pbkdf2Sync(String(password || ''), salt, iterations, 32, 'sha256').toString('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(hash, 'hex'));
-  } catch (_) {
-    return false;
-  }
 }
 
 function buildDefaultPortalAccessSettings() {
@@ -170,98 +145,20 @@ function buildDefaultOpenAiRuntimeSettings() {
 }
 
 function buildDefaultMemoryEngineSettings() {
-  const browserPort = parsePort(process.env.NEO4J_HTTP_HOST_PORT, DEFAULT_MEMORY_NEO4J_HTTP_HOST_PORT);
   return {
+    provider: 'disabled',
     enabled: false,
+    mem0_api_url: String(process.env.MEM0_API_URL || 'http://127.0.0.1:8888').replace(/\/+$/, ''),
+    mem0_api_key: '',
+    mem0_timeout_ms: 8000,
+    mem0_add_timeout_ms: 60000,
+    mem0_search_limit: 6,
     analysis_model_provider: 'openai',
     analysis_model: 'gpt-5-mini',
     ollama_server_id: null,
-    embedding_model_provider: 'ollama',
-    embedding_model: '',
+    embedding_model_provider: 'openai',
+    embedding_model: 'text-embedding-3-small',
     embedding_ollama_server_id: null,
-    neo4j_url: 'bolt://neo4j:7687',
-    neo4j_browser_url: `http://127.0.0.1:${browserPort}`,
-    neo4j_username: 'neo4j',
-    neo4j_password: '',
-    graph_dashboard_password_hash: '',
-    graph_dashboard_password_version: crypto.randomUUID(),
-    memory_agent_system_prompt: `## Scopo
-
-Questo database grafo contiene conoscenze operative persistenti.
-Non salva cronologia delle run o stato temporaneo, ma informazioni utili a eseguire correttamente processi futuri.
-
-## Nodi
-
-User
-- username
-- alias[]
-
-Request
-- summary
-- alias[]
-
-Process
-- name
-- alias[]
-
-Topic
-- name
-- alias[]
-
-Knowledge
-- name
-- rules[]
-
-## Relazioni
-
-(User)-[:MADE]->(Request)
-
-(Request)-[:TRIGGERS]->(Process)
-
-(User)-[:HAS_PROCESS]->(Process)
-
-(Process)-[:ABOUT]->(Topic)
-
-(Process)-[:USES_KNOWLEDGE]->(Knowledge)
-
-(Knowledge)-[:ABOUT]->(Topic)
-
-## Significato
-
-- Request rappresenta cosa è stato richiesto.
-- Process rappresenta il processo operativo attivato.
-- Knowledge contiene informazioni o regole utili a eseguire il processo.
-- Topic raggruppa semanticamente processi e conoscenze correlate.
-
-## Esempio
-
-Process: "stampa etichetta"
-
-Knowledge:
-- name: "asset tag"
-- rules:
-  - "Necessario per stampare l'etichetta"
-  - "Se manca, cercarlo nell'inventario"
-
-Knowledge:
-- name: "limite batch utenti"
-- rules:
-  - "Gestire massimo 3 utenti alla volta"`,
-    before_memory_prompt: "Cerca nel database se ci sono informazioni necessarie a risolvere la richiesta e restituiscine un riassunto solo di quelle necessarie. se non ci sono informazioni restituisci, nessuna memoria sull'argomento.",
-    after_memory_prompt: 'Basandoti sul contesto attuale, valuta se ci sono infomazioni importanti per il futuro, cerca nel database quali informazioni sono già presenti e inseriscile se non presenti opppure aggiornale se contrastanti con le nuove',
-  };
-}
-
-function buildDefaultControlEngineSettings() {
-  const browserPort = parsePort(process.env.CONTROL_NEO4J_HTTP_HOST_PORT, DEFAULT_CONTROL_NEO4J_HTTP_HOST_PORT);
-  return {
-    enabled: false,
-    execution_enabled: false,
-    neo4j_url: 'bolt://neo4j-control:7687',
-    neo4j_browser_url: `http://127.0.0.1:${browserPort}`,
-    neo4j_username: 'neo4j',
-    neo4j_password: '',
-    persistent_connections: [],
   };
 }
 
@@ -293,14 +190,6 @@ function normalizeOpenAiRuntimeSettings(value) {
   };
 }
 
-function normalizeMemoryModelProvider(value, fallback = 'openai') {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'openai') return 'openai';
-  if (normalized === 'ollama') return 'ollama';
-  if (normalized === 'exo') return 'exo';
-  return fallback;
-}
-
 function normalizeEmbeddingModelProvider(value, fallback = 'openai') {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'openai') return 'openai';
@@ -310,128 +199,26 @@ function normalizeEmbeddingModelProvider(value, fallback = 'openai') {
 
 function normalizeMemoryEngineSettings(value) {
   const defaults = buildDefaultMemoryEngineSettings();
-  const provider = normalizeMemoryModelProvider(value?.analysis_model_provider, defaults.analysis_model_provider);
-  const embeddingProvider = normalizeEmbeddingModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider);
-  const fallbackModel = provider === 'openai'
-    ? defaults.analysis_model
-    : String(value?.analysis_model || '').trim();
-  const fallbackEmbeddingModel = embeddingProvider === 'openai'
-    ? 'text-embedding-3-small'
-    : String(value?.embedding_model || defaults.embedding_model || '').trim();
+  const requestedProvider = String(value?.provider || '').trim().toLowerCase();
+  const provider = (requestedProvider === 'mem0' || parseBoolean(value?.enabled, false))
+    ? 'mem0'
+    : 'disabled';
   return {
-    enabled: parseBoolean(value?.enabled, defaults.enabled),
-    analysis_model_provider: provider,
-    analysis_model: String(value?.analysis_model || fallbackModel).trim() || fallbackModel,
-    ollama_server_id: provider === 'ollama' || provider === 'exo'
-      ? (String(value?.ollama_server_id || '').trim() || null)
-      : null,
-    embedding_model_provider: embeddingProvider,
-    embedding_model: String(value?.embedding_model || fallbackEmbeddingModel).trim() || fallbackEmbeddingModel,
-    embedding_ollama_server_id: embeddingProvider === 'ollama'
-      ? (String(value?.embedding_ollama_server_id || value?.ollama_server_id || '').trim() || null)
-      : null,
-    neo4j_url: String(value?.neo4j_url || defaults.neo4j_url).trim() || defaults.neo4j_url,
-    neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
-    neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
-    neo4j_password: String(value?.neo4j_password || '').trim(),
-    graph_dashboard_password_hash: String(value?.graph_dashboard_password_hash || '').trim(),
-    graph_dashboard_password_version: String(value?.graph_dashboard_password_version || '').trim() || crypto.randomUUID(),
-    memory_agent_system_prompt: String(value?.memory_agent_system_prompt || defaults.memory_agent_system_prompt).trim() || defaults.memory_agent_system_prompt,
-    before_memory_prompt: String(value?.before_memory_prompt || defaults.before_memory_prompt).trim() || defaults.before_memory_prompt,
-    after_memory_prompt: String(value?.after_memory_prompt || defaults.after_memory_prompt).trim() || defaults.after_memory_prompt,
-  };
-}
-
-function normalizeControlEngineSettings(value) {
-  const defaults = buildDefaultControlEngineSettings();
-  return {
-    enabled: parseBoolean(value?.enabled, defaults.enabled),
-    execution_enabled: parseBoolean(value?.execution_enabled, defaults.execution_enabled),
-    neo4j_url: String(value?.neo4j_url || defaults.neo4j_url).trim() || defaults.neo4j_url,
-    neo4j_browser_url: String(value?.neo4j_browser_url || defaults.neo4j_browser_url).trim() || defaults.neo4j_browser_url,
-    neo4j_username: String(value?.neo4j_username || defaults.neo4j_username).trim() || defaults.neo4j_username,
-    neo4j_password: String(value?.neo4j_password || '').trim(),
-    persistent_connections: normalizeControlPersistentConnections(value?.persistent_connections),
-  };
-}
-
-function normalizeControlProtocol(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'ssh' ? 'ssh' : 'telnet';
-}
-
-function buildControlConnectionRef(connection, index) {
-  const explicit = String(connection?.ref || connection?.key || '').trim();
-  if (explicit) return explicit.toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
-  const label = String(connection?.label || connection?.name || '').trim().toLowerCase();
-  const host = String(connection?.host || '').trim();
-  const source = [label, host, connection?.port, index + 1].filter(Boolean).join(':');
-  return `conn_${crypto.createHash('sha1').update(source).digest('hex').slice(0, 10)}`;
-}
-
-function normalizeControlPersistentConnection(connection, index) {
-  const ref = buildControlConnectionRef(connection, index);
-  const protocol = normalizeControlProtocol(connection?.protocol);
-  const auth = parseBoolean(connection?.auth, false);
-  const username = String(connection?.username || '').trim();
-  const password = String(connection?.password || '').trim();
-  const normalized = {
-    id: String(connection?.id || ref).trim() || ref,
-    ref,
-    label: String(connection?.label || connection?.name || ref).trim() || ref,
-    protocol,
-    host: String(connection?.host || '').trim(),
-    port: parseInteger(connection?.port, protocol === 'ssh' ? 22 : 23),
-    auth,
-    username: auth ? username : '',
-    password: auth ? password : '',
-    persistent: parseBoolean(connection?.persistent, true),
-    ready_message: protocol === 'telnet' ? String(connection?.ready_message || connection?.readyMessage || '').trim() : '',
-    enabled: connection?.enabled !== false,
-  };
-  if (normalized.enabled && normalized.auth && (!normalized.username || !normalized.password)) {
-    throw new Error(`Connessione persistente ${normalized.label}: username e password obbligatori quando auth=true.`);
-  }
-  return normalized;
-}
-
-function normalizeControlPersistentConnections(input) {
-  if (!Array.isArray(input)) return [];
-  const seen = new Set();
-  const normalized = [];
-  input.forEach((connection, index) => {
-    const item = normalizeControlPersistentConnection(connection, index);
-    if (!item.host) return;
-    if (seen.has(item.ref)) return;
-    seen.add(item.ref);
-    normalized.push(item);
-  });
-  return normalized;
-}
-
-function deserializeControlEngineSettings(value) {
-  if (!value || typeof value !== 'object') return value;
-  return {
-    ...value,
-    neo4j_password: decryptValue(value.neo4j_password),
-    persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
-      ...connection,
-      username: decryptValue(connection?.username),
-      password: decryptValue(connection?.password),
-    })),
-  };
-}
-
-function serializeControlEngineSettings(value) {
-  if (!value || typeof value !== 'object') return value;
-  return {
-    ...value,
-    neo4j_password: encryptValue(value.neo4j_password),
-    persistent_connections: (Array.isArray(value.persistent_connections) ? value.persistent_connections : []).map((connection) => ({
-      ...connection,
-      username: encryptValue(connection?.username),
-      password: encryptValue(connection?.password),
-    })),
+    provider,
+    enabled: provider === 'mem0',
+    mem0_api_url: String(value?.mem0_api_url || defaults.mem0_api_url).trim().replace(/\/+$/, '') || defaults.mem0_api_url,
+    mem0_api_key: String(value?.mem0_api_key || '').trim(),
+    mem0_timeout_ms: Math.max(1000, Math.min(60000, parseInteger(value?.mem0_timeout_ms, defaults.mem0_timeout_ms))),
+    mem0_add_timeout_ms: Math.max(5000, Math.min(180000, parseInteger(value?.mem0_add_timeout_ms, defaults.mem0_add_timeout_ms))),
+    mem0_search_limit: Math.max(1, Math.min(50, parseInteger(value?.mem0_search_limit, defaults.mem0_search_limit))),
+    analysis_model_provider: ['openai', 'ollama', 'exo'].includes(String(value?.analysis_model_provider || '').trim().toLowerCase())
+      ? String(value.analysis_model_provider).trim().toLowerCase()
+      : defaults.analysis_model_provider,
+    analysis_model: String(value?.analysis_model || defaults.analysis_model).trim() || defaults.analysis_model,
+    ollama_server_id: String(value?.ollama_server_id || '').trim() || null,
+    embedding_model_provider: normalizeEmbeddingModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider),
+    embedding_model: String(value?.embedding_model || defaults.embedding_model).trim() || defaults.embedding_model,
+    embedding_ollama_server_id: String(value?.embedding_ollama_server_id || value?.ollama_server_id || '').trim() || null,
   };
 }
 
@@ -473,7 +260,7 @@ function deserializeMemoryEngineSettings(value) {
   if (!value || typeof value !== 'object') return value;
   return {
     ...value,
-    neo4j_password: decryptValue(value.neo4j_password),
+    mem0_api_key: decryptValue(value.mem0_api_key),
   };
 }
 
@@ -481,7 +268,7 @@ function serializeMemoryEngineSettings(value) {
   if (!value || typeof value !== 'object') return value;
   return {
     ...value,
-    neo4j_password: encryptValue(value.neo4j_password),
+    mem0_api_key: encryptValue(value.mem0_api_key),
   };
 }
 
@@ -689,43 +476,8 @@ function redactTelegramRuntimeSettings(value) {
 function redactMemoryEngineSettings(value) {
   return {
     ...value,
-    neo4j_password: '',
-    neo4j_password_configured: Boolean(String(value?.neo4j_password || '').trim()),
-    graph_dashboard_password: '',
-    graph_dashboard_password_hash: undefined,
-    graph_dashboard_password_configured: Boolean(String(value?.graph_dashboard_password_hash || '').trim()),
-  };
-}
-
-function redactControlEngineSettings(value) {
-  return {
-    ...value,
-    neo4j_password: '',
-    neo4j_password_configured: Boolean(String(value?.neo4j_password || '').trim()),
-    persistent_connections: (value?.persistent_connections || []).map((connection) => ({
-      ...connection,
-      id: undefined,
-      username: '',
-      password: '',
-      username_configured: Boolean(String(connection?.username || '').trim()),
-      password_configured: Boolean(String(connection?.password || '').trim()),
-    })),
-  };
-}
-
-function preserveControlConnectionSecrets(normalized, incoming, current) {
-  const currentByRef = new Map((current?.persistent_connections || []).map((connection) => [connection.ref, connection]));
-  const incomingByRef = new Map((incoming?.persistent_connections || []).map((connection, index) => [
-    buildControlConnectionRef(connection, index),
-    connection,
-  ]));
-  return {
-    ...normalized,
-    persistent_connections: (normalized.persistent_connections || []).map((connection) => {
-      const currentConnection = currentByRef.get(connection.ref);
-      const incomingConnection = incomingByRef.get(connection.ref);
-      return preserveExistingSecrets(connection, incomingConnection || {}, currentConnection || {}, ['username', 'password']);
-    }),
+    mem0_api_key: '',
+    mem0_api_key_configured: Boolean(String(value?.mem0_api_key || '').trim()),
   };
 }
 
@@ -758,8 +510,14 @@ async function loadOrSeedSetting(settingKey, defaultBuilder, normalizer, options
   const existing = await getSetting(settingKey);
   if (!existing) {
     const defaults = normalizer(defaultBuilder());
+    if (settingKey === SETTINGS_KEYS.memoryEngine) {
+      console.warn(`[appSettings] SEED ${settingKey}: riga assente nel DB, scrivo default mem0_api_url=${defaults.mem0_api_url}`);
+    }
     await setSetting(settingKey, serialize(defaults));
     return defaults;
+  }
+  if (settingKey === SETTINGS_KEYS.memoryEngine) {
+    console.info(`[appSettings] LOAD ${settingKey}: riga trovata, mem0_api_url grezzo=${existing.value_json?.mem0_api_url}`);
   }
   const normalized = normalizer(deserialize(existing.value_json));
   const normalizedForStorage = serialize(normalized);
@@ -812,15 +570,6 @@ async function initializeAppSettings() {
       serialize: serializeMemoryEngineSettings,
     }
   );
-  settingsCache.controlEngine = await loadOrSeedSetting(
-    SETTINGS_KEYS.controlEngine,
-    buildDefaultControlEngineSettings,
-    normalizeControlEngineSettings,
-    {
-      deserialize: deserializeControlEngineSettings,
-      serialize: serializeControlEngineSettings,
-    }
-  );
 }
 
 function getPortalAccessSettingsSync() {
@@ -863,13 +612,6 @@ function getMemoryEngineSettingsSync() {
     settingsCache.memoryEngine = normalizeMemoryEngineSettings(buildDefaultMemoryEngineSettings());
   }
   return settingsCache.memoryEngine;
-}
-
-function getControlEngineSettingsSync() {
-  if (!settingsCache.controlEngine) {
-    settingsCache.controlEngine = normalizeControlEngineSettings(buildDefaultControlEngineSettings());
-  }
-  return settingsCache.controlEngine;
 }
 
 async function updatePortalAccessSettings(nextValue) {
@@ -932,51 +674,14 @@ async function updateTelegramRuntimeSettings(nextValue) {
 
 async function updateMemoryEngineSettings(nextValue) {
   const current = getMemoryEngineSettingsSync();
-  const graphDashboardPassword = String(nextValue?.graph_dashboard_password ?? '').trim();
-  const shouldReplaceGraphPassword = hasReplacementSecret(graphDashboardPassword);
   const normalized = preserveExistingSecrets(
     normalizeMemoryEngineSettings({ ...current, ...(nextValue || {}) }),
     nextValue || {},
     current,
-    ['neo4j_password']
+    ['mem0_api_key']
   );
-  if (shouldReplaceGraphPassword) {
-    normalized.graph_dashboard_password_hash = hashGraphDashboardPassword(graphDashboardPassword);
-    normalized.graph_dashboard_password_version = crypto.randomUUID();
-  } else {
-    normalized.graph_dashboard_password_hash = current.graph_dashboard_password_hash || normalized.graph_dashboard_password_hash || '';
-    normalized.graph_dashboard_password_version = current.graph_dashboard_password_version || normalized.graph_dashboard_password_version || crypto.randomUUID();
-  }
-  delete normalized.graph_dashboard_password;
   await setSetting(SETTINGS_KEYS.memoryEngine, serializeMemoryEngineSettings(normalized));
   settingsCache.memoryEngine = normalized;
-  return normalized;
-}
-
-async function updateControlEngineSettings(nextValue) {
-  const current = getControlEngineSettingsSync();
-  const incoming = nextValue || {};
-  const currentByRef = new Map((current?.persistent_connections || []).map((connection) => [connection.ref, connection]));
-  const incomingWithSecrets = { ...incoming };
-  if (Array.isArray(incoming.persistent_connections)) {
-    incomingWithSecrets.persistent_connections = incoming.persistent_connections.map((connection, index) => {
-        const ref = buildControlConnectionRef(connection, index);
-        const currentConnection = currentByRef.get(ref);
-        return preserveExistingSecrets({ ...connection }, connection, currentConnection || {}, ['username', 'password']);
-      });
-  }
-  const normalized = preserveControlConnectionSecrets(
-    preserveExistingSecrets(
-      normalizeControlEngineSettings({ ...current, ...incomingWithSecrets }),
-      incoming,
-      current,
-      ['neo4j_password']
-    ),
-    incoming,
-    current
-  );
-  await setSetting(SETTINGS_KEYS.controlEngine, serializeControlEngineSettings(normalized));
-  settingsCache.controlEngine = normalized;
   return normalized;
 }
 
@@ -986,7 +691,6 @@ function getSettingsSnapshot(options = {}) {
   const openAiRuntime = getOpenAiRuntimeSettingsSync();
   const telegramRuntime = getTelegramRuntimeSettingsSync();
   const memoryEngine = getMemoryEngineSettingsSync();
-  const controlEngine = getControlEngineSettingsSync();
   return {
     portal_access: redactSecrets ? redactPortalAccessSettings(portalAccess) : portalAccess,
     mcp_runtime: redactSecrets ? redactMcpRuntimeSettings(getMcpRuntimeSettingsSync()) : getMcpRuntimeSettingsSync(),
@@ -994,7 +698,6 @@ function getSettingsSnapshot(options = {}) {
     openai_runtime: redactSecrets ? redactOpenAiRuntimeSettings(openAiRuntime) : openAiRuntime,
     telegram_runtime: redactSecrets ? redactTelegramRuntimeSettings(telegramRuntime) : telegramRuntime,
     memory_engine: redactSecrets ? redactMemoryEngineSettings(memoryEngine) : memoryEngine,
-    control_engine: redactSecrets ? redactControlEngineSettings(controlEngine) : controlEngine,
   };
 }
 
@@ -1014,12 +717,8 @@ function revealSettingsSecret(target = {}) {
     return String(getTelegramRuntimeSettingsSync()?.bot_token || '');
   }
 
-  if (area === 'memory_engine' && field === 'neo4j_password') {
-    return String(getMemoryEngineSettingsSync()?.neo4j_password || '');
-  }
-
-  if (area === 'control_engine' && field === 'neo4j_password') {
-    return String(getControlEngineSettingsSync()?.neo4j_password || '');
+  if (area === 'memory_engine' && field === 'mem0_api_key') {
+    return String(getMemoryEngineSettingsSync()?.mem0_api_key || '');
   }
 
   if (area === 'mcp_runtime' && field === 'headers_json') {
@@ -1042,15 +741,12 @@ module.exports = {
   getOpenAiRuntimeSettingsSync,
   getTelegramRuntimeSettingsSync,
   getMemoryEngineSettingsSync,
-  getControlEngineSettingsSync,
   updatePortalAccessSettings,
   updateMcpRuntimeSettings,
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
   updateMemoryEngineSettings,
-  updateControlEngineSettings,
   revealSettingsSecret,
   getSettingsSnapshot,
-  verifyGraphDashboardPassword,
 };

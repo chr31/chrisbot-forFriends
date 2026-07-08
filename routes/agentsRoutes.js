@@ -40,8 +40,6 @@ router.get('/catalog', async (req, res) => {
         alive_include_goals: agent.alive_include_goals,
         goals: agent.goals,
         memory_engine_enabled: agent.memory_engine_enabled,
-        improve_memories_enabled: agent.improve_memories_enabled,
-        memory_scope: agent.memory_scope,
       }));
     return res.json(catalog);
   } catch (error) {
@@ -73,7 +71,6 @@ function normalizeCreatePayload(body, username) {
     goals: body?.goals,
     memory_engine_enabled: body?.memory_engine_enabled,
     improve_memories_enabled: body?.improve_memories_enabled,
-    memory_scope: body?.memory_scope,
     is_active: body?.is_active,
     created_by: username,
   };

@@ -145,27 +145,10 @@ async function continueInboxConversation(item, username, content) {
       depth: 0,
       userKey: item.owner_username || username || null,
     });
-    const afterMemoryPacket = await runAfterMemory({
-      agent,
-      chat: {
-        chatId: chat.chat_id,
-        runId: run.id,
-        messages: sanitizeMessages(history),
-        sourceMessages: history,
-        userMessage,
-        assistantResponse: response,
-        userKey: item.owner_username || username || null,
-      },
-      modelConfig,
-      beforePacket: memoryContextPacket,
-      runId: run.id,
-      userKey: item.owner_username || username || null,
-      processStatus: 'completed',
-    });
     await updateAgentRunIfStatus(run.id, {
       status: 'completed',
       finished_at: new Date(),
-      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket),
+      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
     }, 'running');
 
     const responseText = String(typeof response === 'string' ? response : JSON.stringify(response)).trim();
@@ -184,43 +167,14 @@ async function continueInboxConversation(item, username, content) {
         last_message_at: new Date(),
       });
     }
+    runAfterMemory({ agent, userMessage, response: responseText, runId: run.id }).catch(() => {});
     return { runId: run.id, response: responseText };
   } catch (error) {
-    let memoryTrace = null;
-    try {
-      const afterMemoryPacket = await runAfterMemory({
-        agent,
-        chat: {
-          chatId: chat.chat_id,
-          runId: run.id,
-          messages: sanitizeMessages(history),
-          sourceMessages: history,
-          userMessage,
-          assistantResponse: '',
-          error,
-          userKey: item.owner_username || username || null,
-        },
-        modelConfig,
-        beforePacket: memoryContextPacket,
-        runId: run.id,
-        userKey: item.owner_username || username || null,
-        processStatus: 'failed',
-        error,
-      });
-      memoryTrace = buildMemoryRunTrace(memoryContextPacket, afterMemoryPacket);
-    } catch (memoryError) {
-      memoryTrace = buildMemoryRunTrace(memoryContextPacket, {
-        enabled: false,
-        scope: agent?.memory_scope || 'shared',
-        warnings: [String(memoryError?.message || memoryError)],
-        skipped_reason: 'error',
-      });
-    }
     await updateAgentRunIfStatus(run.id, {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
-      guardrail_result_json: memoryTrace,
+      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
     }, 'running');
     await insertInboxMessage({
       inbox_item_id: item.id,

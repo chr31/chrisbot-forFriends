@@ -19,7 +19,6 @@ import {
 
 type AgentKind = 'worker' | 'orchestrator';
 type VisibilityScope = 'public' | 'restricted' | 'private';
-type MemoryScope = 'shared' | 'dedicated';
 
 type AgentPermission = {
   subject_type: 'user' | 'upn';
@@ -56,7 +55,6 @@ type Agent = {
   goals: string;
   memory_engine_enabled: boolean;
   improve_memories_enabled: boolean;
-  memory_scope: MemoryScope;
   is_active: boolean;
   tool_names: string[];
   permissions: AgentPermission[];
@@ -119,7 +117,6 @@ type FormState = {
   goals: string;
   memory_engine_enabled: boolean;
   improve_memories_enabled: boolean;
-  memory_scope: MemoryScope;
   is_active: boolean;
   tool_names: string[];
   relations: Array<{
@@ -164,7 +161,6 @@ const EMPTY_FORM: FormState = {
   goals: '',
   memory_engine_enabled: false,
   improve_memories_enabled: false,
-  memory_scope: 'shared',
   is_active: true,
   tool_names: [],
   relations: [],
@@ -371,7 +367,6 @@ function formFromAgent(agent: Agent): FormState {
     goals: agent.goals || '',
     memory_engine_enabled: Boolean(agent.memory_engine_enabled),
     improve_memories_enabled: Boolean(agent.improve_memories_enabled),
-    memory_scope: agent.memory_scope === 'dedicated' ? 'dedicated' : 'shared',
     is_active: agent.is_active,
     tool_names: agent.tool_names || [],
     relations: (agent.relations || [])
@@ -682,7 +677,6 @@ export default function AgentsPage() {
         goals: form.goals,
         memory_engine_enabled: form.memory_engine_enabled,
         improve_memories_enabled: form.improve_memories_enabled,
-        memory_scope: form.memory_scope,
         is_active: form.is_active,
         tool_names: form.tool_names,
         relations: form.kind === 'orchestrator'
@@ -772,7 +766,6 @@ export default function AgentsPage() {
         is_active: updates.is_active ?? agent.is_active,
         memory_engine_enabled: agent.memory_engine_enabled,
         improve_memories_enabled: agent.improve_memories_enabled,
-        memory_scope: agent.memory_scope,
         tool_names: agent.tool_names,
         relations: agent.kind === 'orchestrator'
           ? (agent.relations || []).map((entry) => ({
@@ -846,7 +839,6 @@ export default function AgentsPage() {
         goals: agent.goals || '',
         memory_engine_enabled: agent.memory_engine_enabled,
         improve_memories_enabled: agent.improve_memories_enabled,
-        memory_scope: agent.memory_scope,
         is_active: agent.is_active,
         tool_names: agent.tool_names || [],
         relations: agent.kind === 'orchestrator'
@@ -1289,48 +1281,35 @@ export default function AgentsPage() {
                         </div>
 
                         <div className={`rounded-2xl border p-4 ${
-                          form.memory_engine_enabled || form.improve_memories_enabled ? 'border-sky-800/50 bg-sky-950/10' : 'border-gray-800 bg-gray-950/60'
+                          form.memory_engine_enabled ? 'border-sky-800/50 bg-sky-950/10' : 'border-gray-800 bg-gray-950/60'
                         }`}>
                           <p className="flex items-center gap-2 text-sm font-semibold text-white">
                             Memory Engine
-                            <InfoHint label="Memory Engine" description="Configura le funzioni di memoria dell'agente. Use memories attiva beforeMemory, Improve memories attiva afterMemory." />
+                            <InfoHint label="Memory Engine" description="Le memorie sono gestite da mem0. Il collegamento a mem0 (URL e API key) si configura in Impostazioni. Qui abiliti lettura e scrittura per questo agente." />
                           </p>
                           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                            <label className="text-sm text-gray-200">
-                              <span className="mb-1 flex items-center gap-2">Tipo memoria <InfoHint label="Tipo memoria" description="Shared usa memorie condivise tra agenti. Dedicated limita lettura e scrittura allo scope di questo agente." /></span>
-                              <select
-                                value={form.memory_scope}
-                                onChange={(e) => setForm((current) => ({ ...current, memory_scope: e.target.value as MemoryScope }))}
-                                className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                              >
-                                <option value="shared">condivisa</option>
-                                <option value="dedicated">dedicata</option>
-                              </select>
-                            </label>
-                            <div className="grid gap-4 sm:grid-cols-2">
-                              <div className="text-sm text-gray-200">
-                                <span className="mb-1 flex items-center gap-2">Use memories <InfoHint label="Use memories" description="Quando e attivo, l'agente esegue beforeMemory per recuperare e usare memorie rilevanti prima della risposta." /></span>
-                                <div className="flex min-h-10 items-center">
-                                  <Toggle
-                                    checked={form.memory_engine_enabled}
-                                    onChange={() => setForm((current) => ({
-                                      ...current,
-                                      memory_engine_enabled: !current.memory_engine_enabled,
-                                    }))}
-                                  />
-                                </div>
+                            <div className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Use memories <InfoHint label="Use memories" description="Quando e attivo, l'agente esegue beforeMemory per recuperare da mem0 le memorie rilevanti prima della risposta." /></span>
+                              <div className="flex min-h-10 items-center">
+                                <Toggle
+                                  checked={form.memory_engine_enabled}
+                                  onChange={() => setForm((current) => ({
+                                    ...current,
+                                    memory_engine_enabled: !current.memory_engine_enabled,
+                                  }))}
+                                />
                               </div>
-                              <div className="text-sm text-gray-200">
-                                <span className="mb-1 flex items-center gap-2">Improve memories <InfoHint label="Improve memories" description="Quando e attivo, l'agente esegue afterMemory per aggiornare le memorie dopo le risposte." /></span>
-                                <div className="flex min-h-10 items-center">
-                                  <Toggle
-                                    checked={form.improve_memories_enabled}
-                                    onChange={() => setForm((current) => ({
-                                      ...current,
-                                      improve_memories_enabled: !current.improve_memories_enabled,
-                                    }))}
-                                  />
-                                </div>
+                            </div>
+                            <div className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Improve memories <InfoHint label="Improve memories" description="Quando e attivo, dopo la risposta l'agente esegue afterMemory in parallelo (senza bloccare la chat) e invia il turno a mem0 per estrarre e aggiornare le memorie." /></span>
+                              <div className="flex min-h-10 items-center">
+                                <Toggle
+                                  checked={form.improve_memories_enabled}
+                                  onChange={() => setForm((current) => ({
+                                    ...current,
+                                    improve_memories_enabled: !current.improve_memories_enabled,
+                                  }))}
+                                />
                               </div>
                             </div>
                           </div>

@@ -1,592 +1,49 @@
 # Chrisbot Memory Engine
 
-Documento di progetto per la nuova gestione delle memorie strutturate di Chrisbot.
+Il Memory Engine di Chrisbot e' basato su [mem0](https://github.com/mem0ai/mem0) OSS self-hosted. Chrisbot non gestisce piu' un grafo di memorie proprio: delega a mem0 estrazione, deduplica, aggiornamento e ricerca semantica delle memorie. L'integrazione si riduce a due funzioni agganciate al flusso chat (`beforeMemory` e `afterMemory`) che parlano con mem0 via HTTP.
 
-Questo documento definisce la direzione architetturale e i guardrail da seguire nelle implementazioni future. Il Memory Engine sostituisce completamente la vecchia memoria testuale semplice degli agenti.
-
-## Obiettivo
-
-Il Memory Engine permette agli agenti di recuperare, usare e aggiornare memorie utili durante le conversazioni.
-
-L'obiettivo e' dare all'agente il contesto giusto al momento giusto, senza appesantire stabilmente il prompt e senza lasciare all'LLM il controllo diretto della memoria persistente.
-
-Principio guida:
+## Flusso runtime
 
 ```txt
-LLM = analizza, interpreta, propone struttura
-Neo4j = fonte di verita' della memoria operativa
-Memory Engine = valida, regola, salva, recupera e inietta contesto
+richiesta utente
+-> guardrail semantici
+-> beforeMemory: ricerca semantica su mem0 e iniezione nel prompt
+-> risposta dell'agente
+-> afterMemory: invio del turno (user + assistant) a mem0 per l'estrazione
 ```
 
-## Relazione con Control Engine
+`beforeMemory` e `afterMemory` non bloccano la chat: se mem0 non e' configurato o non risponde, la conversazione prosegue senza memoria e l'errore viene solo annotato.
 
-Memory Engine e Control Engine condividono Neo4j, ma restano subgraph separati.
+## Configurazione globale (mem0)
+
+Le impostazioni vivono in `app_settings` (chiave `memory_engine`), coerentemente con OpenAI, Ollama, MCP e Telegram, e sono esposte dal portale nella tab:
 
 ```txt
-Memory Engine
--> procedure, decisioni, lezioni operative, contesto riutilizzabile
-
-Control Engine
--> stato operativo corrente: location, device, capability, action, adapter
+Impostazioni > Memory Engine
 ```
 
-Il Control Engine non deve salvare storico run, ultimi esiti o log di monitoraggio. Deve contenere solo struttura operativa attuale. Le azioni bash arbitrarie sono una capacita intenzionale quando l'esecuzione e' abilitata: devono restare azioni esplicite del grafo, eseguite dal backend con timeout, dry-run e limiti di output.
-
-Per evitare crescita esponenziale, ogni inserimento Control Engine deve allineare prima di creare: canonical key, alias, vicinato nel grafo e, quando disponibile, embedding similarity. Le procedure restano nel Memory Engine e possono richiamare capability o azioni del Control Engine quando devono eseguire controlli reali.
-
-## Superamento della memoria semplice
-
-La memoria semplice attuale basata sul campo testuale `agents.memories` viene dismessa completamente.
-
-Non e' prevista migrazione dei contenuti esistenti, perche' il campo non contiene informazioni discriminanti per l'utilizzo futuro.
-
-Da rimuovere:
-
-- colonna SQL `agents.memories`
-- lettura/scrittura backend del campo `memories`
-- campo frontend "Memories" nella pagina agenti
-- tool interni `chrisbot_getMemories` e `chrisbot_editMemories`
-- riferimenti testuali alla vecchia memoria manuale
-
-I `goals` restano separati dalla memoria: sono obiettivi persistenti espliciti dell'agente, non memoria estratta automaticamente.
-
-## Oggetti di memoria
-
-Il primo modello concettuale del grafo usa questi oggetti.
+Campi mem0 salvati a DB:
 
 ```txt
-Episode
-Evento immutabile realmente accaduto.
-Esempi: messaggio utente, risposta assistant, tool call, tool result, errore.
-
-Entity
-Concetto rilevante riconosciuto nel contesto.
-Esempi: agente, progetto, tool, repository, servizio, procedura, asset.
-
-Fact
-Conoscenza riutilizzabile estratta dagli episodi.
-Esempi: una decisione, un vincolo progettuale, una lezione operativa su un tool.
-
-Link
-Relazione tra oggetti.
-Esempi: tool -> richiede -> parametro, agente -> lavora_su -> progetto.
-
-Summary
-Sintesi compatta di episodi, fatti o gruppi di relazioni, utile per il prompt.
+enabled            ON/OFF globale del Memory Engine
+mem0_api_url       URL dell'istanza mem0 OSS (default http://127.0.0.1:8888)
+mem0_api_key       API key mem0, salvata cifrata (header X-API-Key)
+mem0_timeout_ms    timeout delle chiamate di ricerca
+mem0_add_timeout_ms timeout piu' ampio per l'estrazione (add), che gira un LLM lato mem0
+mem0_search_limit  numero massimo di memorie recuperate per ricerca
 ```
 
-## Campi database Memory Engine
+Il default di bootstrap di `mem0_api_url` puo' essere impostato con l'env `MEM0_API_URL`; tutto il resto si configura dal portale. Il test connessione esercita l'endpoint di ricerca mem0 per validare raggiungibilita' e autenticazione.
 
-Il processo reale del portale produce sempre due livelli distinti:
+Nota: nella stessa area di impostazioni convivono i campi dei modelli usati dai guardrail semantici (`analysis_model_provider`/`analysis_model`, `embedding_model_provider`/`embedding_model`, `ollama_server_id`/`embedding_ollama_server_id`). Questi campi NON sono legacy: servono ai guardrail semantici degli agenti, non a mem0.
+
+## Configurazione per agente
+
+Ogni agente ha due flag indipendenti nel proprio record:
 
 ```txt
-Run operativa
-Audit di cosa e' stato chiesto, quale agente ha lavorato, quali tool/deleghe sono stati usati e con quale esito.
-
-Memoria riutilizzabile
-Informazione stabile o semi-stabile che puo' essere recuperata in una run futura.
-```
-
-Per questo il grafo non deve salvare solo "testi", ma anche il contesto operativo che li ha generati.
-
-### MemoryRun
-
-Nodo che rappresenta una `agent_runs` applicativa.
-
-Campi:
-
-```txt
-id
-agent_run_id
-chat_id
-agent_id
-memory_agent_id
-user_key
-process_status
-started_at
-finished_at
-created_at
-updated_at
-```
-
-Semantica:
-
-```txt
-agent_id
-Agente che ha eseguito la run.
-
-memory_agent_id
-Scope agente della memoria. Valorizzato solo per memorie dedicated; NULL per shared.
-
-user_key
-Utente/interlocutore della run, solo come audit del processo. Non partiziona la memoria e non entra nella chiave di retrieval.
-
-process_status
-completed | failed | partial | skipped | unknown
-```
-
-### MemoryEpisode
-
-Evento immutabile realmente accaduto durante una run.
-
-Campi:
-
-```txt
-id
-scope
-agent_id
-memory_agent_id
-user_key
-chat_id
-agent_run_id
-run_key
-episode_type
-process_status
-content
-request_text
-result_text
-summary
-metadata_json
-occurred_at
-created_at
-```
-
-Valori iniziali `episode_type`:
-
-```txt
-run_process
-user_request
-assistant_response
-tool_call
-tool_result
-error
-```
-
-Regola:
-
-```txt
-Gli Episode non vengono deduplicati e non vengono modificati semanticamente.
-Servono a ricostruire lo storico e a dare evidenza ai fatti estratti.
-Lo storico resta sugli Episode/Run; i MemoryItem ricercabili devono rappresentare la versione corrente minima.
-```
-
-### MemoryItem
-
-Nodo ricercabile e riutilizzabile nel retrieval.
-
-Campi:
-
-```txt
-id
-scope
-agent_id
-source_user_key
-agent_label
-memory_type
-category
-topic
-subject_key
-information
-searchable_text
-confidence
-importance
-embedding
-embedding_model
-embedding_provider
-is_active
-first_seen_at
-last_seen_at
-last_accessed_at
-seen_count
-access_count
-created_at
-updated_at
-```
-
-Semantica:
-
-```txt
-agent_id
-Scope agente della memoria. NULL per shared, valorizzato per dedicated.
-
-source_user_key
-Utente/interlocutore da cui arriva l'informazione. Serve come contesto di provenienza, non come partizione della memoria.
-
-agent_label
-Agente che ha ricevuto o consolidato l'informazione.
-
-topic
-Argomento o identificatore stabile del soggetto della memoria.
-Esempi: asset ID, repository, tool name, progetto, servizio.
-Quando presente, la chiave canonica del MemoryItem usa tipo, scope, agente, categoria e topic: una nuova informazione sullo stesso soggetto aggiorna la versione corrente invece di creare storico duplicato.
-
-subject_key
-Chiave normalizzata dell'argomento operativo. Serve per collegare e aggiornare memorie sulla stessa rete semantica senza dipendere dalla forma testuale del topic.
-
-information
-Informazione minima e riutilizzabile da recuperare in futuro.
-
-confidence
-Quanto e' forte l'evidenza che la memoria sia vera.
-
-importance
-Quanto conviene recuperarla in futuro.
-
-embedding
-Vettore calcolato su searchable_text.
-```
-
-Valori iniziali `memory_type`:
-
-```txt
-fact
-entity
-procedure
-decision
-tool_lesson
-summary
-action_history
-```
-
-### MemoryTool
-
-Nodo tool, collegato alle run che lo hanno usato.
-
-Campi:
-
-```txt
-name
-created_at
-updated_at
-```
-
-Relazione:
-
-```txt
-(MemoryRun)-[:USED_TOOL {
-  call_id,
-  status,
-  arguments_json,
-  result_excerpt,
-  created_at,
-  updated_at
-}]->(MemoryTool)
-```
-
-### MemoryRequest
-
-Nodo sintetico della richiesta operativa.
-
-Campi:
-
-```txt
-id
-key
-summary
-request_text
-scope
-agent_id
-first_seen_at
-last_seen_at
-seen_count
-created_at
-updated_at
-```
-
-Semantica:
-
-```txt
-summary
-Riassunto prodotto dal modello chat memoria. Il prompt chiede massimo 10 parole, ma il backend non applica limiti di parole rigidi.
-
-key
-Forma normalizzata del summary, usata come anchor semantico.
-```
-
-### MemoryTopic
-
-Nodo argomento operativo.
-
-Campi:
-
-```txt
-id
-key
-name
-category
-scope
-agent_id
-first_seen_at
-last_seen_at
-seen_count
-created_at
-updated_at
-```
-
-Esempi:
-
-```txt
-assetmanager
-active directory
-asset tag
-snipe-it
-repository chrisbot
-```
-
-### MemoryStatus
-
-Nodo stato operativo condiviso tra processo e tool.
-
-Valori iniziali:
-
-```txt
-completed
-failed
-partial
-skipped
-unknown
-```
-
-### Relazioni principali
-
-```txt
-(MemoryEpisode)-[:PART_OF_RUN]->(MemoryRun)
-(MemoryRun)-[:HANDLED_BY]->(MemoryAgent)
-(MemoryRun)-[:USED_TOOL]->(MemoryTool)
-(MemoryRun)-[:FOR_REQUEST]->(MemoryRequest)
-(MemoryRun)-[:ABOUT]->(MemoryTopic)
-(MemoryRun)-[:HAS_STATUS]->(MemoryStatus)
-(MemoryRun)-[:TOOL_STATUS]->(MemoryStatus)
-(MemoryRequest)-[:ABOUT]->(MemoryTopic)
-(MemoryItem)-[:DERIVED_FROM]->(MemoryEpisode)
-(MemoryItem)-[:NEEDED_FOR]->(MemoryRequest)
-(MemoryItem)-[:NEEDED_FOR]->(MemoryTopic)
-(MemoryItem)-[:NEEDED_FOR]->(MemoryTool)
-(MemoryItem)-[:NEEDED_FOR]->(MemoryStatus)
-(MemoryItem)-[:RELATED_TO]->(MemoryTopic)
-(MemoryItem)-[:OBSERVED_IN]->(MemoryRun)
-```
-
-Questa struttura permette sia storico/audit, sia retrieval semantico, sia "sinapsi" tra run diverse tramite richiesta, argomento, tool, stato, topic e contenuto vettoriale.
-
-Regola di compattezza:
-
-```txt
-afterMemory salva solo candidati operativi davvero riutilizzabili.
-Se un candidato e' ridondante rispetto al MemoryItem corrente, non aggiorna il nodo.
-Se un candidato e' piu' recente e contraddice lo stesso topic, sovrascrive il MemoryItem corrente.
-La memoria infinita non conserva versioni storiche nei MemoryItem; lo storico tecnico resta solo negli Episode/Run di audit.
-```
-
-Nota di scope:
-
-```txt
-Il Memory Engine non partiziona le memorie per utente.
-La memoria e' operativa dell'agente: contesto, procedure, decisioni, tool lesson e capacita apprese.
-Se l'agente parla con piu persone, puo' riutilizzare cio' che ha imparato in una conversazione nelle run successive.
-Non vengono salvate preferenze personali o profili utente salvo che diventino esplicitamente contesto operativo del dominio.
-```
-
-Categorie iniziali:
-
-```txt
-project_context
-goal
-tool_lesson
-procedure
-decision
-error
-conversation_summary
-action_history
-asset_context
-service_context
-```
-
-Regole semantiche:
-
-```txt
-error
-Evento negativo accaduto.
-
-tool_lesson
-Insegnamento stabile sull'uso di un tool.
-
-procedure
-Sequenza operativa riutilizzabile.
-
-decision
-Scelta progettuale approvata.
-
-action_history
-Cronologia sintetica di azioni recenti.
-```
-
-## Scope delle memorie
-
-Ogni agente puo' scegliere separatamente se usare le memorie prima della risposta e se migliorarle dopo ogni run.
-
-Quando il toggle agente `Use memories` e' attivo, beforeMemory viene applicata nella chat agente, a condizione che anche il Memory Engine globale sia attivo.
-
-afterMemory viene applicata solo quando e' attivo il toggle agente `Improve memories`.
-
-Il dropdown dell'agente non decide se eseguire le funzioni: decide solo su quale scope di memoria lavorano.
-
-```txt
-dedicated
-Memorie dedicate all'agente.
-Nel grafo hanno agent_id valorizzato.
-Sono lette e scritte solo da quello specifico agente.
-
-shared
-Memorie condivise.
-Nel grafo hanno agent_id NULL.
-Sono lette e scritte da tutti gli agenti configurati per usare memoria condivisa.
-```
-
-Regola runtime:
-
-```txt
-Memory Engine globale OFF
--> nessuna funzione di memoria viene eseguita
-
-Memory Engine globale ON + agente Use memories OFF + Improve memories OFF
--> nessuna funzione di memoria viene eseguita per quell'agente
-
-Memory Engine globale ON + agente Use memories ON + dedicated
--> beforeMemory cerca memorie con agent_id = agente corrente
--> afterMemory salva memorie con agent_id = agente corrente solo se Improve memories e' ON
-
-Memory Engine globale ON + agente Use memories ON + shared
--> beforeMemory cerca memorie con agent_id NULL
--> afterMemory salva memorie con agent_id NULL solo se Improve memories e' ON
-
-Memory Engine globale ON + agente Use memories OFF + Improve memories ON
--> beforeMemory non viene eseguita
--> afterMemory salva memorie secondo il Tipo memoria configurato
-```
-
-## Configurazione globale
-
-La configurazione globale vive in `app_settings`, coerentemente con OpenAI, Ollama, MCP e Telegram.
-
-Il portale espone una tab dedicata:
-
-```txt
-Impostazioni > Memorie
-```
-
-Campi:
-
-```txt
-Memory Engine ON/OFF
-
-Modello chat per memorie
-- dropdown con i modelli disponibili nel portale
-- puo' essere ChatGPT/OpenAI o locale/Ollama
-- usato per analisi, sintesi, selezione, deduplica e proposta di aggiornamento memorie
-
-Modello embedding per memorie
-- dropdown dedicato ai modelli embedding disponibili nel portale
-- puo' essere OpenAI o locale/Ollama
-- usato per trasformare le query di recupero e i contenuti persistenti in vettori
-- distinto dal modello chat per memorie e dal modello chat dell'agente
-
-Server Ollama
-- dropdown con i server Ollama gia' configurati
-- visibile/richiesto quando il modello chat o il modello embedding scelto e' Ollama
-
-Endpoint API embedding Ollama
-- derivato dal server Ollama selezionato
-- usa l'API Ollama embedding/embed configurata nel backend
-- testabile dalla UI insieme al modello embedding selezionato
-
-Neo4j URL
-- default: bolt://neo4j:7687
-- puo' puntare al container locale o a un database esterno
-- se il backend gira fuori Docker Compose e Neo4j e' pubblicato sull'host locale, usare bolt://127.0.0.1:7687 o bolt://localhost:7687
-
-Neo4j username
-
-Neo4j password
-- salvata cifrata come gli altri secret applicativi
-
-Stato connessione
-- connesso
-- errore
-- non configurato
-
-Pulsante Test connessione
-```
-
-Il portale non avvia o spegne direttamente container Docker.
-
-Il container Neo4j locale viene predisposto nel deploy e viene attivato tramite configurazione `.env` / profili Docker Compose. La UI decide se il Memory Engine e' abilitato e quali credenziali usare, non controlla il ciclo di vita Docker.
-
-## Deploy Neo4j
-
-Il `docker-compose.yml` deve includere un servizio Neo4j opzionale.
-
-Comportamento previsto:
-
-```txt
-Memory Engine OFF
--> il backend non usa Neo4j
--> il container puo' anche essere presente, ma resta irrilevante per il runtime
-
-Memory Engine ON + URL locale
--> il backend prova a collegarsi all'URL configurato, normalmente bolt://neo4j:7687
-
-Memory Engine ON + URL esterno
--> il backend usa l'URL e le credenziali salvate nelle impostazioni
-```
-
-Variabili env indicative per il deploy locale:
-
-```env
-COMPOSE_PROFILES=local-mysql,local-neo4j
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=change-me-neo4j
-```
-
-Questa e' la configurazione minima per avviare Neo4j locale insieme a MySQL locale.
-
-Le porte sono opzionali perche' il compose ha default interni:
-
-```env
-NEO4J_HTTP_HOST_PORT=7474
-NEO4J_BOLT_HOST_PORT=7687
-```
-
-ON/OFF del container locale:
-
-```txt
-ON
--> aggiungere local-neo4j a COMPOSE_PROFILES
-
-OFF
--> rimuovere local-neo4j da COMPOSE_PROFILES
-```
-
-Le credenziali operative usate dal backend vengono comunque gestite dalla UI e salvate cifrate nel database applicativo.
-
-## Configurazione agente
-
-Nella pagina impostazioni agente viene aggiunta una sezione:
-
-```txt
-Memory Engine
-```
-
-Campi:
-
-```txt
-Use memories
-
-Tipo memoria
-- condivisa
-- dedicata
-
-Improve memories
+memory_engine_enabled   (Use memories)    -> l'agente usa le memorie in beforeMemory
+improve_memories_enabled (Improve memories) -> l'agente aggiorna le memorie in afterMemory
 ```
 
 Default:
@@ -594,343 +51,74 @@ Default:
 ```txt
 Use memories OFF
 Improve memories OFF
-Tipo memoria: condivisa
 ```
 
-Persistenza suggerita nel record agente:
+Regole runtime:
 
 ```txt
-memory_engine_enabled TINYINT(1) NOT NULL DEFAULT 0
-improve_memories_enabled TINYINT(1) NOT NULL DEFAULT 0
-memory_scope ENUM('shared', 'dedicated') NOT NULL DEFAULT 'shared'
+Memory Engine globale OFF
+-> nessuna funzione di memoria viene eseguita
+
+Memory Engine globale ON + Use memories ON
+-> beforeMemory cerca su mem0 con scope agent_id = agente corrente e inietta il contesto
+
+Memory Engine globale ON + Improve memories ON
+-> afterMemory invia il turno a mem0 con scope agent_id = agente corrente
 ```
 
-## Flusso runtime
+Lo scope delle memorie e' l'agente: mem0 viene interrogato e scritto usando `agent_id` uguale all'id dell'agente. Non c'e' partizionamento per utente.
 
-Il flusso chat agente deve integrare due funzioni principali.
+## beforeMemory
 
-```js
-beforeMemory({ agent, chatId, messages, userMessage, modelConfig })
-afterMemory({ agent, chatId, messages, assistantResponse, toolCalls, toolResults, modelConfig })
-```
+File: `services/memory/beforeMemory.js`.
 
-Le funzioni sono eseguite solo quando:
+Scopo: recuperare da mem0 le memorie utili alla richiesta corrente e iniettarle nel prompt.
 
 ```txt
-Memory Engine globale = ON
-Use memories agente = ON per beforeMemory
-Improve memories agente = ON per afterMemory
+1. Gira solo se Memory Engine globale ON e Use memories dell'agente ON.
+2. Costruisce una singola query di ricerca dal messaggio utente (fallback: ultimo turno user nella history).
+3. Chiama mem0 search(query, { agent_id, limit }).
+4. Normalizza le memorie restituite (mem0 puo' rispondere come array, { results }, { memories } o { data }).
+5. Costruisce un blocco di contesto compatto (budget di caratteri configurabile) e lo inietta come messaggio system subito dopo il system prompt principale.
+6. Se non ci sono memorie utili non inietta alcun blocco.
 ```
 
-### beforeMemory
+`beforeMemory` restituisce un `memoryContextPacket` con la query usata, gli hit e l'eventuale `skipped_reason` (`global_disabled`, `agent_disabled`, `missing_agent_id`, `empty_query`, `no_memories`, `retrieval_error`).
 
-Scopo: chiedere all'agente dedicato del Memory Engine se nel grafo esistono informazioni utili alla richiesta corrente.
+## afterMemory
 
-Responsabilita':
+File: `services/memory/afterMemory.js`.
+
+Scopo: inviare a mem0 il turno appena concluso perche' ne estragga/aggiorni le memorie.
 
 ```txt
-1. Riceve solo il contesto della chat principale: system, user e assistant.
-2. Aggiunge il prompt beforeMemory configurato nelle impostazioni.
-3. L'agente memoria usa runCypherQuery(query) fino a 50 volte nella stessa run.
-4. Le query di lettura vengono eseguite normalmente; il risultato passato al modello contiene solo risultati del ramo Memory Engine.
-5. La risposta finale dell'agente memoria diventa il contextText iniettato nel prompt principale.
+1. Gira solo se Memory Engine globale ON e Improve memories dell'agente ON.
+2. Costruisce il turno come messaggi { role: user, content } + { role: assistant, content }.
+3. Chiama mem0 add(messages, { agent_id, run_id? }).
+4. mem0 esegue internamente estrazione, deduplica e aggiornamento delle memorie: Chrisbot non decide cosa salvare.
+5. Non blocca la run dell'agente principale; errori vengono solo annotati.
 ```
 
-Output indicativo:
+`afterMemory` restituisce un esito con `written` e l'eventuale `skipped_reason` (`global_disabled`, `agent_disabled`, `missing_agent_id`, `empty_turn`, `add_error`).
 
-```json
-{
-  "facts": [],
-  "entities": [],
-  "procedures": [],
-  "decisions": [],
-  "tool_lessons": [],
-  "recent_actions": [],
-  "warnings": []
-}
-```
-
-Il pacchetto deve essere compatto, leggibile e limitato alle informazioni utili per la richiesta corrente.
-
-### afterMemory
-
-Scopo: aggiornare il grafo in background dopo la risposta dell'agente principale.
-
-Responsabilita':
-
-```txt
-1. Riceve solo il contesto della chat principale, includendo la risposta finale assistant.
-2. Aggiunge il prompt afterMemory configurato nelle impostazioni.
-3. L'agente memoria cerca nel database cosa esiste gia.
-4. L'agente inserisce o aggiorna informazioni tramite runCypherQuery(query).
-5. afterMemory non blocca la run dell'agente principale.
-```
-
-runCypherQuery accetta solo `{ query }`. Le query di scrittura sono libere; le query di lettura vengono filtrate nel risultato restituito al modello.
-
-## Modello IA dedicato alle memorie
-
-Il Memory Engine usa modelli dedicati configurati nelle impostazioni globali.
-
-Questi modelli sono distinti dal modello scelto per la risposta dell'agente.
-
-```txt
-Modello chat per memorie
--> analizza il contesto
--> genera query semantiche naturali
--> filtra e compatta le memorie recuperate
--> propone nuovi Episode, Entity, Fact, Link e Summary
-
-Modello embedding per memorie
--> trasforma le query semantiche in vettori
--> trasforma Fact, Entity, Summary e contenuti ricercabili in vettori persistenti
--> abilita ricerca semantica nel grafo/database
-```
-
-Uso previsto:
-
-```txt
-beforeMemory
--> analisi del contesto in ingresso
--> generazione di 2-3 retrieval query in linguaggio naturale
--> embedding delle query con il modello embedding dedicato
--> recupero memorie candidate tramite ricerca semantica
--> selezione/compattazione delle memorie tramite modello chat
-
-afterMemory
--> analisi di cosa e' successo nella conversazione
--> proposta di Episode, Entity, Fact, Link, Summary
--> proposta di invalidazioni, mai applicate automaticamente senza validazione
--> embedding dei contenuti persistenti nuovi o aggiornati
-```
-
-Provider supportati:
-
-```txt
-OpenAI/ChatGPT
-Ollama locale/remoto
-```
-
-Se il modello chat o embedding e' Ollama, viene usato il server Ollama selezionato nella tab Memorie.
-
-Il backend deve quindi esporre anche la gestione API per gli embedding Ollama, separata dalla generazione chat:
-
-```txt
-Ollama chat
--> usata dal modello chat per memorie
-
-Ollama embeddings
--> usata dal modello embedding per memorie
--> deve supportare test modello, error handling e timeout
--> deve restituire vettori normalizzati o comunque compatibili con la ricerca scelta
-```
-
-## Interfaccia backend
-
-Il codice applicativo non deve dipendere direttamente dal driver Neo4j fuori dal repository della memoria.
-
-Interfaccia minima:
-
-```js
-testConnection(config)
-
-addEpisode(input)
-addEntity(input)
-addFact(input)
-addLink(input)
-updateSummary(input)
-invalidateFact(input)
-
-searchFacts(query)
-searchEntities(query)
-searchContext(query)
-```
-
-Struttura file coerente con il progetto:
+## Struttura file
 
 ```txt
 services/memory/
-  memoryOrchestrator.js
-  beforeMemory.js
-  afterMemory.js
-  memoryAnalyzer.js
-  memoryPromptBuilder.js
-  memoryContextPacket.js
-
-services/memory/repositories/
-  memoryRepository.js
-  neo4jMemoryRepository.js
-
-services/memory/prompts/
-  beforeMemory.prompt.js
-  afterMemory.prompt.js
-  compressMemory.prompt.js
-
-database/
-  db_memory_settings.js
+  beforeMemory.js         ricerca su mem0 e iniezione nel prompt
+  afterMemory.js          invio del turno a mem0
+  memoryContextPacket.js  costruzione/formato del pacchetto di contesto
+  memoryOrchestrator.js   punto di ingresso che coordina before/after
+  memoryRunTrace.js       tracciamento della run di memoria
+  providers/
+    mem0Provider.js       client HTTP verso mem0 (add, search, health)
 ```
 
-Le impostazioni possono vivere in `app_settings`; `db_memory_settings.js` puo' essere solo un wrapper applicativo sopra `db_app_settings`.
-
-## Iniezione nel prompt
-
-Il contesto memoria deve essere aggiunto come blocco separato nel system prompt o immediatamente dopo il system prompt.
-
-Formato indicativo:
-
-```txt
-Memory context:
-<contenuto sintetico e rilevante>
-```
-
-Regole:
-
-- non includere memorie non pertinenti
-- non superare un budget compatto
-- distinguere fatti stabili da azioni recenti
-- non presentare ipotesi come fatti
-- se non ci sono memorie utili, non iniettare blocchi vuoti
-- ogni blocco iniettato deve essere riconducibile a candidate `selected_ids`
-- se la compattazione via modello fallisce, il fallback deterministico deve usare solo candidati con score/confidenza/importanza sufficienti
+Il client mem0 e' l'unico punto che conosce i dettagli HTTP: espone solo `add`, `search` e un `health` per il test connessione.
 
 ## Guardrail
 
-Regole non negoziabili:
-
-- l'LLM non scrive mai direttamente sul grafo
-- il backend valida ogni modifica proposta dal modello
-- gli episodi sono immutabili
-- le invalidazioni richiedono evidenza forte
-- le memorie dedicate hanno sempre `agent_id` valorizzato
-- le memorie condivise hanno sempre `agent_id` NULL
-- se Neo4j non e' configurato o non e' raggiungibile, la chat agente deve poter continuare senza memoria
-- errori del Memory Engine non devono bloccare la risposta principale dell'agente, salvo futura configurazione esplicita
-- non reinserire una memoria testuale manuale equivalente a `agents.memories`
-
-## Prima milestone implementativa
-
-La prima milestone non deve risolvere tutta la modellazione del grafo.
-
-Deve dimostrare che:
-
-```txt
-1. La vecchia memoria semplice e' rimossa.
-2. Le impostazioni globali Memory Engine sono configurabili dalla UI.
-3. Neo4j e' predisposto nel deploy e testabile dal backend.
-4. Gli agenti hanno ON/OFF memoria e scope shared/dedicated.
-5. beforeMemory e afterMemory sono agganciate al flusso chat, con afterMemory controllata da Improve memories.
-6. Le funzioni usano i modelli dedicati alle memorie.
-7. Il grafo viene scritto solo tramite repository validato.
-8. La chat continua anche se il Memory Engine fallisce.
-```
-
-## Sequenza di lavoro
-
-Roadmap approvata:
-
-Step 1
-Dismettere completamente la memoria semplice attuale in DB, backend, tool interni e frontend.
-
-Step 2
-Integrare nel deploy il container Neo4j locale opzionale.
-
-Step 3
-Inserire la tab Impostazioni > Memorie con modello chat, modello embedding, server Ollama condizionale, URL Neo4j, username, password e stato connessione.
-
-Step 4
-Inserire le impostazioni memoria nella pagina agente e predisporre beforeMemory/afterMemory nel flusso chat.
-
-Step 5
-Implementare la prima pipeline di recupero semantico dentro beforeMemory e predisporre gli embedding per afterMemory.
-
-Obiettivo dello step:
-
-```txt
-Costruire il primo retrieval pack temporaneo da iniettare nel prompt, usando:
-1. modello chat per sintetizzare il contesto in query semantiche naturali
-2. modello embedding per trasformare le query
-3. ricerca semantica delle memorie candidate
-4. modello chat per filtrare e sintetizzare le memorie candidate
-5. memoryContextPacket compatto restituito al flusso chat
-```
-
-Dettaglio beforeMemory:
-
-```txt
-1. Riceve il contesto corrente della conversazione.
-2. Il modello chat produce summary richiesta, topic operativi e 2-3 retrieval query brevi in linguaggio naturale.
-3. Summary, topic e query vengono trasformati in embedding tramite il modello embedding configurato.
-4. Il repository cerca memorie candidate nello scope corretto con ricerca semantica, match lessicale e rete semantica su MemoryRequest/MemoryTopic/MemoryTool:
-   - shared -> agent_id NULL
-   - dedicated -> agent_id = agente corrente
-5. I risultati vengono uniti, deduplicati e ordinati per:
-   - similarita' semantica
-   - match lessicale su identificatori o nomi operativi
-   - collegamenti NEEDED_FOR/RELATED_TO verso richiesta, argomento o tool
-   - importanza
-   - confidenza
-   - recency/last_accessed_at
-6. Il modello chat riceve contesto sintetico + candidate memory e produce un retrieval pack compatto, richiesto in massimo 50 parole.
-7. Se il modello di compattazione fallisce, il backend costruisce un pack deterministico solo da candidati forti.
-8. beforeMemory restituisce un memoryContextPacket pronto per l'iniezione nel prompt.
-```
-
-Formato indicativo delle retrieval query:
-
-```json
-{
-  "request_summary": "progettare retrieval Memory Engine",
-  "topics": [
-    { "name": "Memory Engine", "category": "project_context" }
-  ],
-  "queries": [
-    "L'utente sta progettando l'architettura del Memory Engine con beforeMemory e afterMemory.",
-    "Si sta discutendo come recuperare memorie rilevanti dal database usando embedding semantici.",
-    "L'utente vuole distinguere il ruolo del modello chat dal ruolo del modello embedding nella gestione delle memorie."
-  ]
-}
-```
-
-Regola:
-
-```txt
-Le query per embedding devono essere frasi naturali sintetiche, non solo parole chiave.
-I limiti di 10 parole per il summary e 50 parole per il contextText sono istruzioni di prompt, non vincoli rigidi di codice.
-```
-
-Dettaglio afterMemory in questa fase:
-
-```txt
-1. Continua a usare il modello chat per proporre summary richiesta, topic e nuove memorie strutturate.
-2. Il backend scarta memorie personali, generiche, transitorie, goal e candidate sotto confidence 0.7; le categorie fuori tassonomia vengono normalizzate alla categoria operativa minima coerente.
-3. Per ogni MemoryItem ricercabile validato dal backend, genera anche l'embedding.
-4. Prima del salvataggio cerca memorie correlate nello stesso scope usando embedding, topic, subject_key e rete semantica.
-5. Se trova una memoria corrente coerente con stesso tipo/categoria/topic o alta similarita' con overlap operativo, aggiorna quel MemoryItem invece di creare storico duplicato.
-6. Salva contenuto, metadata ed embedding tramite repository validato.
-7. Collega MemoryItem a MemoryRequest, MemoryTopic e MemoryTool con NEEDED_FOR, cosi il retrieval futuro puo' recuperare prerequisiti e tool lesson della stessa operazione.
-8. Non applica ancora logiche avanzate di invalidazione salvo casi espliciti e ad alta confidenza.
-```
-
-Estensione impostazioni richiesta nello stesso step:
-
-```txt
-Impostazioni > Memorie
--> aggiungere selezione modello embedding
--> supportare modelli embedding Ollama
--> usare il server Ollama selezionato anche per le API embedding
--> aggiungere test configurazione embedding
--> salvare configurazione in app_settings insieme alle altre impostazioni memoria
-```
-
-Integrazione backend Ollama:
-
-```txt
-services/ollamaRuntime.js
--> aggiungere funzione dedicata per embedding
--> usare /api/embed o compatibilita' /api/embeddings in base alla versione Ollama target
--> gestire errori, timeout, modello mancante e risposta vettoriale non valida
-
-services/memory/
--> usare il runtime embedding senza conoscere dettagli HTTP di Ollama
--> mantenere separata la responsabilita' tra chat analysis e vector embedding
-```
+- mem0 non e' obbligatorio: se non configurato o non raggiungibile la chat continua senza memoria.
+- gli errori del Memory Engine non bloccano la risposta principale dell'agente.
+- `beforeMemory` gira solo con `Use memories` ON; `afterMemory` solo con `Improve memories` ON; entrambi solo con Memory Engine globale ON.
+- lo scope e' sempre l'agente (`agent_id`): un agente non legge/scrive memorie di un altro agente.
