@@ -9,6 +9,7 @@ import {
   PlusIcon,
   BellIcon,
   ClockIcon,
+  CircleStackIcon,
   Cog6ToothIcon,
   ArrowLeftOnRectangleIcon, // Icona per il logout
 } from '@heroicons/react/24/outline';
@@ -96,6 +97,7 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (op
     ...(authUser?.is_super_admin ? [{ name: 'Inbox', href: '/notifications', icon: BellIcon, count: unreadNotificationsCount }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Agenti', href: '/agents', icon: CpuChipIcon }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Task', href: '/pianificazioni', icon: ClockIcon }] : []),
+    ...(authUser?.is_super_admin ? [{ name: 'Memory engine', href: '/memory-engine', icon: CircleStackIcon }] : []),
     ...(authUser?.is_super_admin ? [{ name: 'Impostazioni', href: '/settings', icon: Cog6ToothIcon }] : []),
   ];
 

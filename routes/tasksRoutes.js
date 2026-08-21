@@ -355,7 +355,10 @@ async function generateCronWithLlm({ prompt, timezone, modelConfig }) {
     messages,
     null,
     normalizedModelConfig.model,
-    { ollamaServerId: normalizedModelConfig.ollama_server_id || null }
+    {
+      ollamaServerId: normalizedModelConfig.ollama_server_id || null,
+      providerType: normalizedModelConfig.provider,
+    }
   );
   return extractJsonObject(response?.content || response);
 }

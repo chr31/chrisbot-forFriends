@@ -9,6 +9,8 @@ const {
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
+  updateMemoryEngineSettings,
+  getMemoryEngineSettingsSync,
   revealSettingsSecret,
 } = require('../services/appSettings');
 const { getAiOptionsSnapshot } = require('../services/aiModelCatalog');
@@ -23,6 +25,7 @@ const {
 const { reconnectAndRefreshToolCache, getMcpConnectionStatuses } = require('../utils/mcpClient');
 const { getOllamaConnectionStatuses } = require('../services/ollamaRuntime');
 const { refreshTelegramBotRuntime } = require('../services/telegramBot');
+const { createMem0Provider } = require('../services/memory/providers/mem0Provider');
 
 router.use(authenticateToken);
 
@@ -123,6 +126,26 @@ router.put('/openai', async (req, res) => {
   } catch (error) {
     console.error('Errore aggiornamento impostazioni OpenAI:', error);
     return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni OpenAI' });
+  }
+});
+
+router.put('/memory', async (req, res) => {
+  try {
+    await updateMemoryEngineSettings(req.body || {});
+    return res.json(getSettingsSnapshot().memory_engine);
+  } catch (error) {
+    console.error('Errore aggiornamento impostazioni Memory Engine:', error);
+    return res.status(400).json({ error: error.message || 'Impossibile aggiornare le impostazioni Memory Engine' });
+  }
+});
+
+router.get('/memory/health', async (_req, res) => {
+  try {
+    const provider = createMem0Provider(getMemoryEngineSettingsSync());
+    return res.json({ ok: true, health: await provider.health() });
+  } catch (error) {
+    console.error('Errore health mem0:', error);
+    return res.status(502).json({ ok: false, error: error.message || 'mem0 non raggiungibile' });
   }
 });
 

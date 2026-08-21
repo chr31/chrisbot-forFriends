@@ -19,8 +19,11 @@ const {
 const { insertTaskEvent } = require('../database/db_tasks');
 const { getAgentChatByChatId, getMessagesByAgentChatId, insertAgentMessages } = require('../database/db_agent_chats');
 const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
-const { buildInitialAgentHistory, runAgentConversation } = require('../services/agentRunner');
+const { buildInitialAgentHistory, runAgentConversation, sanitizeMessages } = require('../services/agentRunner');
 const { getAgentDefaultModelConfig, normalizeModelConfig } = require('../services/aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('../services/memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('../services/memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('../services/agentSemanticGuardrails');
 
 router.use(authenticateToken);
 
@@ -84,21 +87,68 @@ async function continueInboxConversation(item, username, content) {
     depth: 0,
     started_at: new Date(),
   });
+  const modelConfig = normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent));
+  const userMessage = { role: 'user', content };
+  const semanticGuardrail = await evaluateAgentSemanticGuardrails(agent, content);
+  if (semanticGuardrail.applied && semanticGuardrail.decision !== 'allow') {
+    const responseText = semanticGuardrail.message || 'Questo agente non puo gestire questa richiesta.';
+    await updateAgentRunIfStatus(run.id, {
+      status: 'completed',
+      finished_at: new Date(),
+      guardrail_result_json: buildAgentGuardrailRunTrace(semanticGuardrail),
+    }, 'running');
+    await insertInboxMessage({
+      inbox_item_id: item.id,
+      role: 'agent',
+      message_type: 'message',
+      agent_id: agent.id,
+      content: responseText,
+      metadata_json: {
+        source: 'agent_guardrail',
+        agent_run_id: run.id,
+        decision: semanticGuardrail.decision,
+        reason: semanticGuardrail.reason,
+      },
+    });
+    await updateInboxItem(item.id, {
+      status: 'open',
+      is_read: 0,
+      last_message_at: new Date(),
+    });
+    return { runId: run.id, response: responseText, guardrail: semanticGuardrail };
+  }
+  const memoryContextPacket = await runBeforeMemory({
+    agent,
+    chat: {
+      chatId: chat.chat_id,
+      messages: sanitizeMessages(history),
+      sourceMessages: history,
+      userMessage,
+      runId: run.id,
+      userKey: item.owner_username || username || null,
+      owner_username: item.owner_username || username || null,
+    },
+    runId: run.id,
+    userKey: item.owner_username || username || null,
+    modelConfig,
+  });
 
   try {
     const response = await runAgentConversation(agent, history, {
       chatId: chat.chat_id,
       agentId: agent.id,
-      ollamaServerId: normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent)).ollama_server_id,
+      ollamaServerId: modelConfig.ollama_server_id,
       parentRunId: null,
       runId: run.id,
       parentAgentId: null,
-      modelConfig: normalizeModelConfig(chat.config_json?.model_config || {}, getAgentDefaultModelConfig(agent)),
+      modelConfig,
       depth: 0,
+      userKey: item.owner_username || username || null,
     });
     await updateAgentRunIfStatus(run.id, {
       status: 'completed',
       finished_at: new Date(),
+      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
     }, 'running');
 
     const responseText = String(typeof response === 'string' ? response : JSON.stringify(response)).trim();
@@ -117,12 +167,14 @@ async function continueInboxConversation(item, username, content) {
         last_message_at: new Date(),
       });
     }
+    runAfterMemory({ agent, userMessage, response: responseText, runId: run.id }).catch(() => {});
     return { runId: run.id, response: responseText };
   } catch (error) {
     await updateAgentRunIfStatus(run.id, {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
+      guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
     }, 'running');
     await insertInboxMessage({
       inbox_item_id: item.id,

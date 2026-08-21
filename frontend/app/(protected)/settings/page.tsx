@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { TrashIcon } from '@heroicons/react/24/outline';
 
 type AuthUser = {
   name: string;
@@ -56,6 +57,7 @@ type McpRuntimeSettings = {
 
 type OllamaConnection = {
   id: string;
+  provider_type?: 'ollama' | 'exo';
   name: string;
   base_url: string;
   default_model: string;
@@ -67,6 +69,7 @@ type OllamaRuntimeSettings = {
   timeout_ms: number;
   fallback_on_unavailable: boolean;
   routing_strategy: 'priority' | 'least_loaded';
+  default_provider?: 'ollama' | 'exo';
   default_connection_id: string | null;
   models: string[];
   default_model: string;
@@ -85,6 +88,23 @@ type TelegramRuntimeSettings = {
   bot_token_configured?: boolean;
   polling_interval_ms: number;
   parse_mode: '' | 'HTML';
+};
+
+type MemoryEngineSettings = {
+  provider: 'disabled' | 'mem0';
+  enabled: boolean;
+  mem0_api_url: string;
+  mem0_api_key: string;
+  mem0_api_key_configured?: boolean;
+  mem0_timeout_ms: number;
+  mem0_add_timeout_ms: number;
+  mem0_search_limit: number;
+  analysis_model_provider?: 'openai' | 'ollama' | 'exo';
+  analysis_model?: string;
+  ollama_server_id?: string | null;
+  embedding_model_provider?: 'openai' | 'ollama';
+  embedding_model?: string;
+  embedding_ollama_server_id?: string | null;
 };
 
 type TelegramUserLink = {
@@ -154,12 +174,29 @@ type SettingsPayload = {
   ollama_runtime: OllamaRuntimeSettings;
   openai_runtime: OpenAiRuntimeSettings;
   telegram_runtime: TelegramRuntimeSettings;
+  memory_engine: MemoryEngineSettings;
 };
 
 type SecretRevealTarget = {
-  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime';
+  area: 'portal_access' | 'openai_runtime' | 'telegram_runtime' | 'mcp_runtime' | 'memory_engine';
   field: string;
   connection_id?: string;
+};
+
+type MemoryConnectionStatus = {
+  ok: boolean;
+  status: 'connected' | 'error' | 'not_configured';
+  error?: string;
+  checked_at?: string;
+  embedding?: {
+    ok?: boolean;
+    status?: string;
+    provider?: string;
+    model?: string;
+    dimensions?: number;
+    error?: string;
+    checked_at?: string;
+  };
 };
 
 const REDACTED_SECRET_PLACEHOLDER = '********';
@@ -345,13 +382,15 @@ function toEditableTelegramUser(entry?: Partial<TelegramUserLink> & { id?: numbe
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'portal' | 'ollama' | 'mcp' | 'telegram'>('portal');
+  const [activeTab, setActiveTab] = useState<'portal' | 'ollama' | 'memory' | 'mcp' | 'telegram'>('portal');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingPortal, setIsSavingPortal] = useState(false);
   const [isSavingMcp, setIsSavingMcp] = useState(false);
   const [isSavingOllama, setIsSavingOllama] = useState(false);
   const [isSavingOpenAi, setIsSavingOpenAi] = useState(false);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
+  const [isTestingMemory, setIsTestingMemory] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const [revealingSecrets, setRevealingSecrets] = useState<Record<string, boolean>>({});
@@ -381,6 +420,11 @@ export default function SettingsPage() {
   const [ollamaModelsDraft, setOllamaModelsDraft] = useState('');
   const [ollamaStatuses, setOllamaStatuses] = useState<Record<string, OllamaConnectionStatus>>({});
   const [openAiRuntime, setOpenAiRuntime] = useState<OpenAiRuntimeSettings | null>(null);
+  const [memoryEngine, setMemoryEngine] = useState<MemoryEngineSettings | null>(null);
+  const [memoryConnectionStatus, setMemoryConnectionStatus] = useState<MemoryConnectionStatus>({
+    ok: false,
+    status: 'not_configured',
+  });
   const [telegramRuntime, setTelegramRuntime] = useState<TelegramRuntimeSettings | null>(null);
   const [telegramUserRows, setTelegramUserRows] = useState<EditableTelegramUserLink[]>([]);
   const [deletedTelegramUserIds, setDeletedTelegramUserIds] = useState<number[]>([]);
@@ -499,6 +543,12 @@ export default function SettingsPage() {
       setMcpRuntime(payload.mcp_runtime || null);
       setOllamaRuntime(payload.ollama_runtime || null);
       setOpenAiRuntime(payload.openai_runtime || null);
+      const loadedMemoryEngine = payload.memory_engine || null;
+      setMemoryEngine(loadedMemoryEngine);
+      setMemoryConnectionStatus({
+        ok: false,
+        status: 'not_configured',
+      });
       setTelegramRuntime(payload.telegram_runtime || null);
       const nextHeaders: Record<string, string> = {};
       for (const connection of payload.mcp_runtime?.connections || []) {
@@ -612,11 +662,11 @@ export default function SettingsPage() {
         body: JSON.stringify(payload),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni Ollama fallito.');
+      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni server locali fallito.');
       await loadSettings();
       await loadOllamaStatuses();
     } catch (err: any) {
-      alert(err?.message || 'Errore salvataggio impostazioni Ollama.');
+      alert(err?.message || 'Errore salvataggio impostazioni server locali.');
     } finally {
       setIsSavingOllama(false);
     }
@@ -638,6 +688,42 @@ export default function SettingsPage() {
       alert(err?.message || 'Errore salvataggio impostazioni OpenAI.');
     } finally {
       setIsSavingOpenAi(false);
+    }
+  };
+
+  const handleSaveMemory = async () => {
+    if (!memoryEngine) return;
+    setIsSavingMemory(true);
+    try {
+      const response = await authFetch('/api/settings/memory', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(memoryEngine),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || 'Salvataggio impostazioni memorie fallito.');
+      sessionStorage.removeItem('graphDashboardToken');
+      await loadSettings();
+    } catch (err: any) {
+      alert(err?.message || 'Errore salvataggio impostazioni memorie.');
+    } finally {
+      setIsSavingMemory(false);
+    }
+  };
+
+  const handleTestMemoryConnection = async () => {
+    setIsTestingMemory(true);
+    try {
+      const response = await authFetch('/api/settings/memory/health');
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body?.ok === false) {
+        throw new Error(body?.error || 'mem0 non raggiungibile.');
+      }
+      setMemoryConnectionStatus({ ok: true, status: 'connected', checked_at: new Date().toISOString() });
+    } catch (err: any) {
+      setMemoryConnectionStatus({ ok: false, status: 'error', error: err?.message || 'mem0 non raggiungibile.' });
+    } finally {
+      setIsTestingMemory(false);
     }
   };
 
@@ -781,6 +867,7 @@ export default function SettingsPage() {
           ...current.connections,
           {
             id: `ollama_${Date.now()}`,
+            provider_type: 'ollama',
             name: 'Nuovo server Ollama',
             base_url: '',
             default_model: '',
@@ -803,6 +890,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: 'portal' as const, label: 'Accesso Portale' },
     { id: 'ollama' as const, label: 'Modelli AI' },
+    { id: 'memory' as const, label: 'Memorie' },
     { id: 'mcp' as const, label: 'Server MCP' },
     { id: 'telegram' as const, label: 'Telegram' },
   ];
@@ -818,6 +906,34 @@ export default function SettingsPage() {
   const isOpenAiConfigured = Boolean((openAiRuntime?.api_key_configured || openAiRuntime?.api_key.trim()) && openAiRuntime?.chat_model.trim());
   const globalDefaultModelValue = ollamaRuntime?.default_model
     || (isOpenAiConfigured ? '__openai__' : '');
+  const memoryModelOptions = [
+    ...(isOpenAiConfigured || memoryEngine?.analysis_model_provider === 'openai' ? [{
+      value: `openai::${openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini'}`,
+      label: `ChatGPT (${openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini'})`,
+      provider: 'openai' as const,
+      model: openAiRuntime?.chat_model || memoryEngine?.analysis_model || 'gpt-5-mini',
+    }] : []),
+    ...((ollamaRuntime?.models || []).map((model) => ({
+      value: `ollama::${model}`,
+      label: model,
+      provider: 'ollama' as const,
+      model,
+    }))),
+    ...((ollamaRuntime?.models || []).map((model) => ({
+      value: `exo::${model}`,
+      label: `EXO (${model})`,
+      provider: 'exo' as const,
+      model,
+    }))),
+  ];
+  const memoryModelValue = memoryEngine
+    ? `${memoryEngine.analysis_model_provider}::${memoryEngine.analysis_model}`
+    : '';
+  const memoryStatusMeta = memoryConnectionStatus.status === 'connected'
+    ? { label: 'Connesso', dotClassName: 'bg-emerald-500' }
+    : memoryConnectionStatus.status === 'error'
+      ? { label: 'Errore', dotClassName: 'bg-rose-500' }
+      : { label: 'Non verificato', dotClassName: 'bg-yellow-400' };
 
   return (
     <div className="space-y-6 py-6">
@@ -832,7 +948,7 @@ export default function SettingsPage() {
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id as 'portal' | 'ollama' | 'mcp' | 'telegram')}
+              onClick={() => setActiveTab(tab.id as 'portal' | 'ollama' | 'memory' | 'mcp' | 'telegram')}
               className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
                 activeTab === tab.id
                   ? 'bg-sky-600 text-white'
@@ -1141,7 +1257,7 @@ export default function SettingsPage() {
         <div className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-xl font-semibold text-white">Ollama</h2>
+              <h2 className="text-xl font-semibold text-white">Server locali</h2>
             </div>
             <div className="flex gap-3">
               <button
@@ -1150,7 +1266,7 @@ export default function SettingsPage() {
                 disabled={isSavingOllama || !ollamaRuntime}
                 className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
               >
-                {isSavingOllama ? 'Salvataggio...' : 'Salva Ollama'}
+                {isSavingOllama ? 'Salvataggio...' : 'Salva server'}
               </button>
             </div>
           </div>
@@ -1159,7 +1275,7 @@ export default function SettingsPage() {
           <>
             <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
               <label className="flex h-full flex-col text-sm text-gray-200">
-                <span className="mb-1 block">Modelli Ollama disponibili</span>
+                <span className="mb-1 block">Modelli locali disponibili</span>
                 <textarea
                   value={ollamaModelsDraft}
                   onChange={(event) => setOllamaModelsDraft(event.target.value)}
@@ -1167,11 +1283,23 @@ export default function SettingsPage() {
                   placeholder={'qwen3.5\ngpt-oss\ngemma:e4b'}
                 />
                 <span className="mt-1 block text-xs text-gray-400">
-                  Un modello per riga. Esempio `gemma4:e4b`.
+                  Un modello per riga. La lista viene usata sia per Ollama sia per EXO.
                 </span>
               </label>
 
               <div className="space-y-6">
+                <label className="text-sm text-gray-200">
+                  <span className="mb-1 block">Provider locale di default</span>
+                  <select
+                    value={ollamaRuntime.default_provider || 'ollama'}
+                    onChange={(event) => setOllamaRuntime((current) => current ? { ...current, default_provider: event.target.value === 'exo' ? 'exo' : 'ollama' } : current)}
+                    className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                  >
+                    <option value="ollama">Ollama</option>
+                    <option value="exo">EXO</option>
+                  </select>
+                </label>
+
                 <label className="text-sm text-gray-200">
                   <span className="mb-1 block">Server di default</span>
                   <select
@@ -1180,7 +1308,9 @@ export default function SettingsPage() {
                     className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
                   >
                     <option value="">Seleziona server</option>
-                    {ollamaRuntime.connections.map((connection) => (
+                    {ollamaRuntime.connections
+                      .filter((connection) => (connection.provider_type || 'ollama') === (ollamaRuntime.default_provider || 'ollama'))
+                      .map((connection) => (
                       <option key={connection.id} value={connection.id}>{connection.name}</option>
                     ))}
                   </select>
@@ -1241,7 +1371,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={addOllamaConnection}
-                  aria-label="Aggiungi server Ollama"
+                  aria-label="Aggiungi server locale"
                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-700 text-gray-100 hover:bg-gray-800"
                 >
                   <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 stroke-current">
@@ -1250,9 +1380,10 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              <div className="mt-4 hidden grid-cols-[120px_140px_200px_minmax(240px,1fr)_96px_56px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+              <div className="mt-4 hidden grid-cols-[120px_140px_130px_200px_minmax(240px,1fr)_96px_56px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
                 <div>Attivo</div>
                 <div>Stato</div>
+                <div>Tipo</div>
                 <div>Nome</div>
                 <div>URL</div>
                 <div>Priorita</div>
@@ -1262,7 +1393,7 @@ export default function SettingsPage() {
               <div className="mt-4 space-y-4">
                 {ollamaRuntime.connections.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-gray-700 px-4 py-5 text-sm text-gray-400">
-                    Nessun server Ollama configurato.
+                    Nessun server locale configurato.
                   </div>
                 ) : (
                   ollamaRuntime.connections.map((connection, index) => {
@@ -1270,7 +1401,7 @@ export default function SettingsPage() {
                     const statusMeta = getOllamaStatusMeta(connection, status);
                     return (
                       <div key={connection.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                        <div className="grid gap-3 lg:grid-cols-[120px_140px_200px_minmax(240px,1fr)_96px_56px] lg:items-start">
+                        <div className="grid gap-3 lg:grid-cols-[120px_140px_130px_200px_minmax(240px,1fr)_96px_56px] lg:items-start">
                           <div className="space-y-2">
                             <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                             <Toggle
@@ -1301,6 +1432,21 @@ export default function SettingsPage() {
                           </div>
 
                           <label className="text-sm text-gray-200">
+                            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Tipo</span>
+                            <select
+                              value={connection.provider_type || 'ollama'}
+                              onChange={(event) => setOllamaRuntime((current) => current ? ({
+                                ...current,
+                                connections: current.connections.map((row) => row.id === connection.id ? { ...row, provider_type: event.target.value === 'exo' ? 'exo' : 'ollama' } : row),
+                              }) : current)}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                            >
+                              <option value="ollama">Ollama</option>
+                              <option value="exo">EXO</option>
+                            </select>
+                          </label>
+
+                          <label className="text-sm text-gray-200">
                             <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Nome</span>
                             <input
                               value={connection.name}
@@ -1320,7 +1466,7 @@ export default function SettingsPage() {
                                 ...current,
                                 connections: current.connections.map((row) => row.id === connection.id ? { ...row, base_url: event.target.value } : row),
                               }) : current)}
-                              placeholder="http://host:11434"
+                              placeholder={(connection.provider_type || 'ollama') === 'exo' ? 'http://host:52415' : 'http://host:11434'}
                               className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
                             />
                           </label>
@@ -1371,6 +1517,265 @@ export default function SettingsPage() {
           </>
         ) : null}
         </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'memory' ? (
+        <section className="rounded-3xl border border-gray-800 bg-gray-900/70 p-5 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold text-white">Memory Engine</h2>
+              <p className="mt-1 text-sm text-gray-300">Configura la connessione all'istanza mem0. Il recupero (search) e l'aggiornamento (add) delle memorie passano da mem0.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {memoryEngine ? (
+                <Toggle
+                  checked={memoryEngine.enabled}
+                  onChange={() => setMemoryEngine((current) => current ? {
+                    ...current,
+                    enabled: !current.enabled,
+                    provider: !current.enabled ? 'mem0' : 'disabled',
+                  } : current)}
+                />
+              ) : null}
+              <button
+                type="button"
+                onClick={handleSaveMemory}
+                disabled={isSavingMemory || !memoryEngine}
+                className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60"
+              >
+                {isSavingMemory ? 'Salvataggio...' : 'Salva memorie'}
+              </button>
+            </div>
+          </div>
+
+          {memoryEngine ? (
+            <div className="mt-6 space-y-6">
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">mem0 provider</h3>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 text-sm text-gray-200">
+                      <span className={`h-3 w-3 rounded-full ${memoryStatusMeta.dotClassName}`} />
+                      <span>{memoryStatusMeta.label}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleTestMemoryConnection}
+                      disabled={isTestingMemory || !memoryEngine}
+                      className="rounded-xl border border-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-100 hover:bg-gray-800 disabled:opacity-60"
+                    >
+                      {isTestingMemory ? 'Test in corso...' : 'Test connessione'}
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Salva le impostazioni prima del test: la connessione usa i valori gia' persistiti.</p>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <label className="text-sm text-gray-200 xl:col-span-3">
+                    <span className="mb-1 block">API URL</span>
+                    <input
+                      value={memoryEngine.mem0_api_url || ''}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_api_url: event.target.value,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                      placeholder="http://127.0.0.1:8888"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200 xl:col-span-3">
+                    <span className="mb-1 block">API key</span>
+                    <div className="flex gap-2">
+                      <input
+                        type={revealedSecrets['memory.mem0_api_key'] ? 'text' : 'password'}
+                        value={memoryEngine.mem0_api_key || ''}
+                        onChange={(event) => setMemoryEngine((current) => current ? {
+                          ...current,
+                          mem0_api_key: event.target.value,
+                        } : current)}
+                        className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        placeholder={memoryEngine.mem0_api_key_configured ? 'Gia configurata; lascia vuoto per mantenerla' : 'API key mem0 (X-API-Key)'}
+                      />
+                      <SecretRevealButton
+                        isRevealed={Boolean(revealedSecrets['memory.mem0_api_key'])}
+                        isLoading={Boolean(revealingSecrets['memory.mem0_api_key'])}
+                        disabled={!memoryEngine.mem0_api_key_configured}
+                        onReveal={() => revealSecret(
+                          'memory.mem0_api_key',
+                          { area: 'memory_engine', field: 'mem0_api_key' },
+                          (value) => setMemoryEngine((current) => current ? { ...current, mem0_api_key: value } : current),
+                          (revealedValue) => setMemoryEngine((current) => current?.mem0_api_key === revealedValue ? { ...current, mem0_api_key: '' } : current),
+                        )}
+                      />
+                    </div>
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block">Timeout ms</span>
+                    <input
+                      type="number"
+                      min={1000}
+                      max={60000}
+                      value={memoryEngine.mem0_timeout_ms || 8000}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_timeout_ms: Number(event.target.value) || 8000,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block" title="Scrittura memorie (afterMemory). mem0 estrae con un LLM lato server: puo' richiedere decine di secondi, tienilo alto. Non blocca la chat.">Timeout add ms</span>
+                    <input
+                      type="number"
+                      value={memoryEngine.mem0_add_timeout_ms ?? 60000}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_add_timeout_ms: event.target.value === '' ? 0 : Number(event.target.value),
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-200">
+                    <span className="mb-1 block">Max risultati search</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={memoryEngine.mem0_search_limit || 6}
+                      onChange={(event) => setMemoryEngine((current) => current ? {
+                        ...current,
+                        mem0_search_limit: Number(event.target.value) || 6,
+                      } : current)}
+                      className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                    />
+                  </label>
+                </div>
+                {memoryConnectionStatus.error ? (
+                  <div className="mt-4 rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+                    {memoryConnectionStatus.error}
+                  </div>
+                ) : null}
+                {memoryConnectionStatus.status === 'connected' ? (
+                  <div className="mt-4 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
+                    mem0 raggiungibile e autenticato.
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="hidden rounded-2xl border border-gray-800 bg-gray-950/50 p-4">
+                <h3 className="text-sm font-semibold text-white">Generale</h3>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+                    <h4 className="text-sm font-semibold text-white">Modelli memoria</h4>
+                    <div className="mt-4 grid gap-y-4">
+                      <label className="min-w-0 text-sm text-gray-200">
+                        <span className="mb-1 block">Modello chat analisi</span>
+                        <select
+                          value={memoryModelValue}
+                          onChange={(event) => {
+                            const [provider, model] = event.target.value.split('::');
+                            setMemoryEngine((current) => current ? {
+                              ...current,
+                              analysis_model_provider: provider === 'exo' ? 'exo' : provider === 'ollama' ? 'ollama' : 'openai',
+                              analysis_model: model || current.analysis_model,
+                              ollama_server_id: provider === 'ollama' || provider === 'exo' ? current.ollama_server_id : null,
+                            } : current);
+                          }}
+                          className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                        >
+                          {memoryModelOptions.length === 0 ? (
+                            <option value="" disabled>Nessun modello disponibile</option>
+                          ) : null}
+                          {memoryModelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      {memoryEngine.analysis_model_provider === 'ollama' || memoryEngine.analysis_model_provider === 'exo' ? (
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Server {memoryEngine.analysis_model_provider === 'exo' ? 'EXO' : 'Ollama'} chat</span>
+                          <select
+                            value={memoryEngine.ollama_server_id || ''}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              ollama_server_id: event.target.value || null,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="">Seleziona server</option>
+                            {(ollamaRuntime?.connections || [])
+                              .filter((connection) => (connection.provider_type || 'ollama') === memoryEngine.analysis_model_provider)
+                              .map((connection) => (
+                              <option key={connection.id} value={connection.id}>{connection.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Provider embedding</span>
+                          <select
+                            value={memoryEngine.embedding_model_provider}
+                            onChange={(event) => {
+                              const provider = event.target.value === 'openai' ? 'openai' : 'ollama';
+                              setMemoryEngine((current) => current ? {
+                                ...current,
+                                embedding_model_provider: provider,
+                                embedding_model: provider === 'openai' && !current.embedding_model
+                                  ? 'text-embedding-3-small'
+                                  : current.embedding_model,
+                                embedding_ollama_server_id: provider === 'ollama' ? current.embedding_ollama_server_id : null,
+                              } : current);
+                            }}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="ollama">Ollama</option>
+                            <option value="openai">OpenAI</option>
+                          </select>
+                        </label>
+
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Nome modello embedding</span>
+                          <input
+                            value={memoryEngine.embedding_model}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              embedding_model: event.target.value,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                            placeholder={memoryEngine.embedding_model_provider === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small'}
+                          />
+                        </label>
+                      </div>
+
+                      {memoryEngine.embedding_model_provider === 'ollama' ? (
+                        <label className="min-w-0 text-sm text-gray-200">
+                          <span className="mb-1 block">Server Ollama embedding</span>
+                          <select
+                            value={memoryEngine.embedding_ollama_server_id || ''}
+                            onChange={(event) => setMemoryEngine((current) => current ? {
+                              ...current,
+                              embedding_ollama_server_id: event.target.value || null,
+                            } : current)}
+                            className="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-white"
+                          >
+                            <option value="">Seleziona server</option>
+                            {(ollamaRuntime?.connections || []).map((connection) => (
+                              <option key={connection.id} value={connection.id}>{connection.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-6 text-sm text-gray-300">Nessuna configurazione Memory Engine disponibile.</div>
+          )}
         </section>
       ) : null}
 

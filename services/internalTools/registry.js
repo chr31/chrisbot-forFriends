@@ -1,5 +1,5 @@
 const { createInternalNotification } = require('./notifications');
-const { getMemories, editMemories, getGoals, editGoals } = require('./agentState');
+const { getGoals, editGoals } = require('./agentState');
 
 const DEFAULT_INTERNAL_PREFIX = 'chrisbot_';
 
@@ -28,36 +28,6 @@ const INTERNAL_TOOL_DEFINITIONS = [
       await createInternalNotification(args);
       return 'Notifica inviata correttamente.';
     },
-  },
-  {
-    key: 'getMemories',
-    name: 'getMemories',
-    publicName: `${DEFAULT_INTERNAL_PREFIX}getMemories`,
-    description: 'Restituisce il testo corrente delle memories dell’agente che chiama il tool.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-    handler: getMemories,
-  },
-  {
-    key: 'editMemories',
-    name: 'editMemories',
-    publicName: `${DEFAULT_INTERNAL_PREFIX}editMemories`,
-    description: 'Sostituisce interamente le memories dell’agente. Recupera prima il valore corrente con getMemories.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: {
-          type: 'string',
-          description: 'Nuovo testo completo delle memories.',
-        },
-      },
-      required: ['text'],
-      additionalProperties: false,
-    },
-    handler: editMemories,
   },
   {
     key: 'getGoals',

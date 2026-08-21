@@ -1,5 +1,6 @@
 const { getSetting, setSetting } = require('../database/db_app_settings');
 const { encryptValue, decryptValue } = require('../utils/settingsCrypto');
+const crypto = require('crypto');
 
 const SETTINGS_KEYS = Object.freeze({
   portalAccess: 'portal_access',
@@ -7,6 +8,7 @@ const SETTINGS_KEYS = Object.freeze({
   ollamaRuntime: 'ollama_runtime',
   openaiRuntime: 'openai_runtime',
   telegramRuntime: 'telegram_runtime',
+  memoryEngine: 'memory_engine',
 });
 
 const settingsCache = {
@@ -15,6 +17,7 @@ const settingsCache = {
   ollamaRuntime: null,
   openaiRuntime: null,
   telegramRuntime: null,
+  memoryEngine: null,
 };
 
 const DEFAULT_ADMIN_GROUP = 'chrisbot.admin';
@@ -40,6 +43,11 @@ function normalizeGroupList(input, fallback = []) {
 function parseInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parsePort(value, fallback) {
+  const parsed = parseInteger(value, fallback);
+  return parsed > 0 && parsed <= 65535 ? parsed : fallback;
 }
 
 function parseBoolean(value, fallback = false) {
@@ -112,6 +120,7 @@ function buildDefaultOllamaRuntimeSettings() {
     timeout_ms: 1200000,
     fallback_on_unavailable: true,
     routing_strategy: 'least_loaded',
+    default_provider: 'ollama',
     default_connection_id: null,
     models: [],
     default_model: '',
@@ -132,6 +141,24 @@ function buildDefaultOpenAiRuntimeSettings() {
   return {
     api_key: '',
     chat_model: 'gpt-5-mini',
+  };
+}
+
+function buildDefaultMemoryEngineSettings() {
+  return {
+    provider: 'disabled',
+    enabled: false,
+    mem0_api_url: String(process.env.MEM0_API_URL || 'http://127.0.0.1:8888').replace(/\/+$/, ''),
+    mem0_api_key: '',
+    mem0_timeout_ms: 8000,
+    mem0_add_timeout_ms: 60000,
+    mem0_search_limit: 6,
+    analysis_model_provider: 'openai',
+    analysis_model: 'gpt-5-mini',
+    ollama_server_id: null,
+    embedding_model_provider: 'openai',
+    embedding_model: 'text-embedding-3-small',
+    embedding_ollama_server_id: null,
   };
 }
 
@@ -160,6 +187,38 @@ function normalizeOpenAiRuntimeSettings(value) {
   return {
     api_key: String(value?.api_key || '').trim(),
     chat_model: String(value?.chat_model || defaults.chat_model).trim() || defaults.chat_model,
+  };
+}
+
+function normalizeEmbeddingModelProvider(value, fallback = 'openai') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'ollama') return 'ollama';
+  return fallback;
+}
+
+function normalizeMemoryEngineSettings(value) {
+  const defaults = buildDefaultMemoryEngineSettings();
+  const requestedProvider = String(value?.provider || '').trim().toLowerCase();
+  const provider = (requestedProvider === 'mem0' || parseBoolean(value?.enabled, false))
+    ? 'mem0'
+    : 'disabled';
+  return {
+    provider,
+    enabled: provider === 'mem0',
+    mem0_api_url: String(value?.mem0_api_url || defaults.mem0_api_url).trim().replace(/\/+$/, '') || defaults.mem0_api_url,
+    mem0_api_key: String(value?.mem0_api_key || '').trim(),
+    mem0_timeout_ms: Math.max(1000, Math.min(60000, parseInteger(value?.mem0_timeout_ms, defaults.mem0_timeout_ms))),
+    mem0_add_timeout_ms: Math.max(5000, Math.min(180000, parseInteger(value?.mem0_add_timeout_ms, defaults.mem0_add_timeout_ms))),
+    mem0_search_limit: Math.max(1, Math.min(50, parseInteger(value?.mem0_search_limit, defaults.mem0_search_limit))),
+    analysis_model_provider: ['openai', 'ollama', 'exo'].includes(String(value?.analysis_model_provider || '').trim().toLowerCase())
+      ? String(value.analysis_model_provider).trim().toLowerCase()
+      : defaults.analysis_model_provider,
+    analysis_model: String(value?.analysis_model || defaults.analysis_model).trim() || defaults.analysis_model,
+    ollama_server_id: String(value?.ollama_server_id || '').trim() || null,
+    embedding_model_provider: normalizeEmbeddingModelProvider(value?.embedding_model_provider, defaults.embedding_model_provider),
+    embedding_model: String(value?.embedding_model || defaults.embedding_model).trim() || defaults.embedding_model,
+    embedding_ollama_server_id: String(value?.embedding_ollama_server_id || value?.ollama_server_id || '').trim() || null,
   };
 }
 
@@ -194,6 +253,22 @@ function serializeOpenAiRuntimeSettings(value) {
   return {
     ...value,
     api_key: encryptValue(value.api_key),
+  };
+}
+
+function deserializeMemoryEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    mem0_api_key: decryptValue(value.mem0_api_key),
+  };
+}
+
+function serializeMemoryEngineSettings(value) {
+  if (!value || typeof value !== 'object') return value;
+  return {
+    ...value,
+    mem0_api_key: encryptValue(value.mem0_api_key),
   };
 }
 
@@ -236,11 +311,15 @@ function normalizeMcpRuntimeSettings(value) {
 }
 
 function normalizeOllamaConnection(connection, index) {
-  const id = String(connection?.id || `ollama_${index + 1}`).trim() || `ollama_${index + 1}`;
+  const providerType = String(connection?.provider_type || connection?.type || 'ollama').trim().toLowerCase() === 'exo'
+    ? 'exo'
+    : 'ollama';
+  const id = String(connection?.id || `${providerType}_${index + 1}`).trim() || `${providerType}_${index + 1}`;
   const priority = Number.parseInt(String(connection?.priority ?? index + 1), 10);
   return {
     id,
-    name: String(connection?.name || `Ollama ${index + 1}`).trim() || `Ollama ${index + 1}`,
+    provider_type: providerType,
+    name: String(connection?.name || `${providerType === 'exo' ? 'EXO' : 'Ollama'} ${index + 1}`).trim() || `${providerType === 'exo' ? 'EXO' : 'Ollama'} ${index + 1}`,
     base_url: String(connection?.base_url || '').trim().replace(/\/+$/, ''),
     default_model: String(connection?.default_model || '').trim(),
     enabled: connection?.enabled !== false,
@@ -303,9 +382,13 @@ function normalizeOllamaRuntimeSettings(value) {
   ].filter(Boolean)));
   const requestedDefaultModel = String(effectiveValue?.default_model || '').trim();
   const normalizedModels = normalizeOllamaModelList(effectiveValue?.models, fallbackModels);
-  const defaultModel = requestedDefaultModel && normalizedModels.some((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
-    ? normalizedModels.find((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
-    : (normalizedModels[0] || '');
+  const defaultModel = requestedDefaultModel
+    ? (
+        normalizedModels.some((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
+          ? normalizedModels.find((model) => model.toLowerCase() === requestedDefaultModel.toLowerCase())
+          : (normalizedModels[0] || '')
+      )
+    : '';
 
   return {
     timeout_ms: parseInteger(value?.timeout_ms, defaults.timeout_ms),
@@ -313,6 +396,9 @@ function normalizeOllamaRuntimeSettings(value) {
     routing_strategy: String(value?.routing_strategy || defaults.routing_strategy).trim() === 'priority'
       ? 'priority'
       : 'least_loaded',
+    default_provider: String(value?.default_provider || defaults.default_provider).trim().toLowerCase() === 'exo'
+      ? 'exo'
+      : 'ollama',
     default_connection_id: defaultConnectionId,
     models: normalizedModels,
     default_model: defaultModel,
@@ -387,6 +473,14 @@ function redactTelegramRuntimeSettings(value) {
   };
 }
 
+function redactMemoryEngineSettings(value) {
+  return {
+    ...value,
+    mem0_api_key: '',
+    mem0_api_key_configured: Boolean(String(value?.mem0_api_key || '').trim()),
+  };
+}
+
 function preserveMcpHeaderSecrets(normalized, incoming, current) {
   const currentById = new Map((current?.connections || []).map((connection) => [connection.id, connection]));
   const incomingById = new Map((incoming?.connections || []).map((connection) => [String(connection?.id || ''), connection]));
@@ -416,8 +510,14 @@ async function loadOrSeedSetting(settingKey, defaultBuilder, normalizer, options
   const existing = await getSetting(settingKey);
   if (!existing) {
     const defaults = normalizer(defaultBuilder());
+    if (settingKey === SETTINGS_KEYS.memoryEngine) {
+      console.warn(`[appSettings] SEED ${settingKey}: riga assente nel DB, scrivo default mem0_api_url=${defaults.mem0_api_url}`);
+    }
     await setSetting(settingKey, serialize(defaults));
     return defaults;
+  }
+  if (settingKey === SETTINGS_KEYS.memoryEngine) {
+    console.info(`[appSettings] LOAD ${settingKey}: riga trovata, mem0_api_url grezzo=${existing.value_json?.mem0_api_url}`);
   }
   const normalized = normalizer(deserialize(existing.value_json));
   const normalizedForStorage = serialize(normalized);
@@ -461,6 +561,15 @@ async function initializeAppSettings() {
     buildDefaultTelegramRuntimeSettings,
     normalizeTelegramRuntimeSettings
   );
+  settingsCache.memoryEngine = await loadOrSeedSetting(
+    SETTINGS_KEYS.memoryEngine,
+    buildDefaultMemoryEngineSettings,
+    normalizeMemoryEngineSettings,
+    {
+      deserialize: deserializeMemoryEngineSettings,
+      serialize: serializeMemoryEngineSettings,
+    }
+  );
 }
 
 function getPortalAccessSettingsSync() {
@@ -496,6 +605,13 @@ function getTelegramRuntimeSettingsSync() {
     settingsCache.telegramRuntime = normalizeTelegramRuntimeSettings(buildDefaultTelegramRuntimeSettings());
   }
   return settingsCache.telegramRuntime;
+}
+
+function getMemoryEngineSettingsSync() {
+  if (!settingsCache.memoryEngine) {
+    settingsCache.memoryEngine = normalizeMemoryEngineSettings(buildDefaultMemoryEngineSettings());
+  }
+  return settingsCache.memoryEngine;
 }
 
 async function updatePortalAccessSettings(nextValue) {
@@ -556,17 +672,32 @@ async function updateTelegramRuntimeSettings(nextValue) {
   return normalized;
 }
 
+async function updateMemoryEngineSettings(nextValue) {
+  const current = getMemoryEngineSettingsSync();
+  const normalized = preserveExistingSecrets(
+    normalizeMemoryEngineSettings({ ...current, ...(nextValue || {}) }),
+    nextValue || {},
+    current,
+    ['mem0_api_key']
+  );
+  await setSetting(SETTINGS_KEYS.memoryEngine, serializeMemoryEngineSettings(normalized));
+  settingsCache.memoryEngine = normalized;
+  return normalized;
+}
+
 function getSettingsSnapshot(options = {}) {
   const redactSecrets = options.redactSecrets !== false;
   const portalAccess = getPortalAccessSettingsSync();
   const openAiRuntime = getOpenAiRuntimeSettingsSync();
   const telegramRuntime = getTelegramRuntimeSettingsSync();
+  const memoryEngine = getMemoryEngineSettingsSync();
   return {
     portal_access: redactSecrets ? redactPortalAccessSettings(portalAccess) : portalAccess,
     mcp_runtime: redactSecrets ? redactMcpRuntimeSettings(getMcpRuntimeSettingsSync()) : getMcpRuntimeSettingsSync(),
     ollama_runtime: getOllamaRuntimeSettingsSync(),
     openai_runtime: redactSecrets ? redactOpenAiRuntimeSettings(openAiRuntime) : openAiRuntime,
     telegram_runtime: redactSecrets ? redactTelegramRuntimeSettings(telegramRuntime) : telegramRuntime,
+    memory_engine: redactSecrets ? redactMemoryEngineSettings(memoryEngine) : memoryEngine,
   };
 }
 
@@ -584,6 +715,10 @@ function revealSettingsSecret(target = {}) {
 
   if (area === 'telegram_runtime' && field === 'bot_token') {
     return String(getTelegramRuntimeSettingsSync()?.bot_token || '');
+  }
+
+  if (area === 'memory_engine' && field === 'mem0_api_key') {
+    return String(getMemoryEngineSettingsSync()?.mem0_api_key || '');
   }
 
   if (area === 'mcp_runtime' && field === 'headers_json') {
@@ -605,11 +740,13 @@ module.exports = {
   getOllamaRuntimeSettingsSync,
   getOpenAiRuntimeSettingsSync,
   getTelegramRuntimeSettingsSync,
+  getMemoryEngineSettingsSync,
   updatePortalAccessSettings,
   updateMcpRuntimeSettings,
   updateOllamaRuntimeSettings,
   updateOpenAiRuntimeSettings,
   updateTelegramRuntimeSettings,
+  updateMemoryEngineSettings,
   revealSettingsSecret,
   getSettingsSnapshot,
 };

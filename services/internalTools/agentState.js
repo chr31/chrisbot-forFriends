@@ -21,14 +21,6 @@ async function replaceAgentStateField(agentId, field, nextValue) {
   return String(nextValue || '');
 }
 
-async function getMemories(args = {}) {
-  return getAgentStateField(requireAgentId(args), 'memories');
-}
-
-async function editMemories(args = {}) {
-  return replaceAgentStateField(requireAgentId(args), 'memories', args.text);
-}
-
 async function getGoals(args = {}) {
   return getAgentStateField(requireAgentId(args), 'goals');
 }
@@ -38,8 +30,6 @@ async function editGoals(args = {}) {
 }
 
 module.exports = {
-  getMemories,
-  editMemories,
   getGoals,
   editGoals,
 };

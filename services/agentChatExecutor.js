@@ -6,11 +6,14 @@ const {
   getMessagesByAgentChatId,
   insertAgentMessages,
 } = require('../database/db_agent_chats');
-const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
+const { insertAgentRun, updateAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
 const { canUserAccessAgent } = require('./agentAccess');
-const { runAgentConversation, buildInitialAgentHistory, createChatId } = require('./agentRunner');
+const { runAgentConversation, buildInitialAgentHistory, createChatId, sanitizeMessages } = require('./agentRunner');
 const { ADMIN_SHARED_OWNER, isSuperAdminUser } = require('../utils/adminAccess');
 const { normalizeModelConfig, getAgentDefaultModelConfig, getDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('./agentSemanticGuardrails');
 
 function normalizeUserMessage(messages) {
   const userMessage = Array.isArray(messages) ? messages[messages.length - 1] : null;
@@ -125,18 +128,90 @@ async function prepareAgentChatExecution(input = {}) {
     started_at: new Date(),
   });
 
+  const semanticGuardrail = await evaluateAgentSemanticGuardrails(agent, userMessage.content);
+  if (semanticGuardrail.applied && semanticGuardrail.decision !== 'allow') {
+    const response = semanticGuardrail.message || 'Questo agente non puo gestire questa richiesta.';
+    await insertAgentMessages([{
+      chat_id: currentChatId,
+      agent_id: agent.id,
+      role: 'assistant',
+      event_type: 'guardrail',
+      content: response,
+      metadata_json: {
+        run_id: run.id,
+        guardrail_type: 'semantic',
+        blocked: true,
+        decision: semanticGuardrail.decision,
+        reason: semanticGuardrail.reason,
+        allowed_match: semanticGuardrail.allowed_match || null,
+        blocked_match: semanticGuardrail.blocked_match || null,
+      },
+    }]);
+    await updateAgentRunIfStatus(run.id, {
+      status: 'completed',
+      finished_at: new Date(),
+      guardrail_result_json: buildAgentGuardrailRunTrace(semanticGuardrail),
+    }, 'running');
+    return {
+      agent,
+      run,
+      chatId: currentChatId,
+      history,
+      modelConfig: resolvedModelConfig,
+      userMessage,
+      userKey: owner_username,
+      blockedByGuardrail: true,
+      guardrailResult: semanticGuardrail,
+      guardrailResponse: response,
+    };
+  }
+
+  const memoryContextPacket = await runBeforeMemory({
+    agent,
+    chat: {
+      chatId: currentChatId,
+      messages: sanitizeMessages(history),
+      sourceMessages: history,
+      userMessage,
+      runId: run.id,
+      userKey: owner_username,
+      owner_username,
+    },
+    runId: run.id,
+    userKey: owner_username,
+    modelConfig: resolvedModelConfig,
+  });
+
+  await updateAgentRun(run.id, {
+    guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
+  });
+
   return {
     agent,
     run,
     chatId: currentChatId,
     history,
     modelConfig: resolvedModelConfig,
+    userMessage,
+    userKey: owner_username,
+    memoryContextPacket,
   };
 }
 
 async function finalizeAgentChatExecution(prepared) {
+  if (prepared.blockedByGuardrail) {
+    return {
+      response: prepared.guardrailResponse,
+      chat_id: prepared.chatId,
+      run_id: prepared.run.id,
+      agent_id: prepared.agent.id,
+      guardrail: prepared.guardrailResult,
+    };
+  }
+
+  let response = '';
   try {
-    const response = await runAgentConversation(prepared.agent, prepared.history, {
+    response = await runAgentConversation(prepared.agent, prepared.history, {
       chatId: prepared.chatId,
       agentId: prepared.agent.id,
       ollamaServerId: prepared.modelConfig.ollama_server_id,
@@ -145,11 +220,20 @@ async function finalizeAgentChatExecution(prepared) {
       parentAgentId: null,
       modelConfig: prepared.modelConfig,
       depth: 0,
+      userKey: prepared.userKey || null,
     });
     await updateAgentRunIfStatus(prepared.run.id, {
       status: 'completed',
       finished_at: new Date(),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null),
     }, 'running');
+    // Scrittura memorie in parallelo: non attesa, non blocca la risposta.
+    runAfterMemory({
+      agent: prepared.agent,
+      userMessage: prepared.userMessage,
+      response,
+      runId: prepared.run.id,
+    }).catch(() => {});
     return {
       response,
       chat_id: prepared.chatId,
@@ -161,6 +245,7 @@ async function finalizeAgentChatExecution(prepared) {
       status: 'failed',
       finished_at: new Date(),
       last_error: String(error?.message || error),
+      guardrail_result_json: buildMemoryRunTrace(prepared.memoryContextPacket, null),
     }, 'running');
     throw error;
   }

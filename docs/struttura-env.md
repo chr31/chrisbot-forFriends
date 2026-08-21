@@ -51,9 +51,19 @@ Con MySQL esterno:
 
 Variabili usate solo da Docker Compose:
 
-- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` solo quando vuoi il container MySQL incluso; lascialo vuoto con MySQL esterno.
+- `COMPOSE_PROFILES`: profili Compose da attivare. Usa `local-mysql` quando vuoi il container MySQL incluso. Lascialo vuoto con database esterni.
 - `MYSQL_ROOT_PASSWORD`: password root del container MySQL.
 - `MYSQL_HOST_PORT`: porta host pubblicata per MySQL. Intero positivo. Default: `3307`.
+
+## Memory Engine (mem0)
+
+Il Memory Engine usa un'istanza mem0 OSS self-hosted come servizio esterno. Non c'e' alcun container database dedicato alle memorie nel compose: mem0 va avviato separatamente.
+
+Quasi tutta la configurazione mem0 vive nel database applicativo (tab Impostazioni > Memory Engine) e non richiede env dedicate. L'unica env riconosciuta e' un default di bootstrap:
+
+- `MEM0_API_URL`: URL di default dell'istanza mem0 usato solo per inizializzare le impostazioni al primo avvio. Default: `http://127.0.0.1:8888`. Puo' essere sovrascritto dal portale.
+
+Le altre impostazioni mem0 (`mem0_api_key`, timeout, limite risultati di ricerca) e i modelli usati dai guardrail semantici si configurano dal portale e vengono salvati nel database, cifrati quando sensibili.
 
 ## Scheduler e routine
 
@@ -97,6 +107,7 @@ Queste integrazioni non dipendono da env dedicate nel bootstrap standard: si con
 - Server Ollama
 - Server MCP
 - Telegram
+- Memory Engine (mem0)
 
 ## Note pratiche
 

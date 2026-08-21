@@ -3,9 +3,12 @@ const { askOllamaChatCompletions } = require('../utils/askGpt');
 const { getMcpTools, callMcpTool } = require('../utils/mcpClient');
 const { getAgentById, getAgentToolNames, getAgentRelations } = require('../database/db_agents');
 const { insertAgentMessages } = require('../database/db_agent_chats');
-const { insertAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
+const { insertAgentRun, updateAgentRun, updateAgentRunIfStatus } = require('../database/db_agent_runs');
 const { createOpenAiClient, getDefaultOpenAiModel } = require('./openaiRuntime');
 const { MODEL_PROVIDERS, normalizeModelConfig, getAgentDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('./agentSemanticGuardrails');
 
 function toToolContentString(value) {
   if (typeof value === 'string') return value;
@@ -120,11 +123,16 @@ function extractToolFallbackText(content) {
 }
 
 function buildAssistantFallbackFromToolMessages(toolMessages = []) {
-  for (let index = toolMessages.length - 1; index >= 0; index -= 1) {
-    const candidate = extractToolFallbackText(toolMessages[index]?.content);
-    if (candidate) return candidate;
+  const results = [];
+  for (const toolMessage of toolMessages) {
+    const candidate = extractToolFallbackText(toolMessage?.content);
+    if (candidate) results.push(candidate);
   }
-  return '';
+  if (results.length === 0) return '';
+  if (results.length === 1) return results[0];
+  return results
+    .map((result, index) => `Risultato tool ${index + 1}:\n${result}`)
+    .join('\n\n');
 }
 
 function sanitizeMessages(messages) {
@@ -134,6 +142,13 @@ function sanitizeMessages(messages) {
   for (const raw of Array.isArray(messages) ? messages : []) {
     if (!raw || !raw.role) continue;
     if (raw.role === 'assistant' && raw.tool_calls) {
+      for (const toolCallId of pendingToolCallIds) {
+        sanitized.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: 'Tool non eseguito: storico incompleto recuperato dal database.',
+        });
+      }
       pendingToolCallIds = new Set(
         Array.isArray(raw.tool_calls) ? raw.tool_calls.map((tc) => tc?.id).filter(Boolean) : []
       );
@@ -146,14 +161,7 @@ function sanitizeMessages(messages) {
     }
 
     if (raw.role === 'tool') {
-      const last = sanitized[sanitized.length - 1];
-      const hasCaller =
-        raw.tool_call_id &&
-        last &&
-        last.role === 'assistant' &&
-        Array.isArray(last.tool_calls) &&
-        last.tool_calls.some((tc) => tc.id === raw.tool_call_id);
-      if (hasCaller) {
+      if (raw.tool_call_id && pendingToolCallIds.has(raw.tool_call_id)) {
         sanitized.push({
           role: 'tool',
           tool_call_id: raw.tool_call_id,
@@ -164,6 +172,14 @@ function sanitizeMessages(messages) {
       continue;
     }
 
+    for (const toolCallId of pendingToolCallIds) {
+      sanitized.push({
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: 'Tool non eseguito: storico incompleto recuperato dal database.',
+      });
+    }
+    pendingToolCallIds = new Set();
     sanitized.push({ role: raw.role, content: raw.role === 'assistant' ? toAssistantContentString(raw.content) : (raw.content ?? '') });
   }
 
@@ -252,6 +268,7 @@ async function executeMcpTool(functionName, args, context, toolCall, agent) {
       toolArgs._chatId = context.chatId || null;
       toolArgs._agentId = agent?.id || context.agentId || null;
       toolArgs._runId = context.runId || null;
+      toolArgs._userKey = context.userKey || null;
     }
     if (isNotificationToolName(functionName)) {
       toolArgs._chatId = context.chatId || null;
@@ -384,7 +401,10 @@ async function executeAgentRun(agent, messages, context) {
         sanitizedMessages,
         allTools.length > 0 ? allTools : null,
         modelConfig.model,
-        { ollamaServerId: modelConfig.ollama_server_id || context.ollamaServerId || null }
+        {
+          ollamaServerId: modelConfig.ollama_server_id || context.ollamaServerId || null,
+          providerType: modelConfig.provider,
+        }
       );
 
   return { responseMessage, guardrails, childByToolName };
@@ -403,9 +423,10 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
   if (responseMessage.role === 'assistant') {
     const assistantContent = toAssistantContentString(responseMessage.content);
     const hasAssistantContent = Boolean(assistantContent.trim());
+    const hasToolCalls = Array.isArray(responseMessage.tool_calls) && responseMessage.tool_calls.length > 0;
     const hasModelDebugPayload = Boolean(String(responseMessage.reasoning || '').trim())
       || Number.isFinite(responseMessage.total_tokens);
-    if ((context.depth || 0) === 0 && (hasAssistantContent || hasModelDebugPayload)) {
+    if (hasAssistantContent || hasModelDebugPayload || hasToolCalls) {
       await persistConversationMessages(context, [{
         chat_id: context.chatId,
         agent_id: agent.id,
@@ -418,7 +439,8 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           run_id: context.runId || null,
           parent_run_id: context.parentRunId || null,
           depth: Number.isFinite(context.depth) ? context.depth : 0,
-          delegated_by_agent_id: depth > 0 ? context.parentAgentId || null : null,
+          delegated_by_agent_id: (context.depth || 0) > 0 ? context.parentAgentId || null : null,
+          tool_calls: Array.isArray(responseMessage.tool_calls) ? responseMessage.tool_calls : undefined,
         },
       }]);
     }
@@ -526,15 +548,58 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         { role: 'system', content: buildDelegatedWorkerSystemPrompt(childAgent) },
         { role: 'user', content: delegatedTask },
       ];
+      const childModelConfig = getAgentDefaultModelConfig(childAgent);
       const childRun = await insertAgentRun({
         chat_id: context.chatId,
         agent_id: childAgent.id,
         parent_run_id: context.runId || null,
         status: 'running',
-        model_name: getAgentDefaultModelConfig(childAgent).model,
-        model_provider: getAgentDefaultModelConfig(childAgent).provider,
+        model_name: childModelConfig.model,
+        model_provider: childModelConfig.provider,
         depth: (context.depth || 0) + 1,
         started_at: new Date(),
+      });
+      const childGuardrail = await evaluateAgentSemanticGuardrails(childAgent, delegatedTask);
+      if (childGuardrail.applied && childGuardrail.decision !== 'allow') {
+        const content = childGuardrail.message || `Guardrail: ${childAgent.name} non puo gestire questa richiesta.`;
+        await logAgentEvent(
+          { ...context, runId: childRun.id, parentRunId: context.runId || null, depth: (context.depth || 0) + 1 },
+          childAgent,
+          'guardrail',
+          content,
+          {
+            guardrail_type: 'semantic',
+            blocked: true,
+            decision: childGuardrail.decision,
+            reason: childGuardrail.reason,
+            delegated_by_agent_id: agent.id,
+            tool_call_id: toolCall.id,
+          }
+        );
+        await updateAgentRunIfStatus(childRun.id, {
+          status: 'completed',
+          finished_at: new Date(),
+          guardrail_result_json: buildAgentGuardrailRunTrace(childGuardrail),
+        }, 'running');
+        toolMessages.push({ role: 'tool', tool_call_id: toolCall.id, content });
+        continue;
+      }
+      const childMemoryContextPacket = await runBeforeMemory({
+        agent: childAgent,
+        chat: {
+          chatId: context.chatId,
+          messages: sanitizeMessages(childMessages),
+          sourceMessages: childMessages,
+          userMessage: childMessages[1],
+          runId: childRun.id,
+          userKey: context.userKey || null,
+        },
+        runId: childRun.id,
+        userKey: context.userKey || null,
+        modelConfig: childModelConfig,
+      });
+      await updateAgentRun(childRun.id, {
+        guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
       });
       let childResult;
       try {
@@ -544,8 +609,8 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
           parentAgentId: agent.id,
           parentRunId: context.runId || null,
           runId: childRun.id,
-          modelConfig: getAgentDefaultModelConfig(childAgent),
-          ollamaServerId: getAgentDefaultModelConfig(childAgent).ollama_server_id || null,
+          modelConfig: childModelConfig,
+          ollamaServerId: childModelConfig.ollama_server_id || null,
           depth: context.depth + 1,
           messageWriter: context.messageWriter,
         }, 0, {
@@ -556,12 +621,20 @@ async function runAgentConversation(agent, messages, context, depth = 0, toolSta
         await updateAgentRunIfStatus(childRun.id, {
           status: 'completed',
           finished_at: new Date(),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
         }, 'running');
+        runAfterMemory({
+          agent: childAgent,
+          userMessage: childMessages[1],
+          response: childResult,
+          runId: childRun.id,
+        }).catch(() => {});
       } catch (error) {
         await updateAgentRunIfStatus(childRun.id, {
           status: 'failed',
           finished_at: new Date(),
           last_error: String(error?.message || error),
+          guardrail_result_json: buildMemoryRunTrace(childMemoryContextPacket, null),
         }, 'running');
         childResult = buildDelegatedWorkerErrorText(childAgent, error);
       }
@@ -644,18 +717,44 @@ function buildAgentSystemPrompt(agent) {
   return `${promptParts.filter(Boolean).join('\n\n')} Oggi e il ${new Date().toISOString()}`.trim();
 }
 
+function buildStoredToolResultSummary(row) {
+  const metadata = row?.metadata_json || {};
+  const parts = [
+    'Risultato tool storico recuperato dal database.',
+    metadata.tool_name ? `Tool: ${metadata.tool_name}` : null,
+    metadata.tool_call_id ? `Tool call id: ${metadata.tool_call_id}` : null,
+    metadata.arguments ? `Argomenti: ${stringifyForModel(metadata.arguments)}` : null,
+    `Risultato: ${String(row?.content || '')}`,
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
+function buildDelegatedWorkerAssistantSummary(row) {
+  const agentName = String(row?.agent_name || 'worker').trim() || 'worker';
+  const content = String(row?.content || '').trim();
+  if (!content) return '';
+  return `Risposta finale del worker ${agentName}:\n${content}`;
+}
+
 function mapStoredRowToHistoryEntry(row, options = {}) {
   const visibleOnly = options.visibleOnly === true;
+  const storedToolCalls = Array.isArray(row?.metadata_json?.tool_calls) ? row.metadata_json.tool_calls : null;
+  const isNestedAssistant = row.role === 'assistant'
+    && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id);
   if (row.event_type === 'delegation') {
     return null;
   }
   if (row.event_type === 'guardrail') {
     return null;
   }
-  if (row.event_type === 'model_debug') {
+  if (row.event_type === 'model_debug' && !storedToolCalls) {
     return null;
   }
-  if (row.role === 'assistant' && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)) {
+  if (isNestedAssistant) {
+    if (row.event_type === 'message') {
+      const content = buildDelegatedWorkerAssistantSummary(row);
+      return content ? { role: 'assistant', content } : null;
+    }
     return null;
   }
   if (isNestedWorkerToolResult(row)) {
@@ -673,14 +772,50 @@ function mapStoredRowToHistoryEntry(row, options = {}) {
   if (row.role === 'tool') {
     return null;
   }
-  return { role: row.role, content: row.content, reasoning: row.reasoning || null };
+  return {
+    role: row.role,
+    content: row.content,
+    reasoning: row.reasoning || null,
+    ...(storedToolCalls ? { tool_calls: storedToolCalls } : {}),
+  };
 }
 
 async function buildInitialAgentHistory(agent, rows, options = {}) {
   if (Array.isArray(rows) && rows.length > 0) {
-    const mapped = rows.map((row) => {
-      return mapStoredRowToHistoryEntry(row, options);
-    }).filter(Boolean);
+    const mapped = [];
+    const nestedAssistantRunIds = new Set(
+      rows
+        .filter((row) => row?.role === 'assistant'
+          && row?.event_type === 'message'
+          && (Number(row?.metadata_json?.depth || 0) > 0 || row?.metadata_json?.delegated_by_agent_id)
+          && Number.isFinite(Number(row?.metadata_json?.run_id)))
+        .map((row) => Number(row.metadata_json.run_id))
+    );
+    for (const row of rows) {
+      const entry = mapStoredRowToHistoryEntry(row, options);
+      if (!entry) continue;
+      if (
+        entry.role === 'tool'
+        && !mapped.some((candidate) =>
+          candidate?.role === 'assistant'
+          && Array.isArray(candidate.tool_calls)
+          && candidate.tool_calls.some((toolCall) => toolCall?.id === entry.tool_call_id)
+        )
+      ) {
+        mapped.push({ role: 'assistant', content: buildStoredToolResultSummary(row) });
+        continue;
+      }
+      mapped.push(entry);
+      if (
+        row?.event_type === 'delegation_result'
+        && !nestedAssistantRunIds.has(Number(row?.metadata_json?.run_id))
+      ) {
+        const workerSummary = buildDelegatedWorkerAssistantSummary(row);
+        if (workerSummary) {
+          mapped.push({ role: 'assistant', content: workerSummary });
+        }
+      }
+    }
     if (options.visibleOnly === true) {
       const visibleLimit = Number.isFinite(Number(options.visibleLimit))
         ? Math.max(1, Math.trunc(Number(options.visibleLimit)))
@@ -715,5 +850,11 @@ module.exports = {
   runAgentConversation,
   buildAgentSystemPrompt,
   buildInitialAgentHistory,
+  sanitizeMessages,
   createChatId,
+  __test: {
+    buildAssistantFallbackFromToolMessages,
+    buildDelegatedWorkerAssistantSummary,
+    mapStoredRowToHistoryEntry,
+  },
 };

@@ -28,17 +28,19 @@ router.get('/catalog', async (req, res) => {
         slug: agent.slug,
         kind: agent.kind,
         user_description: agent.user_description || '',
+        use_portal_default_model: agent.use_portal_default_model,
+        specific_model_config: agent.specific_model_config,
         default_model_config: agent.default_model_config,
-      direct_chat_enabled: agent.direct_chat_enabled,
-      is_active: agent.is_active,
-      is_alive: agent.is_alive,
-      alive_loop_seconds: agent.alive_loop_seconds,
-      alive_prompt: agent.alive_prompt,
-      alive_context_messages: agent.alive_context_messages,
-      alive_include_goals: agent.alive_include_goals,
-      goals: agent.goals,
-      memories: agent.memories,
-    }));
+        direct_chat_enabled: agent.direct_chat_enabled,
+        is_active: agent.is_active,
+        is_alive: agent.is_alive,
+        alive_loop_seconds: agent.alive_loop_seconds,
+        alive_prompt: agent.alive_prompt,
+        alive_context_messages: agent.alive_context_messages,
+        alive_include_goals: agent.alive_include_goals,
+        goals: agent.goals,
+        memory_engine_enabled: agent.memory_engine_enabled,
+      }));
     return res.json(catalog);
   } catch (error) {
     console.error('Errore nel recupero catalogo agenti:', error);
@@ -56,6 +58,7 @@ function normalizeCreatePayload(body, username) {
     user_description: body?.user_description,
     allowed_group_names_csv: body?.allowed_group_names_csv,
     system_prompt: body?.system_prompt,
+    use_portal_default_model: body?.use_portal_default_model,
     model_config: body?.default_model_config,
     guardrails: body?.guardrails,
     visibility_scope: body?.visibility_scope,
@@ -66,7 +69,8 @@ function normalizeCreatePayload(body, username) {
     alive_context_messages: body?.alive_context_messages,
     alive_include_goals: body?.alive_include_goals,
     goals: body?.goals,
-    memories: body?.memories,
+    memory_engine_enabled: body?.memory_engine_enabled,
+    improve_memories_enabled: body?.improve_memories_enabled,
     is_active: body?.is_active,
     created_by: username,
   };

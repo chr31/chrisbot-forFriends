@@ -57,9 +57,11 @@ Servizi esposti:
 - Frontend: `http://127.0.0.1:3001`
 - MySQL: `127.0.0.1:3307`
 
+Il Memory Engine usa un'istanza mem0 OSS come dipendenza esterna. Avvia mem0 separatamente e configura URL API, API key e limiti in Impostazioni/Memory Engine.
+
 Per usare un MySQL esterno, imposta `MYSQL_HOST` all'host del database e lascia
-`COMPOSE_PROFILES` vuoto: in questo modo `docker compose up --build` non crea il
-container `chrisbot-mysql`.
+`COMPOSE_PROFILES` vuoto: in questo modo `docker compose up --build` non crea i
+container database locali.
 
 ## Avvio locale senza Docker
 
@@ -79,6 +81,7 @@ npm run dev:all
 
 - [Struttura env](docs/struttura-env.md)
 - [Funzioni](docs/funzioni.md)
+- [Linee guida UI](docs/ui-guidelines.md)
 
 ## Licenza
 

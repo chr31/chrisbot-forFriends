@@ -41,6 +41,8 @@ type Agent = {
   user_description: string;
   allowed_group_names_csv?: string;
   system_prompt: string;
+  use_portal_default_model: boolean;
+  specific_model_config?: ModelConfig;
   default_model_config: ModelConfig;
   guardrails_json: Record<string, unknown>;
   visibility_scope: VisibilityScope;
@@ -51,7 +53,8 @@ type Agent = {
   alive_context_messages: number;
   alive_include_goals: boolean;
   goals: string;
-  memories: string;
+  memory_engine_enabled: boolean;
+  improve_memories_enabled: boolean;
   is_active: boolean;
   tool_names: string[];
   permissions: AgentPermission[];
@@ -63,6 +66,7 @@ type QuickAgentUpdates = {
   direct_chat_enabled?: boolean;
   visibility_scope?: VisibilityScope;
   model_config?: ModelConfig;
+  use_portal_default_model?: boolean;
 };
 
 type Tool = {
@@ -84,7 +88,13 @@ type GuardrailForm = {
   max_tool_rounds: number;
   max_delegations: number;
   max_depth: number;
-  extra_json: string;
+  semantic_guardrails_enabled: boolean;
+  allowed_intents: string;
+  blocked_intents: string;
+  blocked_message: string;
+  unclear_message: string;
+  unclear_action: 'block' | 'clarify';
+  match_threshold: number;
 };
 
 type FormState = {
@@ -95,6 +105,7 @@ type FormState = {
   user_description: string;
   allowed_group_names_csv: string;
   system_prompt: string;
+  use_portal_default_model: boolean;
   default_model_config: ModelConfig;
   visibility_scope: VisibilityScope;
   direct_chat_enabled: boolean;
@@ -104,7 +115,8 @@ type FormState = {
   alive_context_messages: number;
   alive_include_goals: boolean;
   goals: string;
-  memories: string;
+  memory_engine_enabled: boolean;
+  improve_memories_enabled: boolean;
   is_active: boolean;
   tool_names: string[];
   relations: Array<{
@@ -120,7 +132,13 @@ const DEFAULT_GUARDRAILS: GuardrailForm = {
   max_tool_rounds: 8,
   max_delegations: 3,
   max_depth: 2,
-  extra_json: '{}',
+  semantic_guardrails_enabled: false,
+  allowed_intents: '',
+  blocked_intents: '',
+  blocked_message: 'Questo agente non si occupa di questo argomento.',
+  unclear_message: 'Puoi chiarire se la richiesta riguarda il dominio di questo agente?',
+  unclear_action: 'block',
+  match_threshold: 0.72,
 };
 
 const EMPTY_FORM: FormState = {
@@ -131,6 +149,7 @@ const EMPTY_FORM: FormState = {
   user_description: '',
   allowed_group_names_csv: '',
   system_prompt: '',
+  use_portal_default_model: false,
   default_model_config: { provider: 'ollama', model: 'qwen3.5', ollama_server_id: null },
   visibility_scope: 'public',
   direct_chat_enabled: true,
@@ -140,7 +159,8 @@ const EMPTY_FORM: FormState = {
   alive_context_messages: 12,
   alive_include_goals: false,
   goals: '',
-  memories: '',
+  memory_engine_enabled: false,
+  improve_memories_enabled: false,
   is_active: true,
   tool_names: [],
   relations: [],
@@ -155,18 +175,29 @@ function toPositiveInteger(value: unknown, fallback: number) {
 
 function splitGuardrails(raw: Record<string, unknown> | null | undefined): GuardrailForm {
   const source = raw && typeof raw === 'object' ? { ...raw } : {};
+  const semantic = source.semantic_guardrails && typeof source.semantic_guardrails === 'object'
+    ? { ...(source.semantic_guardrails as Record<string, unknown>) }
+    : {};
+  const semanticSource = { ...source, ...semantic };
+  const formatList = (value: unknown) => Array.isArray(value)
+    ? value.map((entry) => String(entry || '').trim()).filter(Boolean).join('\n')
+    : String(value || '');
   const known = {
     max_tool_rounds: toPositiveInteger(source.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(source.max_delegations, 3),
     max_depth: toPositiveInteger(source.max_depth, 2),
+    semantic_guardrails_enabled: Boolean(semanticSource.semantic_guardrails_enabled ?? semanticSource.enabled ?? false),
+    allowed_intents: formatList(semanticSource.allowed_intents || semanticSource.allowed_topics),
+    blocked_intents: formatList(semanticSource.blocked_intents || semanticSource.blocked_topics || semanticSource.denied_intents || semanticSource.deny_intents),
+    blocked_message: String(semanticSource.blocked_message || semanticSource.block_message || DEFAULT_GUARDRAILS.blocked_message),
+    unclear_message: String(semanticSource.unclear_message || DEFAULT_GUARDRAILS.unclear_message),
+    unclear_action: String(semanticSource.unclear_action || 'block') === 'clarify' ? 'clarify' as const : 'block' as const,
+    match_threshold: Number.isFinite(Number(semanticSource.match_threshold)) ? Number(semanticSource.match_threshold) : 0.72,
   };
   delete source.max_tool_rounds;
   delete source.max_delegations;
   delete source.max_depth;
-  return {
-    ...known,
-    extra_json: JSON.stringify(source, null, 2),
-  };
+  return known;
 }
 
 function InfoHint({ label, description }: { label: string; description: string }) {
@@ -271,12 +302,21 @@ function CollapsiblePanel({
 }
 
 function buildGuardrailsPayload(guardrails: GuardrailForm) {
-  const extra = JSON.parse(guardrails.extra_json || '{}');
+  const toList = (value: string) => value
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   return {
-    ...extra,
     max_tool_rounds: toPositiveInteger(guardrails.max_tool_rounds, 8),
     max_delegations: toPositiveInteger(guardrails.max_delegations, 3),
     max_depth: toPositiveInteger(guardrails.max_depth, 2),
+    semantic_guardrails_enabled: guardrails.semantic_guardrails_enabled,
+    allowed_intents: toList(guardrails.allowed_intents),
+    blocked_intents: toList(guardrails.blocked_intents),
+    blocked_message: guardrails.blocked_message,
+    unclear_message: guardrails.unclear_message,
+    unclear_action: guardrails.unclear_action,
+    match_threshold: Number.isFinite(Number(guardrails.match_threshold)) ? Number(guardrails.match_threshold) : 0.72,
   };
 }
 
@@ -315,7 +355,8 @@ function formFromAgent(agent: Agent): FormState {
     user_description: agent.user_description || '',
     allowed_group_names_csv: agent.allowed_group_names_csv || '',
     system_prompt: agent.system_prompt,
-    default_model_config: normalizeModelConfig(agent.default_model_config),
+    use_portal_default_model: Boolean(agent.use_portal_default_model),
+    default_model_config: normalizeModelConfig(agent.specific_model_config || agent.default_model_config),
     visibility_scope: agent.visibility_scope,
     direct_chat_enabled: agent.direct_chat_enabled,
     is_alive: agent.is_alive,
@@ -324,7 +365,8 @@ function formFromAgent(agent: Agent): FormState {
     alive_context_messages: agent.alive_context_messages || 12,
     alive_include_goals: agent.alive_include_goals,
     goals: agent.goals || '',
-    memories: agent.memories || '',
+    memory_engine_enabled: Boolean(agent.memory_engine_enabled),
+    improve_memories_enabled: Boolean(agent.improve_memories_enabled),
     is_active: agent.is_active,
     tool_names: agent.tool_names || [],
     relations: (agent.relations || [])
@@ -404,7 +446,10 @@ export default function AgentsPage() {
       setOllamaOptions(Array.isArray(nextAiOptions?.ollama?.connections) ? nextAiOptions.ollama.connections : []);
       setForm((current) => ({
         ...current,
-        default_model_config: normalizeModelConfig(current.default_model_config, nextAiOptions?.default_selection || EMPTY_FORM.default_model_config),
+        default_model_config: normalizeModelConfig(
+          current.default_model_config,
+          nextAiOptions?.default_selection || EMPTY_FORM.default_model_config
+        ),
       }));
     } catch (err: any) {
       setError(err?.message || 'Errore inatteso.');
@@ -424,7 +469,7 @@ export default function AgentsPage() {
       .filter((toolName) => !availableByName.has(toolName))
       .map((toolName) => ({
         name: toolName,
-        description: 'Tool attualmente non disponibile sul server MCP.',
+        description: 'Tool attualmente non disponibile sul server MCP. Puoi deselezionarlo per rimuoverlo dall\'agente.',
         available: false,
         selected: true,
       }));
@@ -504,7 +549,6 @@ export default function AgentsPage() {
     () => buildModelOptions(aiOptions?.catalog, form.default_model_config),
     [aiOptions?.catalog, form.default_model_config]
   );
-
   const setGuardrailField = (field: keyof GuardrailForm, value: string | boolean | number) => {
     setForm((current) => ({
       ...current,
@@ -621,6 +665,7 @@ export default function AgentsPage() {
         user_description: form.user_description,
         system_prompt: form.system_prompt,
         allowed_group_names_csv: form.allowed_group_names_csv,
+        use_portal_default_model: form.use_portal_default_model,
         default_model_config: form.default_model_config,
         visibility_scope: form.visibility_scope,
         direct_chat_enabled: form.direct_chat_enabled,
@@ -630,7 +675,8 @@ export default function AgentsPage() {
         alive_context_messages: normalizedAliveContextMessages,
         alive_include_goals: form.alive_include_goals,
         goals: form.goals,
-        memories: form.memories,
+        memory_engine_enabled: form.memory_engine_enabled,
+        improve_memories_enabled: form.improve_memories_enabled,
         is_active: form.is_active,
         tool_names: form.tool_names,
         relations: form.kind === 'orchestrator'
@@ -713,10 +759,13 @@ export default function AgentsPage() {
         user_description: agent.user_description,
         system_prompt: agent.system_prompt,
         allowed_group_names_csv: agent.allowed_group_names_csv || '',
-        default_model_config: updates.model_config ?? agent.default_model_config,
+        use_portal_default_model: updates.use_portal_default_model ?? agent.use_portal_default_model,
+        default_model_config: updates.model_config ?? agent.specific_model_config ?? agent.default_model_config,
         visibility_scope: updates.visibility_scope ?? agent.visibility_scope,
         direct_chat_enabled: updates.direct_chat_enabled ?? agent.direct_chat_enabled,
         is_active: updates.is_active ?? agent.is_active,
+        memory_engine_enabled: agent.memory_engine_enabled,
+        improve_memories_enabled: agent.improve_memories_enabled,
         tool_names: agent.tool_names,
         relations: agent.kind === 'orchestrator'
           ? (agent.relations || []).map((entry) => ({
@@ -778,7 +827,8 @@ export default function AgentsPage() {
         user_description: agent.user_description,
         system_prompt: agent.system_prompt,
         allowed_group_names_csv: agent.allowed_group_names_csv || '',
-        default_model_config: agent.default_model_config,
+        use_portal_default_model: agent.use_portal_default_model,
+        default_model_config: agent.specific_model_config || agent.default_model_config,
         visibility_scope: agent.visibility_scope,
         direct_chat_enabled: agent.direct_chat_enabled,
         is_alive: agent.direct_chat_enabled ? agent.is_alive : false,
@@ -787,7 +837,8 @@ export default function AgentsPage() {
         alive_context_messages: agent.alive_context_messages || 12,
         alive_include_goals: agent.alive_include_goals,
         goals: agent.goals || '',
-        memories: agent.memories || '',
+        memory_engine_enabled: agent.memory_engine_enabled,
+        improve_memories_enabled: agent.improve_memories_enabled,
         is_active: agent.is_active,
         tool_names: agent.tool_names || [],
         relations: agent.kind === 'orchestrator'
@@ -923,9 +974,10 @@ export default function AgentsPage() {
             </div>
           </div>
 
-          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
+          <div className="mt-5 hidden grid-cols-[96px_minmax(0,1.1fr)_150px_minmax(0,1fr)_150px_96px_176px] gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400 lg:grid">
             <div>Attivo</div>
             <div>Nome</div>
+            <div>Modello default</div>
             <div>Modello</div>
             <div>Visibilità</div>
             <div>Chat</div>
@@ -941,7 +993,7 @@ export default function AgentsPage() {
             )}
             {filteredAgents.map((agent) => (
               <div key={agent.id} className="border-b border-gray-800/80 pb-4 last:border-b-0">
-                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.2fr)_minmax(0,1fr)_160px_110px_176px] lg:items-start">
+                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1.1fr)_150px_minmax(0,1fr)_150px_96px_176px] lg:items-start">
                   <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Attivo</div>
                     <Toggle
@@ -958,18 +1010,35 @@ export default function AgentsPage() {
                   </div>
 
                   <div className="min-w-0 space-y-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Modello default</div>
+                    <Toggle
+                      checked={agent.use_portal_default_model}
+                      onChange={() => handleQuickUpdate(agent, { use_portal_default_model: !agent.use_portal_default_model })}
+                    />
+                  </div>
+
+                  <div className="min-w-0 space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500 lg:hidden">Modello</div>
                     <select
-                      value={encodeModelValue(agent.default_model_config)}
+                      value={encodeModelValue(
+                        agent.use_portal_default_model
+                          ? agent.default_model_config
+                          : (agent.specific_model_config || agent.default_model_config)
+                      )}
                       onChange={(e) => handleQuickUpdate(agent, {
+                        use_portal_default_model: false,
                         model_config: normalizeModelConfig(
-                          decodeModelValue(e.target.value, agent.default_model_config),
-                          agent.default_model_config
+                          decodeModelValue(e.target.value, agent.specific_model_config || agent.default_model_config),
+                          agent.specific_model_config || agent.default_model_config
                         ),
                       })}
+                      disabled={agent.use_portal_default_model}
                       className="min-h-10 w-full min-w-0 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 outline-none transition focus:border-sky-500"
                     >
-                      {buildModelOptions(aiOptions?.catalog, agent.default_model_config).map((option) => (
+                      {buildModelOptions(
+                        aiOptions?.catalog,
+                        agent.use_portal_default_model ? agent.default_model_config : (agent.specific_model_config || agent.default_model_config)
+                      ).map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -1111,7 +1180,7 @@ export default function AgentsPage() {
 
                     {configTab === 'properties' ? (
                       <>
-                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.5fr)_minmax(0,0.45fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]">
                           <label className="text-sm text-gray-200">
                             <span className="mb-1 flex items-center gap-2">Nome <InfoHint label="Nome" description="Etichetta leggibile dell'agente. E usata in UI, timeline e strumenti di delega." /></span>
                             <input
@@ -1132,8 +1201,20 @@ export default function AgentsPage() {
                               <option value="orchestrator">orchestrator</option>
                             </select>
                           </label>
+                          <div className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Default portale <InfoHint label="Default portale" description="Quando e attivo, l'agente usa sempre il modello predefinito nelle impostazioni del portale. Disattivalo per scegliere un modello specifico per questo agente." /></span>
+                            <div className="flex min-h-10 items-center">
+                              <Toggle
+                                checked={form.use_portal_default_model}
+                                onChange={() => setForm((current) => ({
+                                  ...current,
+                                  use_portal_default_model: !current.use_portal_default_model,
+                                }))}
+                              />
+                            </div>
+                          </div>
                           <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello predefinito usato per le nuove chat di questo agente, salvo override manuale." /></span>
+                            <span className="mb-1 flex items-center gap-2">Modello <InfoHint label="Modello" description="Modello specifico usato da questo agente quando Default portale e disattivo." /></span>
                             <select
                               value={encodeModelValue(form.default_model_config)}
                               onChange={(e) => setForm((current) => ({
@@ -1143,7 +1224,8 @@ export default function AgentsPage() {
                                   current.default_model_config
                                 ),
                               }))}
-                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
+                              disabled={form.use_portal_default_model}
+                              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
                             >
                               {modelOptions.map((option) => (
                                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -1151,7 +1233,7 @@ export default function AgentsPage() {
                             </select>
                           </label>
                           <label className="text-sm text-gray-200">
-                            <span className="mb-1 flex items-center gap-2">Server Ollama <InfoHint label="Server Ollama" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama." /></span>
+                            <span className="mb-1 flex items-center gap-2">Server locale <InfoHint label="Server locale" description="Opzionale. Se valorizzato, l'agente usera quel server quando il provider selezionato e Ollama o EXO." /></span>
                             <select
                               value={form.default_model_config.ollama_server_id || ''}
                               onChange={(e) => setForm((current) => ({
@@ -1161,11 +1243,11 @@ export default function AgentsPage() {
                                   ollama_server_id: e.target.value || null,
                                 },
                               }))}
-                              disabled={form.default_model_config.provider !== 'ollama'}
+                              disabled={form.use_portal_default_model || (form.default_model_config.provider !== 'ollama' && form.default_model_config.provider !== 'exo')}
                               className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white disabled:opacity-50"
                             >
                               <option value="">Default globale</option>
-                              {ollamaOptions.map((option) => (
+                              {ollamaOptions.filter((option) => (option.provider_type || 'ollama') === form.default_model_config.provider).map((option) => (
                                 <option key={option.id} value={option.id}>{option.name}</option>
                               ))}
                             </select>
@@ -1198,6 +1280,41 @@ export default function AgentsPage() {
                           </div>
                         </div>
 
+                        <div className={`rounded-2xl border p-4 ${
+                          form.memory_engine_enabled ? 'border-sky-800/50 bg-sky-950/10' : 'border-gray-800 bg-gray-950/60'
+                        }`}>
+                          <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                            Memory Engine
+                            <InfoHint label="Memory Engine" description="Le memorie sono gestite da mem0. Il collegamento a mem0 (URL e API key) si configura in Impostazioni. Qui abiliti lettura e scrittura per questo agente." />
+                          </p>
+                          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <div className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Use memories <InfoHint label="Use memories" description="Quando e attivo, l'agente esegue beforeMemory per recuperare da mem0 le memorie rilevanti prima della risposta." /></span>
+                              <div className="flex min-h-10 items-center">
+                                <Toggle
+                                  checked={form.memory_engine_enabled}
+                                  onChange={() => setForm((current) => ({
+                                    ...current,
+                                    memory_engine_enabled: !current.memory_engine_enabled,
+                                  }))}
+                                />
+                              </div>
+                            </div>
+                            <div className="text-sm text-gray-200">
+                              <span className="mb-1 flex items-center gap-2">Improve memories <InfoHint label="Improve memories" description="Quando e attivo, dopo la risposta l'agente esegue afterMemory in parallelo (senza bloccare la chat) e invia il turno a mem0 per estrarre e aggiornare le memorie." /></span>
+                              <div className="flex min-h-10 items-center">
+                                <Toggle
+                                  checked={form.improve_memories_enabled}
+                                  onChange={() => setForm((current) => ({
+                                    ...current,
+                                    improve_memories_enabled: !current.improve_memories_enabled,
+                                  }))}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
                         <label className="block text-sm text-gray-200">
                           <span className="mb-1 flex items-center gap-2">Permessi utente / UPN <InfoHint label="Permessi utente / UPN" description="Autorizzazioni esplicite per singoli utenti. Se ometti il ruolo viene usato chat. Usa `username` o `username:manage` per l'identificativo interno, oppure `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it` o `upn:nome.cognome@azienda.it:manage` per un vincolo esplicito sul UPN Azure." /></span>
                           <span className="mb-2 block text-xs text-gray-400">Una riga per permesso. Formati supportati: `username`, `username:manage`, `nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it`, `upn:nome.cognome@azienda.it:manage`.</span>
@@ -1210,7 +1327,7 @@ export default function AgentsPage() {
 
                         <CollapsiblePanel
                           title="Guardrail"
-                          subtitle="Limiti strutturati per iterazioni, deleghe e profondita. Il JSON extra resta disponibile per estensioni future."
+                          subtitle="Limiti di esecuzione e policy semantiche per mantenere l'agente nel proprio dominio."
                         >
                           <div className="grid gap-4 sm:grid-cols-2">
                             <label className="text-sm text-gray-200">
@@ -1244,14 +1361,75 @@ export default function AgentsPage() {
                           />
                         </label>
                       </div>
-                      <label className="mt-4 block text-sm text-gray-200">
-                        <span className="mb-1 flex items-center gap-2">Extra guardrails JSON <InfoHint label="Extra guardrails JSON" description="Campi avanzati non ancora modellati in UI. Restano serializzati insieme ai guardrail principali." /></span>
-                          <textarea
-                            value={form.guardrails.extra_json}
-                            onChange={(e) => setGuardrailField('extra_json', e.target.value)}
-                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 font-mono text-sm text-white"
+                      <div className="mt-5 rounded-xl border border-gray-800 bg-black/20 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="flex items-center gap-2 text-sm font-medium text-gray-200">Guardrail semantici <InfoHint label="Guardrail semantici" description="Se attivi, il backend confronta la richiesta con intent permessi e bloccati prima di chiamare l'agente. Le richieste bloccate non arrivano al modello principale e non generano memorie riutilizzabili." /></p>
+                            <p className="mt-1 text-xs text-gray-500">I blocked intents vincono sempre. Se esistono allowed intents, passa solo ciò che combacia.</p>
+                          </div>
+                          <Toggle
+                            checked={form.guardrails.semantic_guardrails_enabled}
+                            onChange={() => setGuardrailField('semantic_guardrails_enabled', !form.guardrails.semantic_guardrails_enabled)}
                           />
-                        </label>
+                        </div>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Allowed intents <InfoHint label="Allowed intents" description="Uno per riga. Usa capability naturali, per esempio: cercare informazioni su utenti aziendali." /></span>
+                            <textarea
+                              value={form.guardrails.allowed_intents}
+                              onChange={(e) => setGuardrailField('allowed_intents', e.target.value)}
+                              className="min-h-28 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Blocked intents <InfoHint label="Blocked intents" description="Uno per riga. Se una richiesta combacia con uno di questi intent, viene bloccata anche se combacia con un allowed intent." /></span>
+                            <textarea
+                              value={form.guardrails.blocked_intents}
+                              onChange={(e) => setGuardrailField('blocked_intents', e.target.value)}
+                              className="min-h-28 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Messaggio blocco <InfoHint label="Messaggio blocco" description="Risposta assistant usata dal backend quando la richiesta non è permessa. Il prompt originale non viene passato all'agente." /></span>
+                            <textarea
+                              value={form.guardrails.blocked_message}
+                              onChange={(e) => setGuardrailField('blocked_message', e.target.value)}
+                              className="min-h-20 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Messaggio chiarimento <InfoHint label="Messaggio chiarimento" description="Usato se scegli clarify per richieste fuori allowlist o poco chiare." /></span>
+                            <textarea
+                              value={form.guardrails.unclear_message}
+                              onChange={(e) => setGuardrailField('unclear_message', e.target.value)}
+                              className="min-h-20 w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white"
+                            />
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Azione se fuori allowlist <InfoHint label="Azione fuori allowlist" description="Block risponde col messaggio di blocco. Clarify chiede chiarimento senza chiamare l'agente." /></span>
+                            <select
+                              value={form.guardrails.unclear_action}
+                              onChange={(e) => setGuardrailField('unclear_action', e.target.value)}
+                              className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-white"
+                            >
+                              <option value="block">Block</option>
+                              <option value="clarify">Clarify</option>
+                            </select>
+                          </label>
+                          <label className="text-sm text-gray-200">
+                            <span className="mb-1 flex items-center gap-2">Match threshold <InfoHint label="Match threshold" description="Soglia cosine embedding. Valori più alti sono più restrittivi; 0.72 è il default consigliato." /></span>
+                            <input
+                              type="number"
+                              min={0.1}
+                              max={0.98}
+                              step={0.01}
+                              value={form.guardrails.match_threshold}
+                              onChange={(e) => setGuardrailField('match_threshold', e.target.value)}
+                              className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-white"
+                            />
+                          </label>
+                        </div>
+                      </div>
                         </CollapsiblePanel>
 
                         <div>
@@ -1271,24 +1449,27 @@ export default function AgentsPage() {
                             {filteredTools.length === 0 && (
                               <div className="text-sm text-gray-400">Nessun tool corrisponde alla ricerca.</div>
                             )}
-                            {filteredTools.map((tool) => (
-                              <label key={tool.name} className={`flex items-start gap-3 text-sm ${tool.available ? 'text-gray-200' : 'text-gray-500'}`}>
-                                <input
-                                  type="checkbox"
-                                  checked={tool.selected}
-                                  disabled={!tool.available}
-                                  onChange={() => toggleTool(tool.name)}
-                                  className="mt-1 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-                                />
-                                <span>
-                                  <span className="block font-medium text-white">
-                                    {tool.name}
-                                    {!tool.available ? ' · non disponibile' : ''}
+                            {filteredTools.map((tool) => {
+                              const canToggleTool = tool.available || tool.selected;
+                              return (
+                                <label key={tool.name} className={`flex items-start gap-3 text-sm ${canToggleTool ? 'cursor-pointer' : 'cursor-not-allowed'} ${tool.available ? 'text-gray-200' : 'text-gray-500'}`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={tool.selected}
+                                    disabled={!canToggleTool}
+                                    onChange={() => toggleTool(tool.name)}
+                                    className="mt-1 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                  />
+                                  <span>
+                                    <span className="block font-medium text-white">
+                                      {tool.name}
+                                      {!tool.available ? ' · non disponibile' : ''}
+                                    </span>
+                                    <span className="text-xs text-gray-400">{tool.description}</span>
                                   </span>
-                                  <span className="text-xs text-gray-400">{tool.description}</span>
-                                </span>
-                              </label>
-                            ))}
+                                </label>
+                              );
+                            })}
                           </div>
                         </div>
 
@@ -1426,14 +1607,6 @@ export default function AgentsPage() {
                           />
                         </label>
 
-                        <label className="block text-sm text-gray-200">
-                          <span className="mb-1 flex items-center gap-2">Memories <InfoHint label="Memories" description="Memoria persistente dell'agente. Può essere letta/modificata anche tramite i tool interni get/edit memories." /></span>
-                          <textarea
-                            value={form.memories}
-                            onChange={(e) => setForm((current) => ({ ...current, memories: e.target.value }))}
-                            className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-white"
-                          />
-                        </label>
                       </>
                     )}
 

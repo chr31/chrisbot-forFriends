@@ -52,6 +52,23 @@ Per collegare il servizio:
 - assicurati che il backend possa raggiungerlo in rete
 - se Ollama gira fuori dal container, esponilo alla rete e usa un `base_url` accessibile dal backend
 
+## Memorie
+
+Pagina: `Impostazioni > Memorie`
+
+Cosa permette:
+
+- abilitare o disabilitare il Memory Engine globale
+- configurare URL API, token e progetto LLM Wiki
+- configurare limiti di ricerca, pagine lette e contesto iniettato
+- usare LLM Wiki come sorgente read-only per `beforeMemory`
+
+Per collegare il servizio:
+
+- avvia LLM Wiki separatamente con API abilitate
+- imposta `LLM_WIKI_API_URL` o configura l'URL dalla tab `Memorie`
+- imposta il project id default o un override per agente
+
 ## Telegram
 
 Pagina: `Impostazioni > Telegram`

@@ -12,8 +12,11 @@ const {
   deleteAliveAgentChatHistory,
 } = require('../database/db_alive_agent_chats');
 const { insertAgentRun, updateAgentRunIfStatus, getAgentRunsByChatId } = require('../database/db_agent_runs');
-const { runAgentConversation, buildInitialAgentHistory } = require('./agentRunner');
+const { runAgentConversation, buildInitialAgentHistory, sanitizeMessages } = require('./agentRunner');
 const { normalizeModelConfig, getAgentDefaultModelConfig, getDefaultModelConfig } = require('./aiModelCatalog');
+const { runBeforeMemory, runAfterMemory } = require('./memory/memoryOrchestrator');
+const { buildMemoryRunTrace } = require('./memory/memoryRunTrace');
+const { buildAgentGuardrailRunTrace, evaluateAgentSemanticGuardrails } = require('./agentSemanticGuardrails');
 
 const LOOP_POLL_MS = 1500;
 let loopTimer = null;
@@ -149,6 +152,44 @@ async function runAliveCycle(agentId, options = {}) {
       depth: 0,
       started_at: new Date(),
     });
+    const userMessage = history.slice().reverse().find((message) => message?.role === 'user') || null;
+    const guardrailInput = userMessage?.content || inputText || agent.alive_prompt || '';
+    const semanticGuardrail = await evaluateAgentSemanticGuardrails(agent, guardrailInput);
+    if (semanticGuardrail.applied && semanticGuardrail.decision !== 'allow') {
+      const response = semanticGuardrail.message || 'Questo agente non puo gestire questa richiesta.';
+      await appendAliveMessage(chat.chat_id, agent.id, response, 'guardrail', 'assistant');
+      await updateAgentRunIfStatus(run.id, {
+        status: 'completed',
+        finished_at: new Date(),
+        guardrail_result_json: buildAgentGuardrailRunTrace(semanticGuardrail),
+      }, 'running');
+      await releaseAliveAgentChatProcessing(agent.id, {
+        loop_status: 'pause',
+        next_loop_at: null,
+        last_error: null,
+        last_finished_at: new Date(),
+      });
+      return {
+        response,
+        chat_id: chat.chat_id,
+        run_id: run.id,
+        agent_id: agent.id,
+        guardrail: semanticGuardrail,
+      };
+    }
+    const memoryContextPacket = await runBeforeMemory({
+      agent,
+      chat: {
+        chatId: chat.chat_id,
+        messages: sanitizeMessages(history),
+        sourceMessages: history,
+        userMessage,
+        runId: run.id,
+        userKey: null,
+      },
+      runId: run.id,
+      modelConfig: effectiveModelConfig,
+    });
 
     try {
       const response = await runAgentConversation(agent, history, {
@@ -158,15 +199,23 @@ async function runAliveCycle(agentId, options = {}) {
         parentRunId: null,
         runId: run.id,
         parentAgentId: null,
-      modelConfig: effectiveModelConfig,
-      depth: 0,
-      messageWriter: insertAliveAgentMessages,
-    });
-
+        modelConfig: effectiveModelConfig,
+        depth: 0,
+        userKey: null,
+        messageWriter: insertAliveAgentMessages,
+      });
       await updateAgentRunIfStatus(run.id, {
         status: 'completed',
         finished_at: new Date(),
+        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
       }, 'running');
+      // Scrittura memorie in parallelo: non attesa, non blocca il ciclo alive.
+      runAfterMemory({
+        agent,
+        userMessage,
+        response,
+        runId: run.id,
+      }).catch(() => {});
 
       const refreshedChat = await getAliveAgentChatByAgentId(agent.id);
       const requestedNextLoopStatus = options.next_loop_status === 'pause' ? 'pause' : null;
@@ -190,6 +239,7 @@ async function runAliveCycle(agentId, options = {}) {
         status: 'failed',
         finished_at: new Date(),
         last_error: String(error?.message || error),
+        guardrail_result_json: buildMemoryRunTrace(memoryContextPacket, null),
       }, 'running');
       throw error;
     }
