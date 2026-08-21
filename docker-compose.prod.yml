@@ -54,3 +54,12 @@ services:
 volumes:
   chrisbot-mysql-data:
   chrisbot-routines-data:
+
+# Rete dedicata con subnet statica /28: evita il pool automatico di Docker
+# (192.168.0.0/16 in blocchi /20) che si sovrappone alle reti aziendali.
+networks:
+  default:
+    name: chrisbot-net
+    ipam:
+      config:
+        - subnet: 192.168.240.96/28
