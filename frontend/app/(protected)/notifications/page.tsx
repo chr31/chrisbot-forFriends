@@ -71,6 +71,14 @@ function formatDate(value?: string | null) {
   return date.toLocaleString('it-IT');
 }
 
+function isSameContent(a: unknown, b: unknown) {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch (_err) {
+    return false;
+  }
+}
+
 function normalizeCategoryLabel(value?: string | null) {
   return value && String(value).trim() ? String(value).trim() : 'Tutte';
 }
@@ -95,7 +103,11 @@ export default function NotificationsPage() {
   const hasSeededNotifications = useRef(false);
   const itemsRef = useRef<InboxItem[]>([]);
   const selectedIdRef = useRef<number | null>(null);
-  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const loadedChatIdRef = useRef<string | null>(null);
+  const lastScrolledItemIdRef = useRef<number | null>(null);
+  const lastMessageCountRef = useRef(0);
+  const isNearBottomRef = useRef(true);
 
   itemsRef.current = items;
   selectedIdRef.current = selectedId;
@@ -126,7 +138,8 @@ export default function NotificationsPage() {
 
   const fetchLinkedChat = async (chatId?: string | null, headersOverride?: Record<string, string> | null) => {
     if (!chatId) {
-      setChatMessages([]);
+      loadedChatIdRef.current = null;
+      setChatMessages((current) => (current.length === 0 ? current : []));
       setChatLoading(false);
       return;
     }
@@ -134,17 +147,21 @@ export default function NotificationsPage() {
     const headers = headersOverride || getAuthHeaders();
     if (!headers) return;
 
-    setChatLoading(true);
+    const isSameChat = loadedChatIdRef.current === chatId;
+    if (!isSameChat) setChatLoading(true);
     try {
       const response = await axios.get(`${API_URL}/agent-chats/${chatId}`, { headers });
-      setChatMessages(Array.isArray(response.data) ? response.data : []);
+      const nextMessages = Array.isArray(response.data) ? response.data : [];
+      loadedChatIdRef.current = chatId;
+      setChatMessages((current) => (isSameContent(current, nextMessages) ? current : nextMessages));
     } catch (err: any) {
       if (err.response?.status !== 404) {
         console.error('Impossibile caricare la chat collegata', err);
       }
-      setChatMessages([]);
+      loadedChatIdRef.current = null;
+      setChatMessages((current) => (current.length === 0 ? current : []));
     } finally {
-      setChatLoading(false);
+      if (!isSameChat) setChatLoading(false);
     }
   };
 
@@ -167,8 +184,11 @@ export default function NotificationsPage() {
     try {
       const response = await axios.get(`${API_URL}/inbox/${id}`, { headers });
       const item = response.data as InboxItem;
-      setSelectedItem(item);
-      setItems((current) => current.map((entry) => (entry.id === item.id ? { ...entry, ...item, is_read: true } : entry)));
+      setSelectedItem((current) => (isSameContent(current, item) ? current : item));
+      setItems((current) => {
+        const next = current.map((entry) => (entry.id === item.id ? { ...entry, ...item, is_read: true } : entry));
+        return isSameContent(current, next) ? current : next;
+      });
       await fetchLinkedChat(item.chat_id, headers);
       setError(null);
       return item;
@@ -188,7 +208,7 @@ export default function NotificationsPage() {
     try {
       const response = await axios.get(`${API_URL}/inbox?include_resolved=true&include_dismissed=true`, { headers });
       const incoming = Array.isArray(response.data) ? response.data : [];
-      setItems(incoming);
+      setItems((current) => (isSameContent(current, incoming) ? current : incoming));
       await notifyNewNotifications(incoming, {
         seedBaseline: !hasSeededNotifications.current,
       });
@@ -284,8 +304,23 @@ export default function NotificationsPage() {
   }, [activeCategory, categoryOptions]);
 
   useEffect(() => {
-    bottomAnchorRef.current?.scrollIntoView({ block: 'end' });
-  }, [chatLoading, conversationMessages, selectedItem?.id]);
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const currentItemId = selectedItem?.id ?? null;
+    const itemChanged = lastScrolledItemIdRef.current !== currentItemId;
+    const messageCount = conversationMessages.length;
+    const hasNewMessages = messageCount > lastMessageCountRef.current;
+    const wasNearBottom = isNearBottomRef.current;
+
+    lastScrolledItemIdRef.current = currentItemId;
+    lastMessageCountRef.current = messageCount;
+
+    if (itemChanged || (hasNewMessages && wasNearBottom)) {
+      container.scrollTop = container.scrollHeight;
+      isNearBottomRef.current = true;
+    }
+  }, [conversationMessages, selectedItem?.id]);
 
   const handleSelect = async (id: number) => {
     setSelectedId(id);
@@ -543,7 +578,14 @@ export default function NotificationsPage() {
 
             </div>
 
-            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-6 sm:px-6">
+            <div
+              ref={messagesContainerRef}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                isNearBottomRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 80;
+              }}
+              className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-6 sm:px-6"
+            >
               <div className="min-w-0 space-y-3">
                 {chatLoading ? (
                   <div className="text-sm text-gray-400">Caricamento chat...</div>
@@ -577,7 +619,6 @@ export default function NotificationsPage() {
                     </div>
                   ))
                 )}
-                <div ref={bottomAnchorRef} />
               </div>
             </div>
 

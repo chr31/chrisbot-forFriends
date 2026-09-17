@@ -224,3 +224,209 @@ body {
 .markdown-content tbody tr:nth-of-type(even) {
   background-color: rgba(255, 255, 255, 0.05);
 }
+
+/* ==========================================================================
+   Palette H-Energy (ChrisVolt V2) applicata al portale ChrisBot.
+   I componenti continuano a usare le classi Tailwind esistenti
+   (gray/sky/emerald/rose/amber/pink...): qui vengono rimappate le scale
+   colore sui token del portale H-Energy, cosi' lo stile e' identico senza
+   riscrivere le pagine. Per cambiare tinta basta toccare questo blocco.
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* Token semantici H-Energy (dark) */
+  --background: #0a0a0a;
+  --foreground: #f5f5f5;
+  --surface: #1f1f1f;
+  --surface-strong: #2a2a2a;
+  --surface-soft: #1a1a1a;
+  --text: #f5f5f5;
+  --muted: #a3a3a3;
+  --border: #333333;
+  --accent: #3d9bff;
+  --accent-soft: rgba(61, 155, 255, 0.22);
+  --accent-border: rgba(61, 155, 255, 0.5);
+  --danger: #ff7d6b;
+  --danger-strong: #e0402f;
+  --success: #3fe084;
+  --warning: #ffb02e;
+  --running: #ffd83c;
+  --link: #35dcc4;
+  --doc-logical: #c877f4;
+  --input-background: #151515;
+  --input-border: #3d3d3d;
+  --sidebar-background: #1a1a1a;
+  --panel-background: #1f1f1f;
+  --shadow-color: rgba(0, 0, 0, 0.55);
+}
+
+@theme {
+  /* Neutri: grigi puri H-Energy, senza dominante blu.
+     950 = campi input, 900 = pannelli/sidebar, 800 = hover, 700 = bordo. */
+  --color-gray-50: #fafafa;
+  --color-gray-100: #f0f0f0;
+  --color-gray-200: #e3e3e3;
+  --color-gray-300: #c9c9c9;
+  --color-gray-400: #a3a3a3;
+  --color-gray-500: #8a8a8a;
+  --color-gray-600: #454545;
+  --color-gray-700: #333333;
+  --color-gray-800: #242424;
+  --color-gray-900: #1a1a1a;
+  --color-gray-950: #121212;
+
+  /* Accento: il blu H-Energy #3d9bff (sky, blue e cyan condividono la scala). */
+  --color-sky-50: #eaf4ff;
+  --color-sky-100: #d3e8ff;
+  --color-sky-200: #aed3ff;
+  --color-sky-300: #8bc2ff;
+  --color-sky-400: #64acff;
+  --color-sky-500: #3d9bff;
+  --color-sky-600: #2b7fd9;
+  --color-sky-700: #1f63ab;
+  --color-sky-800: #17497e;
+  --color-sky-900: #123a63;
+  --color-sky-950: #0c2540;
+
+  --color-blue-50: #eaf4ff;
+  --color-blue-100: #d3e8ff;
+  --color-blue-200: #aed3ff;
+  --color-blue-300: #8bc2ff;
+  --color-blue-400: #64acff;
+  --color-blue-500: #3d9bff;
+  --color-blue-600: #2b7fd9;
+  --color-blue-700: #1f63ab;
+  --color-blue-800: #17497e;
+  --color-blue-900: #123a63;
+  --color-blue-950: #0c2540;
+
+  --color-cyan-50: #eaf4ff;
+  --color-cyan-100: #d3e8ff;
+  --color-cyan-200: #aed3ff;
+  --color-cyan-300: #8bc2ff;
+  --color-cyan-400: #64acff;
+  --color-cyan-500: #3d9bff;
+  --color-cyan-600: #2b7fd9;
+  --color-cyan-700: #1f63ab;
+  --color-cyan-800: #17497e;
+  --color-cyan-900: #123a63;
+  --color-cyan-950: #0c2540;
+
+  /* Stato positivo: --success #3fe084. */
+  --color-emerald-50: #e9fdf1;
+  --color-emerald-100: #cdf9e0;
+  --color-emerald-200: #a3f2c8;
+  --color-emerald-300: #6fe9aa;
+  --color-emerald-400: #4fe493;
+  --color-emerald-500: #3fe084;
+  --color-emerald-600: #22b866;
+  --color-emerald-700: #178f4f;
+  --color-emerald-800: #12703f;
+  --color-emerald-900: #0e5631;
+  --color-emerald-950: #07321d;
+
+  --color-green-50: #e9fdf1;
+  --color-green-100: #cdf9e0;
+  --color-green-200: #a3f2c8;
+  --color-green-300: #6fe9aa;
+  --color-green-400: #4fe493;
+  --color-green-500: #3fe084;
+  --color-green-600: #22b866;
+  --color-green-700: #178f4f;
+  --color-green-800: #12703f;
+  --color-green-900: #0e5631;
+  --color-green-950: #07321d;
+
+  /* Stato negativo: --danger #ff7d6b / --danger-strong #e0402f. */
+  --color-rose-50: #fff0ee;
+  --color-rose-100: #ffdfda;
+  --color-rose-200: #ffc3bb;
+  --color-rose-300: #ffa395;
+  --color-rose-400: #ff8d7c;
+  --color-rose-500: #ff7d6b;
+  --color-rose-600: #e0402f;
+  --color-rose-700: #b92d1f;
+  --color-rose-800: #8f2418;
+  --color-rose-900: #6d1d14;
+  --color-rose-950: #3d0f0a;
+
+  --color-red-50: #fff0ee;
+  --color-red-100: #ffdfda;
+  --color-red-200: #ffc3bb;
+  --color-red-300: #ffa395;
+  --color-red-400: #ff8d7c;
+  --color-red-500: #ff7d6b;
+  --color-red-600: #e0402f;
+  --color-red-700: #b92d1f;
+  --color-red-800: #8f2418;
+  --color-red-900: #6d1d14;
+  --color-red-950: #3d0f0a;
+
+  /* Avvisi: --warning #ffb02e; il giallo resta il "running" #ffd83c. */
+  --color-amber-50: #fff8ea;
+  --color-amber-100: #ffefcd;
+  --color-amber-200: #ffdf9e;
+  --color-amber-300: #ffcb63;
+  --color-amber-400: #ffc04d;
+  --color-amber-500: #ffb02e;
+  --color-amber-600: #d98c15;
+  --color-amber-700: #a96a0f;
+  --color-amber-800: #82520c;
+  --color-amber-900: #663f09;
+  --color-amber-950: #3a2405;
+
+  --color-yellow-50: #fffbe8;
+  --color-yellow-100: #fff5c6;
+  --color-yellow-200: #ffec96;
+  --color-yellow-300: #ffe263;
+  --color-yellow-400: #ffd83c;
+  --color-yellow-500: #f5c400;
+  --color-yellow-600: #cc9f00;
+  --color-yellow-700: #9e7a00;
+  --color-yellow-800: #7a5e00;
+  --color-yellow-900: #5e4800;
+  --color-yellow-950: #352900;
+
+  /* Blocchi memoria/contesto: il viola --doc-logical #c877f4 di H-Energy. */
+  --color-pink-50: #faf1fe;
+  --color-pink-100: #f3ddfd;
+  --color-pink-200: #e7bdfa;
+  --color-pink-300: #d89af7;
+  --color-pink-400: #ce87f5;
+  --color-pink-500: #c877f4;
+  --color-pink-600: #a44dd6;
+  --color-pink-700: #8036ab;
+  --color-pink-800: #632a84;
+  --color-pink-900: #4c2166;
+  --color-pink-950: #2c123c;
+}
+
+/* Markdown allineato ai token: i link usano il teal --link, cosi' il blu
+   resta riservato a selezione, tab attiva e focus. */
+.markdown-content a {
+  color: var(--link);
+}
+.markdown-content a:hover {
+  color: color-mix(in srgb, var(--link) 75%, #ffffff);
+}
+
+.markdown-content code,
+.markdown-content pre {
+  background-color: var(--input-background);
+}
+
+.markdown-content table,
+.markdown-content th,
+.markdown-content td {
+  border-color: var(--border);
+}
+
+.markdown-content thead th {
+  background-color: var(--surface-strong);
+}
+
+.markdown-content tbody tr:nth-of-type(even) {
+  background-color: rgba(255, 255, 255, 0.035);
+}

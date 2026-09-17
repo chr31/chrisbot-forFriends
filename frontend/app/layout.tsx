@@ -15,7 +15,7 @@ export const metadata = {
 
 // Sposta themeColor in viewport come richiesto da Next.js
 export const viewport = {
-  themeColor: '#111827',
+  themeColor: '#0a0a0a',
 };
 
 export default function RootLayout({
@@ -34,7 +34,7 @@ export default function RootLayout({
           <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-180x180.png"/>
           <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-180x180.png"/>
       </head>
-      <body className="bg-gray-900">{children}</body>
+      <body className="bg-background text-foreground">{children}</body>
     </html>
   );
 }
